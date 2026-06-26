@@ -9,19 +9,20 @@
 
 **A secure, sovereign, and open-source platform for email archiving.**
 
-This fork focuses on a local only, on device archiver, in order to get emails out of bad email clients or off of email servers, into an app that can handle searching and organizing your emails, completely offline. 
+This fork focuses on a local only, on device archiver, in order to get emails out of bad email clients or off of email servers, into an app that can handle searching and organizing your emails, completely offline.
 
 The changes towards that goal:
-* **Local-first focus:** setup is oriented around one-device use, local Docker services, generated secrets, loopback defaults, optional heavy services, and personal mode.
-* **Unified archive/search view:** browsing and searching are merged around /dashboard/archived-emails, with advanced filters, field-specific search, sorting, pagination, tags, folders, source filters, attachment filters, and URL-backed controls.
-* **Tags and folders:** added backend services and UI flows for creating folders, moving emails in bulk, and adding/removing tags with batched search-index updates.
-* **Duplicate review:** added exact duplicate grouping/approval and fuzzy duplicate review, with fuzzy scans handled through background jobs and a new /dashboard/duplicates UI.
-* **Remote content archiving:** added remote asset capture, sanitized preview rendering, remote-content worker/queue, safe image-only storage, and strong protections against private IPs, DNS rebinding, redirects, unsafe ports, oversized files, and unsafe content types.
-* **IAM/multi-user complexity removed:** IAM routes, services, policies, permission middleware, role/user admin screens, and IAM docs were removed or hidden. The app now treats the local authenticated owner as having full local access.
-* **Import provenance and folders:** imported emails now preserve source folder/label paths while also getting a mutable local folder path. New imports land under their own import tree, but messages can be moved later.
-* **Attachment indicators:** email/search/thread rows use indexed hasAttachments metadata instead of per-row attachment lookups.
-* **Performance tooling:** added scripts/perf-baseline.mjs and packages/backend/scripts/seed-perf-data.mjs, plus a synthetic benchmark fixture. Current synthetic baseline was clean on 2,500 messages.
-* **Docs/install changes:** README, install docs, API docs, .env.example, Docker Compose, and local setup scripts were updated for the local-first direction.
+
+- **Local-first focus:** setup is oriented around one-device use, local Docker services, generated secrets, loopback defaults, optional heavy services, and personal mode.
+- **Unified archive/search view:** browsing and searching are merged around /dashboard/archived-emails, with advanced filters, field-specific search, sorting, pagination, tags, folders, source filters, attachment filters, and URL-backed controls.
+- **Tags and folders:** added backend services and UI flows for creating folders, moving emails in bulk, and adding/removing tags with batched search-index updates.
+- **Duplicate review:** added exact duplicate grouping/approval and fuzzy duplicate review, with fuzzy scans handled through background jobs and a new /dashboard/duplicates UI.
+- **Remote content archiving:** added remote asset capture, sanitized preview rendering, remote-content worker/queue, safe image-only storage, and strong protections against private IPs, DNS rebinding, redirects, unsafe ports, oversized files, and unsafe content types.
+- **IAM/multi-user complexity removed:** IAM routes, services, policies, permission middleware, role/user admin screens, and IAM docs were removed or hidden. The app now treats the local authenticated owner as having full local access.
+- **Import provenance and folders:** imported emails now preserve source folder/label paths while also getting a mutable local folder path. New imports land under their own import tree, but messages can be moved later.
+- **Attachment indicators:** email/search/thread rows use indexed hasAttachments metadata instead of per-row attachment lookups.
+- **Performance tooling:** added scripts/perf-baseline.mjs and packages/backend/scripts/seed-perf-data.mjs, plus a synthetic benchmark fixture. Current synthetic baseline was clean on 2,500 messages.
+- **Docs/install changes:** README, install docs, API docs, .env.example, Docker Compose, and local setup scripts were updated for the local-first direction.
 
 ## Tech Stack
 
@@ -40,6 +41,7 @@ Open Archiver is built on a modern, scalable, and maintainable technology stack:
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
 - A server or local machine with at least 4GB of RAM (2GB of RAM if you use external Postgres, Redis (Valkey) and Meilisearch instances).
+- Optional: Node.js 22 or newer for the `npm run local:up` one-liner. If Node is not installed, use the Docker-only one-liner below.
 
 ### Installation
 
@@ -50,36 +52,33 @@ Open Archiver is built on a modern, scalable, and maintainable technology stack:
     cd OpenArchiver
     ```
 
-2.  **Create a local environment file:**
-    Generate `.env` with local-only defaults and fresh secrets.
-
-    ```bash
-    npm run setup:local
-    ```
-
-    If you do not have Node.js installed locally, run the same script through Docker:
-
-    ```bash
-    docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work -w /work node:22-alpine node scripts/setup-local-env.mjs
-    ```
-
-    This binds the web UI to your laptop only (`127.0.0.1`), enables personal mode, and keeps heavier optional services like Apache Tika disabled by default. To enable Tika for broader attachment text extraction, run `npm run setup:local -- --with-tika` before starting the stack, or append `--with-tika` to the Docker-run setup command.
-
-3.  **Run the application:**
+2.  **Start the local app:**
+    This generates `.env` automatically if it is missing, then starts the local Docker stack.
+    Docker is the runtime; Node is only used as a small convenience wrapper for this command and does not install or run the app itself.
 
     ```bash
     npm run local:up
     ```
 
-    Without Node.js, use the equivalent Docker command:
+    If you do not have Node.js installed locally, use this Docker-only one-liner:
 
     ```bash
-    docker compose up -d
+    docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work -w /work node:22-alpine node scripts/setup-local-env.mjs --if-missing && docker compose up -d
     ```
 
-    This command will pull the pre-built Docker images and start all the services (frontend, backend, database, etc.) in the background.
+    The generated `.env` exists so local service passwords, JWT signing, and encryption keys stay stable across restarts. It is not meant to defend against someone who already controls your laptop. The stack still binds the web UI to your laptop only (`127.0.0.1`), enables personal mode, and keeps heavier optional services like Apache Tika disabled by default.
 
-4.  **Access the application:**
+    The containers run detached in the background, so you do not need to keep the terminal open after the command finishes. Stop them later with `npm run local:down` or `docker compose down`.
+
+    For broader attachment text extraction, use:
+
+    ```bash
+    npm run local:up:tika
+    ```
+
+    For reference, [.env.example](.env.example) shows every variable used by the local Docker install. You normally do not need to copy it manually.
+
+3.  **Access the application:**
     Once the services are running, you can access the Open Archiver web interface by navigating to `http://127.0.0.1:3000` in your web browser.
 
 ## Data Source Configuration

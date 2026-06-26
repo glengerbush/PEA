@@ -6,11 +6,21 @@ import { resolve } from 'node:path';
 
 const args = new Set(process.argv.slice(2));
 const force = args.has('--force');
+const ifMissing = args.has('--if-missing');
 const withTika = args.has('--with-tika');
 const envPath = resolve(process.cwd(), '.env');
 const examplePath = resolve(process.cwd(), '.env.example');
 
 if (existsSync(envPath) && !force) {
+	if (ifMissing) {
+		console.log('.env already exists; using existing local environment.');
+		if (withTika) {
+			console.log(
+				'Tika was requested, but existing .env was not changed. Edit TIKA_URL/COMPOSE_PROFILES or re-run setup with --force --with-tika to update it.'
+			);
+		}
+		process.exit(0);
+	}
 	console.error('.env already exists. Re-run with --force to replace it.');
 	process.exit(1);
 }

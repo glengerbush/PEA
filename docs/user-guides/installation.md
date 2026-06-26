@@ -18,20 +18,22 @@ git clone https://github.com/LogicLabs-OU/OpenArchiver.git
 cd OpenArchiver
 ```
 
-## 2. Configure Your Local Environment
+## 2. Start The Local Stack
 
-The application is configured using environment variables. You'll need to create a `.env` file to store your configuration.
+The app can be started with one command. If `.env` is missing, it is generated automatically with local-only defaults and fresh secrets before Docker Compose starts.
 
-Generate a local-only `.env` file with fresh secrets:
+Docker is the runtime for the local install. Node runs a small setup script, then asks Docker Compose to start the app.
+
+Start the local stack:
 
 ```bash
-npm run setup:local
+npm run local:up
 ```
 
-If you do not have Node.js installed locally, run the same script through Docker:
+If you do not have Node.js installed locally, use this Docker-only one-liner:
 
 ```bash
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work -w /work node:22-alpine node scripts/setup-local-env.mjs
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work -w /work node:22-alpine node scripts/setup-local-env.mjs --if-missing && docker compose up -d
 ```
 
 This command:
@@ -41,11 +43,14 @@ This command:
 - Binds the web UI to `127.0.0.1` through Docker Compose so the archive is only reachable from the local machine by default.
 - Leaves Apache Tika disabled for the fastest lightweight local install.
 
-If you want Apache Tika for broader attachment text extraction, generate the environment with Tika enabled. This sets `COMPOSE_PROFILES=tika`, so the normal start command includes the Tika container:
+The generated `.env` is still useful for a local-only app because the service passwords, JWT signing secret, database-encryption key, and storage-encryption key must stay stable across restarts. It is not meant to defend against someone who already controls your laptop or can read your files.
+
+The containers run detached in the background, so you do not need to keep the terminal open after the command finishes. Stop them later with `npm run local:down` or `docker compose down`.
+
+If you want Apache Tika for broader attachment text extraction, start with:
 
 ```bash
-npm run setup:local -- --with-tika
-npm run local:up
+npm run local:up:tika
 ```
 
 ### Key Configuration Notes
@@ -53,6 +58,7 @@ npm run local:up
 - Re-run `npm run setup:local -- --force` only if you intentionally want to replace your `.env`.
 - The generated `DATABASE_URL` is concrete; `.env` files do not safely expand nested variables across every runtime.
 - `TIKA_URL` is blank by default. This avoids starting a heavy attachment extraction service unless you opt in.
+- For reference, `.env.example` shows every variable used by the local Docker setup. You normally do not need to copy it manually.
 
 ### Storage Configuration
 

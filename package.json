@@ -12,8 +12,8 @@
 		"dev:oss": "dotenv -- pnpm --filter \"./packages/*\" --filter \"!./packages/@open-archiver/enterprise\" --filter \"open-archiver-app\" --parallel dev & pnpm run start:workers:dev",
 		"build": "pnpm --filter \"./packages/*\" --filter \"./apps/*\" build",
 		"start": "dotenv -- pnpm --filter \"open-archiver-app\" --parallel start",
-		"start:workers": "dotenv -- concurrently \"pnpm --filter @open-archiver/backend start:ingestion-worker\" \"pnpm --filter @open-archiver/backend start:indexing-worker\" \"pnpm --filter @open-archiver/backend start:sync-scheduler\"",
-		"start:workers:dev": "dotenv -- concurrently \"pnpm --filter @open-archiver/backend start:ingestion-worker:dev\" \"pnpm --filter @open-archiver/backend start:indexing-worker:dev\" \"pnpm --filter @open-archiver/backend start:sync-scheduler:dev\"",
+		"start:workers": "dotenv -- concurrently \"pnpm --filter @open-archiver/backend start:ingestion-worker\" \"pnpm --filter @open-archiver/backend start:indexing-worker\" \"pnpm --filter @open-archiver/backend start:remote-content-worker\" \"pnpm --filter @open-archiver/backend start:sync-scheduler\"",
+		"start:workers:dev": "dotenv -- concurrently \"pnpm --filter @open-archiver/backend start:ingestion-worker:dev\" \"pnpm --filter @open-archiver/backend start:indexing-worker:dev\" \"pnpm --filter @open-archiver/backend start:remote-content-worker:dev\" \"pnpm --filter @open-archiver/backend start:sync-scheduler:dev\"",
 		"db:generate": "dotenv -- pnpm --filter @open-archiver/backend db:generate",
 		"db:migrate": "dotenv -- pnpm --filter @open-archiver/backend db:migrate",
 		"db:migrate:dev": "dotenv -- pnpm --filter @open-archiver/backend db:migrate:dev",
@@ -23,21 +23,30 @@
 		"docs:dev": "pnpm docs:gen-spec && vitepress dev docs --port 3009",
 		"docs:build": "pnpm docs:gen-spec && vitepress build docs",
 		"docs:preview": "vitepress preview docs",
+		"perf:baseline": "node scripts/perf-baseline.mjs",
+		"perf:seed": "node packages/backend/scripts/seed-perf-data.mjs",
+		"setup:local": "node scripts/setup-local-env.mjs",
+		"local:up": "docker compose up -d",
+		"local:up:tika": "docker compose --profile tika up -d",
+		"local:down": "docker compose down",
 		"format": "prettier --write .",
-		"lint": "prettier --check ."
+		"lint": "prettier --check .",
+		"test:backend:remote-content": "vitest run packages/backend/src/services/RemoteContentSecurity.test.ts packages/backend/src/services/RemoteContentPreviewSanitizer.test.ts"
 	},
 	"dependencies": {
 		"concurrently": "^9.2.0",
 		"dotenv-cli": "8.0.0"
 	},
 	"devDependencies": {
+		"@types/sanitize-html": "^2.16.1",
 		"cross-env": "^10.0.0",
 		"prettier": "^3.6.2",
 		"prettier-plugin-svelte": "^3.4.0",
 		"prettier-plugin-tailwindcss": "^0.6.14",
 		"typescript": "5.8.3",
 		"vitepress": "^1.6.4",
-		"vitepress-openapi": "^0.1.18"
+		"vitepress-openapi": "^0.1.18",
+		"vitest": "^3.2.4"
 	},
 	"packageManager": "pnpm@10.13.1",
 	"engines": {

@@ -5,6 +5,7 @@ build
 node_modules
 pnpm-lock.yaml
 meili_data/
+tmp/
 
 ## shadcn installs
 packages/frontend/src/lib/components/ui/

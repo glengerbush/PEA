@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { dashboardController } from '../controllers/dashboard.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { requirePermission } from '../middleware/requirePermission';
 import { AuthService } from '../../services/AuthService';
 
 export const createDashboardRouter = (authService: AuthService): Router => {
@@ -14,7 +13,7 @@ export const createDashboardRouter = (authService: AuthService): Router => {
 	 * /v1/dashboard/stats:
 	 *   get:
 	 *     summary: Get dashboard stats
-	 *     description: Returns high-level statistics including total archived emails, total storage used, and failed ingestions in the last 7 days. Requires `read:dashboard` permission.
+	 *     description: Returns high-level statistics including total archived emails, total storage used, and failed ingestions in the last 7 days. Requires authentication.
 	 *     operationId: getDashboardStats
 	 *     tags:
 	 *       - Dashboard
@@ -33,18 +32,14 @@ export const createDashboardRouter = (authService: AuthService): Router => {
 	 *       '403':
 	 *         $ref: '#/components/responses/Forbidden'
 	 */
-	router.get(
-		'/stats',
-		requirePermission('read', 'dashboard', 'dashboard.permissionRequired'),
-		dashboardController.getStats
-	);
+	router.get('/stats', dashboardController.getStats);
 
 	/**
 	 * @openapi
 	 * /v1/dashboard/ingestion-history:
 	 *   get:
 	 *     summary: Get ingestion history
-	 *     description: Returns time-series data of email ingestion counts for the last 30 days. Requires `read:dashboard` permission.
+	 *     description: Returns time-series data of email ingestion counts for the last 30 days. Requires authentication.
 	 *     operationId: getIngestionHistory
 	 *     tags:
 	 *       - Dashboard
@@ -77,18 +72,14 @@ export const createDashboardRouter = (authService: AuthService): Router => {
 	 *       '403':
 	 *         $ref: '#/components/responses/Forbidden'
 	 */
-	router.get(
-		'/ingestion-history',
-		requirePermission('read', 'dashboard', 'dashboard.permissionRequired'),
-		dashboardController.getIngestionHistory
-	);
+	router.get('/ingestion-history', dashboardController.getIngestionHistory);
 
 	/**
 	 * @openapi
 	 * /v1/dashboard/ingestion-sources:
 	 *   get:
 	 *     summary: Get ingestion source summaries
-	 *     description: Returns a summary list of ingestion sources with their storage usage. Requires `read:dashboard` permission.
+	 *     description: Returns a summary list of ingestion sources with their storage usage. Requires authentication.
 	 *     operationId: getDashboardIngestionSources
 	 *     tags:
 	 *       - Dashboard
@@ -109,18 +100,14 @@ export const createDashboardRouter = (authService: AuthService): Router => {
 	 *       '403':
 	 *         $ref: '#/components/responses/Forbidden'
 	 */
-	router.get(
-		'/ingestion-sources',
-		requirePermission('read', 'dashboard', 'dashboard.permissionRequired'),
-		dashboardController.getIngestionSources
-	);
+	router.get('/ingestion-sources', dashboardController.getIngestionSources);
 
 	/**
 	 * @openapi
 	 * /v1/dashboard/recent-syncs:
 	 *   get:
 	 *     summary: Get recent sync activity
-	 *     description: Returns the most recent sync sessions across all ingestion sources. Requires `read:dashboard` permission.
+	 *     description: Returns the most recent sync sessions across all ingestion sources. Requires authentication.
 	 *     operationId: getRecentSyncs
 	 *     tags:
 	 *       - Dashboard
@@ -141,18 +128,14 @@ export const createDashboardRouter = (authService: AuthService): Router => {
 	 *       '403':
 	 *         $ref: '#/components/responses/Forbidden'
 	 */
-	router.get(
-		'/recent-syncs',
-		requirePermission('read', 'dashboard', 'dashboard.permissionRequired'),
-		dashboardController.getRecentSyncs
-	);
+	router.get('/recent-syncs', dashboardController.getRecentSyncs);
 
 	/**
 	 * @openapi
 	 * /v1/dashboard/indexed-insights:
 	 *   get:
 	 *     summary: Get indexed email insights
-	 *     description: Returns top-sender statistics from the search index. Requires `read:dashboard` permission.
+	 *     description: Returns top-sender statistics from the search index. Requires authentication.
 	 *     operationId: getIndexedInsights
 	 *     tags:
 	 *       - Dashboard
@@ -171,11 +154,7 @@ export const createDashboardRouter = (authService: AuthService): Router => {
 	 *       '403':
 	 *         $ref: '#/components/responses/Forbidden'
 	 */
-	router.get(
-		'/indexed-insights',
-		requirePermission('read', 'dashboard', 'dashboard.permissionRequired'),
-		dashboardController.getIndexedInsights
-	);
+	router.get('/indexed-insights', dashboardController.getIndexedInsights);
 
 	return router;
 };

@@ -74,6 +74,7 @@ export interface EmailDocument {
 	id: string; // The unique ID of the email
 	userEmail: string;
 	from: string;
+	senderName: string;
 	to: string[];
 	cc: string[];
 	bcc: string[];
@@ -84,6 +85,20 @@ export interface EmailDocument {
 		content: string; // Extracted text from the attachment
 	}[];
 	timestamp: number;
+	archivedAt: number;
 	ingestionSourceId: string;
-	// other metadata
+	threadId: string | null;
+	messageIdHeader: string | null;
+	hasAttachments: boolean;
+	sourcePath: string | null;
+	sourceLabels: string[];
+	localFolderId: string | null;
+	localFolderPath: string | null;
+	tags: string[];
+	duplicateOfEmailId: string | null;
+	duplicateReviewStatus: DuplicateReviewStatus;
+	isDuplicateHidden: boolean;
+	sizeBytes: number;
 }
+
+export type DuplicateReviewStatus = 'unique' | 'keeper' | 'approved_duplicate' | 'ignored';

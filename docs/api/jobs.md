@@ -4,7 +4,7 @@ aside: false
 
 # Jobs API
 
-Monitor BullMQ job queues for asynchronous tasks such as email ingestion, indexing, and sync scheduling. Requires Super Admin (`manage:all`) permission.
+Monitor BullMQ job queues for asynchronous tasks such as email ingestion, indexing, and sync scheduling. Requires authentication.
 
 There are two queues:
 

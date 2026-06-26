@@ -65,8 +65,7 @@ const options = {
 					},
 				},
 				Forbidden: {
-					description:
-						'The authenticated user does not have permission to perform this action.',
+					description: 'The authenticated user is not allowed to perform this action.',
 					content: {
 						'application/json': {
 							schema: { $ref: '#/components/schemas/ErrorMessage' },
@@ -157,69 +156,9 @@ const options = {
 							format: 'email',
 							example: 'jane.doe@example.com',
 						},
-						role: {
-							$ref: '#/components/schemas/Role',
-							nullable: true,
-						},
 						createdAt: { type: 'string', format: 'date-time' },
 					},
 					required: ['id', 'email', 'createdAt'],
-				},
-				// --- IAM ---
-				Role: {
-					type: 'object',
-					properties: {
-						id: { type: 'string', example: 'clx1y2z3a0000b4d2' },
-						slug: { type: 'string', nullable: true, example: 'predefined_super_admin' },
-						name: { type: 'string', example: 'Super Admin' },
-						policies: {
-							type: 'array',
-							items: { $ref: '#/components/schemas/CaslPolicy' },
-						},
-						createdAt: { type: 'string', format: 'date-time' },
-						updatedAt: { type: 'string', format: 'date-time' },
-					},
-					required: ['id', 'name', 'policies', 'createdAt', 'updatedAt'],
-				},
-				CaslPolicy: {
-					type: 'object',
-					description:
-						'An CASL-style permission policy statement. `action` and `subject` can be strings or arrays of strings. `conditions` optionally restricts access to specific resource attributes.',
-					properties: {
-						action: {
-							oneOf: [
-								{
-									type: 'string',
-									example: 'read',
-								},
-								{
-									type: 'array',
-									items: { type: 'string' },
-									example: ['read', 'search'],
-								},
-							],
-						},
-						subject: {
-							oneOf: [
-								{
-									type: 'string',
-									example: 'archive',
-								},
-								{
-									type: 'array',
-									items: { type: 'string' },
-									example: ['archive', 'ingestion'],
-								},
-							],
-						},
-						conditions: {
-							type: 'object',
-							description:
-								'Optional attribute-level conditions. Supports `${user.id}` interpolation.',
-							example: { userId: '${user.id}' },
-						},
-					},
-					required: ['action', 'subject'],
 				},
 				// --- API Keys ---
 				ApiKey: {

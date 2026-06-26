@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import * as settingsController from '../controllers/settings.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { requirePermission } from '../middleware/requirePermission';
 import { AuthService } from '../../services/AuthService';
 
 export const createSettingsRouter = (authService: AuthService): Router => {
@@ -29,7 +28,7 @@ export const createSettingsRouter = (authService: AuthService): Router => {
 	 *         $ref: '#/components/responses/InternalServerError'
 	 *   put:
 	 *     summary: Update system settings
-	 *     description: Updates system settings. Requires `manage:settings` permission.
+	 *     description: Updates system settings. Requires authentication.
 	 *     operationId: updateSystemSettings
 	 *     tags:
 	 *       - Settings
@@ -60,12 +59,7 @@ export const createSettingsRouter = (authService: AuthService): Router => {
 	router.get('/system', settingsController.getSystemSettings);
 
 	// Protected route to update settings
-	router.put(
-		'/system',
-		requireAuth(authService),
-		requirePermission('manage', 'settings', 'settings.noPermissionToUpdate'),
-		settingsController.updateSystemSettings
-	);
+	router.put('/system', requireAuth(authService), settingsController.updateSystemSettings);
 
 	return router;
 };

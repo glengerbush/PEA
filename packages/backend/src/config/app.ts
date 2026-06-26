@@ -1,5 +1,8 @@
 import 'dotenv/config';
 
+const isEnabled = (value: string | undefined) => ['true', '1'].includes(value?.toLowerCase() || '');
+const isDisabled = (value: string | undefined) => value?.toLowerCase() === 'false';
+
 export const app = {
 	nodeEnv: process.env.NODE_ENV || 'development',
 	port: process.env.PORT_BACKEND ? parseInt(process.env.PORT_BACKEND, 10) : 4000,
@@ -8,4 +11,6 @@ export const app = {
 	enableDeletion: process.env.ENABLE_DELETION === 'true',
 	allInclusiveArchive: process.env.ALL_INCLUSIVE_ARCHIVE === 'true',
 	isDemo: process.env.IS_DEMO === 'true',
+	personalMode:
+		!isDisabled(process.env.PERSONAL_MODE) && !isEnabled(process.env.VITE_ENTERPRISE_MODE),
 };

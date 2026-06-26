@@ -1,4 +1,4 @@
-# Open Archiver
+# Open Archiver(a fork)
 
 [![Docker Compose](https://img.shields.io/badge/Docker%20Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
@@ -9,53 +9,19 @@
 
 **A secure, sovereign, and open-source platform for email archiving.**
 
-Open Archiver provides a robust, self-hosted solution for archiving, storing, indexing, and searching emails from major platforms, including Google Workspace (Gmail), Microsoft 365, PST files, as well as generic IMAP-enabled email inboxes. Use Open Archiver to keep a permanent, tamper-proof record of your communication history, free from vendor lock-in.
+This fork focuses on a local only, on device archiver, in order to get emails out of bad email clients or off of email servers, into an app that can handle searching and organizing your emails, completely offline. 
 
-## Screenshots
-
-![Open Archiver Preview](assets/screenshots/dashboard-1.png)
-_Dashboard_
-
-![Open Archiver Preview](assets/screenshots/archived-emails.png)
-_Archived emails_
-
-![Open Archiver Preview](assets/screenshots/search.png)
-_Full-text search across all your emails and attachments_
-
-## Join our community!
-
-We are committed to building an engaging community around Open Archiver, and we are inviting all of you to join our community on Discord to get real-time support and connect with the team.
-
-[![Discord](https://img.shields.io/badge/Join%20our%20Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/MTtD7BhuTQ)
-
-[![Bluesky](https://img.shields.io/badge/Follow%20us%20on%20Bluesky-0265D4?style=for-the-badge&logo=bluesky&logoColor=white)](https://bsky.app/profile/openarchiver.bsky.social)
-
-## 🚀 Live demo
-
-Check out the live demo here: https://demo.openarchiver.com
-
-Username: demo@openarchiver.com
-
-Password: openarchiver_demo
-
-## Key Features
-
-- **Universal Ingestion**: Connect to any email provider to perform initial bulk imports and maintain continuous, real-time synchronization. Ingestion sources include:
-    - IMAP connection
-    - Google Workspace
-    - Microsoft 365
-    - PST files
-    - Zipped .eml files
-    - Mbox files
-
-- **Secure & Efficient Storage**: Emails are stored in the standard `.eml` format. The system uses deduplication and compression to minimize storage costs. All files are encrypted at rest.
-- **Pluggable Storage Backends**: Support both local filesystem storage and S3-compatible object storage (like AWS S3 or MinIO).
-- **Powerful Search & eDiscovery**: A high-performance search engine indexes the full text of emails and attachments (PDF, DOCX, etc.).
-- **Thread discovery**: The ability to discover if an email belongs to a thread/conversation and present the context.
-- **Compliance & Retention**: Define granular retention policies to automatically manage the lifecycle of your data. Place legal holds on communications to prevent deletion during litigation (TBD).
-- **File Hash and Encryption**: Email and attachment file hash values are stored in the meta database upon ingestion, meaning any attempt to alter the file content will be identified, ensuring legal and regulatory compliance.
--   - Each archived email comes with an "Integrity Report" feature that indicates if the files are original.
-- **Comprehensive Auditing**: An immutable audit trail logs all system activities, ensuring you have a clear record of who accessed what and when.
+The changes towards that goal:
+* **Local-first focus:** setup is oriented around one-device use, local Docker services, generated secrets, loopback defaults, optional heavy services, and personal mode.
+* **Unified archive/search view:** browsing and searching are merged around /dashboard/archived-emails, with advanced filters, field-specific search, sorting, pagination, tags, folders, source filters, attachment filters, and URL-backed controls.
+* **Tags and folders:** added backend services and UI flows for creating folders, moving emails in bulk, and adding/removing tags with batched search-index updates.
+* **Duplicate review:** added exact duplicate grouping/approval and fuzzy duplicate review, with fuzzy scans handled through background jobs and a new /dashboard/duplicates UI.
+* **Remote content archiving:** added remote asset capture, sanitized preview rendering, remote-content worker/queue, safe image-only storage, and strong protections against private IPs, DNS rebinding, redirects, unsafe ports, oversized files, and unsafe content types.
+* **IAM/multi-user complexity removed:** IAM routes, services, policies, permission middleware, role/user admin screens, and IAM docs were removed or hidden. The app now treats the local authenticated owner as having full local access.
+* **Import provenance and folders:** imported emails now preserve source folder/label paths while also getting a mutable local folder path. New imports land under their own import tree, but messages can be moved later.
+* **Attachment indicators:** email/search/thread rows use indexed hasAttachments metadata instead of per-row attachment lookups.
+* **Performance tooling:** added scripts/perf-baseline.mjs and packages/backend/scripts/seed-perf-data.mjs, plus a synthetic benchmark fixture. Current synthetic baseline was clean on 2,500 messages.
+* **Docs/install changes:** README, install docs, API docs, .env.example, Docker Compose, and local setup scripts were updated for the local-first direction.
 
 ## Tech Stack
 
@@ -84,16 +50,28 @@ Open Archiver is built on a modern, scalable, and maintainable technology stack:
     cd OpenArchiver
     ```
 
-2.  **Configure your environment:**
-    Copy the example environment file and customize it with your settings.
+2.  **Create a local environment file:**
+    Generate `.env` with local-only defaults and fresh secrets.
 
     ```bash
-    cp .env.example .env
+    npm run setup:local
     ```
 
-    You will need to edit the `.env` file to set your admin passwords, secret keys, and other essential configuration. Read the .env.example for how to set up.
+    If you do not have Node.js installed locally, run the same script through Docker:
+
+    ```bash
+    docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work -w /work node:22-alpine node scripts/setup-local-env.mjs
+    ```
+
+    This binds the web UI to your laptop only (`127.0.0.1`), enables personal mode, and keeps heavier optional services like Apache Tika disabled by default. To enable Tika for broader attachment text extraction, run `npm run setup:local -- --with-tika` before starting the stack, or append `--with-tika` to the Docker-run setup command.
 
 3.  **Run the application:**
+
+    ```bash
+    npm run local:up
+    ```
+
+    Without Node.js, use the equivalent Docker command:
 
     ```bash
     docker compose up -d
@@ -102,26 +80,12 @@ Open Archiver is built on a modern, scalable, and maintainable technology stack:
     This command will pull the pre-built Docker images and start all the services (frontend, backend, database, etc.) in the background.
 
 4.  **Access the application:**
-    Once the services are running, you can access the Open Archiver web interface by navigating to `http://localhost:3000` in your web browser.
+    Once the services are running, you can access the Open Archiver web interface by navigating to `http://127.0.0.1:3000` in your web browser.
 
 ## Data Source Configuration
 
-After deploying the application, you will need to configure one or more ingestion sources to begin archiving emails. Follow our detailed guides to connect to your email provider:
+After deploying the application, you will need to configure one or more ingestion sources to begin archiving emails. Or you can import .mbox, .eml, or .pst. Follow detailed guides to connect to your email provider:
 
 - [Connecting to Google Workspace](https://docs.openarchiver.com/user-guides/email-providers/google-workspace.html)
 - [Connecting to Microsoft 365](https://docs.openarchiver.com/user-guides/email-providers/imap.html)
 - [Connecting to a Generic IMAP Server](https://docs.openarchiver.com/user-guides/email-providers/imap.html)
-
-## Contributing
-
-We welcome contributions from the community!
-
-- **Reporting Bugs**: If you find a bug, please open an issue on our GitHub repository.
-- **Suggesting Enhancements**: Have an idea for a new feature? We'd love to hear it. Open an issue to start the discussion.
-- **Code Contributions**: If you'd like to contribute code, please fork the repository and submit a pull request.
-
-Please read our `CONTRIBUTING.md` file for more details on our code of conduct and the process for submitting pull requests.
-
-## 📈 Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=LogicLabs-OU/OpenArchiver&type=Date)](https://www.star-history.com/#LogicLabs-OU/OpenArchiver&Date)

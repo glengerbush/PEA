@@ -22,6 +22,210 @@ export interface ThreadEmail {
 	subject: string | null;
 	sentAt: Date;
 	senderEmail: string;
+	hasAttachments: boolean;
+}
+
+export interface ArchiveFolder {
+	id: string;
+	parentId: string | null;
+	name: string;
+	path: string;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+export interface MoveArchivedEmailsDto {
+	emailIds: string[];
+	localFolderPath: string;
+}
+
+export interface MoveArchivedEmailsResult {
+	requestedCount: number;
+	movedCount: number;
+	folder: ArchiveFolder;
+}
+
+export interface UpdateArchivedEmailTagsDto {
+	emailIds: string[];
+	addTags?: string[];
+	removeTags?: string[];
+}
+
+export interface UpdatedArchivedEmailTags {
+	id: string;
+	tags: string[];
+}
+
+export interface UpdateArchivedEmailTagsResult {
+	requestedCount: number;
+	updatedCount: number;
+	addedTags: string[];
+	removedTags: string[];
+	emails: UpdatedArchivedEmailTags[];
+}
+
+export type ExactDuplicateReason = 'message_id' | 'storage_hash' | 'attachment_hash_set';
+
+export interface ExactDuplicateEmail {
+	id: string;
+	subject: string | null;
+	senderName: string | null;
+	senderEmail: string;
+	userEmail: string;
+	sentAt: Date;
+	archivedAt: Date;
+	hasAttachments: boolean;
+	sourcePath: string | null;
+	localFolderPath: string | null;
+	messageIdHeader: string | null;
+	storageHashSha256: string;
+	duplicateOfEmailId: string | null;
+	duplicateReviewStatus: string;
+	isDuplicateHidden: boolean;
+}
+
+export interface ExactDuplicateGroup {
+	groupKey: string;
+	reason: ExactDuplicateReason;
+	fingerprint: string;
+	count: number;
+	keeperEmailId: string;
+	emails: ExactDuplicateEmail[];
+}
+
+export interface ExactDuplicateGroupsResult {
+	groups: ExactDuplicateGroup[];
+	totalGroups: number;
+	page: number;
+	limit: number;
+}
+
+export interface ApproveExactDuplicateGroupDto {
+	groupKey: string;
+	keeperEmailId: string;
+	duplicateEmailIds: string[];
+}
+
+export interface ApproveExactDuplicatesDto {
+	groups: ApproveExactDuplicateGroupDto[];
+}
+
+export interface ApproveExactDuplicatesResult {
+	approvedGroups: number;
+	hiddenEmails: number;
+	keeperEmails: number;
+}
+
+export interface FuzzyDuplicateSignals {
+	senderEmail: string;
+	subjectHash: string;
+	matchingBodyHash: boolean;
+	matchingRecipients: boolean;
+	matchingAttachments: boolean;
+	sentSpreadHours: number | null;
+}
+
+export interface FuzzyDuplicateEmail extends ExactDuplicateEmail {
+	suggestedKeeper: boolean;
+}
+
+export interface FuzzyDuplicateGroup {
+	id: string;
+	groupKey: string;
+	status: 'pending' | 'approved' | 'ignored';
+	score: number;
+	signals: FuzzyDuplicateSignals;
+	createdAt: Date;
+	updatedAt: Date;
+	keeperEmailId: string;
+	emails: FuzzyDuplicateEmail[];
+}
+
+export interface FuzzyDuplicateGroupsResult {
+	groups: FuzzyDuplicateGroup[];
+	totalGroups: number;
+	page: number;
+	limit: number;
+}
+
+export interface ScanFuzzyDuplicatesDto {
+	batchSize?: number;
+}
+
+export interface ScanFuzzyDuplicatesResult {
+	jobId: string | number;
+	batchSize: number;
+}
+
+export interface FuzzyDuplicateScanResult {
+	scannedGroups: number;
+	insertedGroups: number;
+	linkedEmails: number;
+}
+
+export interface ApproveFuzzyDuplicateGroupDto {
+	groupId: string;
+	keeperEmailId: string;
+	duplicateEmailIds: string[];
+}
+
+export interface ApproveFuzzyDuplicatesDto {
+	groups: ApproveFuzzyDuplicateGroupDto[];
+}
+
+export interface ApproveFuzzyDuplicatesResult {
+	approvedGroups: number;
+	hiddenEmails: number;
+	keeperEmails: number;
+}
+
+export interface IgnoreFuzzyDuplicateGroupsDto {
+	groupIds: string[];
+}
+
+export interface IgnoreFuzzyDuplicateGroupsResult {
+	ignoredGroups: number;
+}
+
+export type RemoteContentStatus =
+	| 'not_started'
+	| 'pending'
+	| 'archived'
+	| 'partial'
+	| 'failed'
+	| 'skipped';
+
+export type RemoteContentAssetStatus = 'pending' | 'archived' | 'blocked' | 'failed';
+
+export interface RemoteContentAsset {
+	id: string;
+	emailId: string;
+	originalUrl: string;
+	finalUrl: string | null;
+	urlHash: string;
+	status: RemoteContentAssetStatus;
+	contentType: string | null;
+	sizeBytes: number | null;
+	contentHashSha256: string | null;
+	storagePath: string | null;
+	failureReason: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+export interface RemoteContentPreview {
+	emailId: string;
+	html: string;
+	status: RemoteContentStatus;
+	remoteUrlCount: number;
+	archivedAssetCount: number;
+	blockedAssetCount: number;
+	failedAssetCount: number;
+}
+
+export interface ArchiveRemoteContentResult {
+	jobId: string | number;
+	emailIds: string[];
 }
 
 /**
@@ -45,6 +249,21 @@ export interface ArchivedEmail {
 	isOnLegalHold: boolean;
 	isJournaled: boolean | null;
 	archivedAt: Date;
+	sourcePath: string | null;
+	sourceLabels: string[] | null;
+	localFolderId: string | null;
+	localFolderPath: string | null;
+	duplicateOfEmailId: string | null;
+	duplicateReviewStatus: string;
+	isDuplicateHidden: boolean;
+	duplicateSubjectHash: string | null;
+	duplicateFuzzyGroupKey: string | null;
+	duplicateBodyHash: string | null;
+	duplicateRecipientFingerprint: string | null;
+	duplicateAttachmentFingerprint: string | null;
+	remoteContentStatus: RemoteContentStatus;
+	remoteContentAssetCount: number;
+	remoteContentArchivedAt: Date | null;
 	attachments?: Attachment[];
 	raw?: Buffer;
 	thread?: ThreadEmail[];

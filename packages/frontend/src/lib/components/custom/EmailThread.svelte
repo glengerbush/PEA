@@ -3,6 +3,7 @@
 	import type { ArchivedEmail } from '@open-archiver/types';
 	import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
 	import { t } from '$lib/translations';
+	import Paperclip from 'lucide-svelte/icons/paperclip';
 
 	let {
 		thread,
@@ -34,26 +35,34 @@
 								></path></svg
 							>
 						</span>
-						<h4
-							class:font-bold={item.id === currentEmailId}
-							class="text-md mb-2 {item.id !== currentEmailId
-								? 'text-blue-500 hover:underline'
-								: 'text-gray-900'}"
-						>
-							{#if item.id !== currentEmailId}
-								<a
-									href="/dashboard/archived-emails/{item.id}"
-									onclick={(e) => {
-										e.preventDefault();
-										goto(`/dashboard/archived-emails/${item.id}`, {
-											invalidateAll: true,
-										});
-									}}>{item.subject || $t('app.archive.no_subject')}</a
-								>
-							{:else}
-								{item.subject || $t('app.archive.no_subject')}
+						<div class="mb-2 flex items-center gap-2">
+							{#if item.hasAttachments}
+								<Paperclip
+									class="text-muted-foreground h-4 w-4 flex-shrink-0"
+									aria-label="Has attachments"
+								/>
 							{/if}
-						</h4>
+							<h4
+								class:font-bold={item.id === currentEmailId}
+								class="text-md {item.id !== currentEmailId
+									? 'text-blue-500 hover:underline'
+									: 'text-gray-900'}"
+							>
+								{#if item.id !== currentEmailId}
+									<a
+										href="/dashboard/archived-emails/{item.id}"
+										onclick={(e) => {
+											e.preventDefault();
+											goto(`/dashboard/archived-emails/${item.id}`, {
+												invalidateAll: true,
+											});
+										}}>{item.subject || $t('app.archive.no_subject')}</a
+									>
+								{:else}
+									{item.subject || $t('app.archive.no_subject')}
+								{/if}
+							</h4>
+						</div>
 						<div
 							class="flex flex-col space-y-2 text-sm font-normal leading-none text-gray-400"
 						>

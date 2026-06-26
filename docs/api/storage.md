@@ -4,7 +4,7 @@ aside: false
 
 # Storage API
 
-Download files from the configured storage backend (local filesystem or S3-compatible). Requires `read:archive` permission.
+Download files from the configured storage backend (local filesystem or S3-compatible). Requires authentication.
 
 ## Download a File
 

@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { IngestionController } from '../controllers/ingestion.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { requirePermission } from '../middleware/requirePermission';
 import { AuthService } from '../../services/AuthService';
 
 export const createIngestionRouter = (
@@ -18,7 +17,7 @@ export const createIngestionRouter = (
 	 * /v1/ingestion-sources:
 	 *   post:
 	 *     summary: Create an ingestion source
-	 *     description: Creates a new ingestion source and validates the connection. Returns the created source without credentials. Requires `create:ingestion` permission.
+	 *     description: Creates a new ingestion source and validates the connection. Returns the created source without credentials. Requires authentication.
 	 *     operationId: createIngestionSource
 	 *     tags:
 	 *       - Ingestion
@@ -48,7 +47,7 @@ export const createIngestionRouter = (
 	 *         $ref: '#/components/responses/Unauthorized'
 	 *   get:
 	 *     summary: List ingestion sources
-	 *     description: Returns all ingestion sources accessible to the authenticated user. Credentials are excluded from the response. Requires `read:ingestion` permission.
+	 *     description: Returns all ingestion sources accessible to the authenticated user. Credentials are excluded from the response. Requires authentication.
 	 *     operationId: listIngestionSources
 	 *     tags:
 	 *       - Ingestion
@@ -69,16 +68,16 @@ export const createIngestionRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.post('/', requirePermission('create', 'ingestion'), ingestionController.create);
+	router.post('/', ingestionController.create);
 
-	router.get('/', requirePermission('read', 'ingestion'), ingestionController.findAll);
+	router.get('/', ingestionController.findAll);
 
 	/**
 	 * @openapi
 	 * /v1/ingestion-sources/{id}:
 	 *   get:
 	 *     summary: Get an ingestion source
-	 *     description: Returns a single ingestion source by ID. Credentials are excluded. Requires `read:ingestion` permission.
+	 *     description: Returns a single ingestion source by ID. Credentials are excluded. Requires authentication.
 	 *     operationId: getIngestionSourceById
 	 *     tags:
 	 *       - Ingestion
@@ -107,7 +106,7 @@ export const createIngestionRouter = (
 	 *         $ref: '#/components/responses/InternalServerError'
 	 *   put:
 	 *     summary: Update an ingestion source
-	 *     description: Updates configuration for an existing ingestion source. Requires `update:ingestion` permission.
+	 *     description: Updates configuration for an existing ingestion source. Requires authentication.
 	 *     operationId: updateIngestionSource
 	 *     tags:
 	 *       - Ingestion
@@ -142,7 +141,7 @@ export const createIngestionRouter = (
 	 *         $ref: '#/components/responses/InternalServerError'
 	 *   delete:
 	 *     summary: Delete an ingestion source
-	 *     description: Permanently deletes an ingestion source. Deletion must be enabled in system settings. Requires `delete:ingestion` permission.
+	 *     description: Permanently deletes an ingestion source. Deletion must be enabled in system settings. Requires authentication.
 	 *     operationId: deleteIngestionSource
 	 *     tags:
 	 *       - Ingestion
@@ -172,18 +171,18 @@ export const createIngestionRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.get('/:id', requirePermission('read', 'ingestion'), ingestionController.findById);
+	router.get('/:id', ingestionController.findById);
 
-	router.put('/:id', requirePermission('update', 'ingestion'), ingestionController.update);
+	router.put('/:id', ingestionController.update);
 
-	router.delete('/:id', requirePermission('delete', 'ingestion'), ingestionController.delete);
+	router.delete('/:id', ingestionController.delete);
 
 	/**
 	 * @openapi
 	 * /v1/ingestion-sources/{id}/import:
 	 *   post:
 	 *     summary: Trigger initial import
-	 *     description: Enqueues an initial import job for the ingestion source. This imports all historical emails. Requires `create:ingestion` permission.
+	 *     description: Enqueues an initial import job for the ingestion source. This imports all historical emails. Requires authentication.
 	 *     operationId: triggerInitialImport
 	 *     tags:
 	 *       - Ingestion
@@ -211,18 +210,14 @@ export const createIngestionRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.post(
-		'/:id/import',
-		requirePermission('create', 'ingestion'),
-		ingestionController.triggerInitialImport
-	);
+	router.post('/:id/import', ingestionController.triggerInitialImport);
 
 	/**
 	 * @openapi
 	 * /v1/ingestion-sources/{id}/pause:
 	 *   post:
 	 *     summary: Pause an ingestion source
-	 *     description: Sets the ingestion source status to `paused`, stopping continuous sync. Requires `update:ingestion` permission.
+	 *     description: Sets the ingestion source status to `paused`, stopping continuous sync. Requires authentication.
 	 *     operationId: pauseIngestionSource
 	 *     tags:
 	 *       - Ingestion
@@ -250,14 +245,14 @@ export const createIngestionRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.post('/:id/pause', requirePermission('update', 'ingestion'), ingestionController.pause);
+	router.post('/:id/pause', ingestionController.pause);
 
 	/**
 	 * @openapi
 	 * /v1/ingestion-sources/{id}/sync:
 	 *   post:
 	 *     summary: Force sync
-	 *     description: Triggers an out-of-schedule continuous sync for the ingestion source. Requires `sync:ingestion` permission.
+	 *     description: Triggers an out-of-schedule continuous sync for the ingestion source. Requires authentication.
 	 *     operationId: triggerForceSync
 	 *     tags:
 	 *       - Ingestion
@@ -285,18 +280,14 @@ export const createIngestionRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.post(
-		'/:id/sync',
-		requirePermission('sync', 'ingestion'),
-		ingestionController.triggerForceSync
-	);
+	router.post('/:id/sync', ingestionController.triggerForceSync);
 
 	/**
 	 * @openapi
 	 * /v1/ingestion-sources/{id}/unmerge:
 	 *   post:
 	 *     summary: Unmerge a child ingestion source
-	 *     description: Detaches a child source from its merge group, making it a standalone root source. Requires `update:ingestion` permission.
+	 *     description: Detaches a child source from its merge group, making it a standalone root source. Requires authentication.
 	 *     operationId: unmergeIngestionSource
 	 *     tags:
 	 *       - Ingestion
@@ -323,11 +314,7 @@ export const createIngestionRouter = (
 	 *       '404':
 	 *         $ref: '#/components/responses/NotFound'
 	 */
-	router.post(
-		'/:id/unmerge',
-		requirePermission('update', 'ingestion'),
-		ingestionController.unmerge
-	);
+	router.post('/:id/unmerge', ingestionController.unmerge);
 
 	return router;
 };

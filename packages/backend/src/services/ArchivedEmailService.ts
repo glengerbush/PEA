@@ -6,13 +6,12 @@ import {
 	emailAttachments,
 	ingestionSources,
 } from '../database/schema';
-import { FilterBuilder } from './FilterBuilder';
-import { AuthorizationService } from './AuthorizationService';
 import type {
 	PaginatedArchivedEmails,
 	ArchivedEmail,
 	Recipient,
 	ThreadEmail,
+	RemoteContentStatus,
 } from '@open-archiver/types';
 import { StorageService } from './StorageService';
 import { SearchService } from './SearchService';
@@ -56,18 +55,16 @@ export class ArchivedEmailService {
 		ingestionSourceId: string,
 		page: number,
 		limit: number,
-		userId: string
+		_userId: string
 	): Promise<PaginatedArchivedEmails> {
 		const offset = (page - 1) * limit;
-		const { drizzleFilter } = await FilterBuilder.create(userId, 'archive', 'read');
 
 		// Expand to the full merge group so emails from children appear when browsing a root source
 		const groupIds = await IngestionService.findGroupSourceIds(ingestionSourceId);
-		const sourceFilter =
+		const where =
 			groupIds.length === 1
 				? eq(archivedEmails.ingestionSourceId, groupIds[0])
 				: inArray(archivedEmails.ingestionSourceId, groupIds);
-		const where = and(sourceFilter, drizzleFilter);
 
 		const countQuery = db
 			.select({
@@ -101,6 +98,8 @@ export class ArchivedEmailService {
 			items: items.map((item) => ({
 				...item,
 				recipients: this.mapRecipients(item.recipients),
+				sourceLabels: (item.sourceLabels as string[] | null) || null,
+				remoteContentStatus: item.remoteContentStatus as RemoteContentStatus,
 				tags: (item.tags as string[] | null) || null,
 				path: item.path || null,
 			})),
@@ -112,7 +111,7 @@ export class ArchivedEmailService {
 
 	public static async getArchivedEmailById(
 		emailId: string,
-		userId: string,
+		_userId: string,
 		actor: User,
 		actorIp: string
 	): Promise<ArchivedEmail | null> {
@@ -124,13 +123,6 @@ export class ArchivedEmailService {
 		});
 
 		if (!email) {
-			return null;
-		}
-
-		const authorizationService = new AuthorizationService();
-		const canRead = await authorizationService.can(userId, 'read', 'archive', email);
-
-		if (!canRead) {
 			return null;
 		}
 
@@ -160,6 +152,7 @@ export class ArchivedEmailService {
 					subject: true,
 					sentAt: true,
 					senderEmail: true,
+					hasAttachments: true,
 				},
 			});
 		}
@@ -173,6 +166,8 @@ export class ArchivedEmailService {
 			recipients: this.mapRecipients(email.recipients),
 			raw,
 			thread: threadEmails,
+			sourceLabels: (email.sourceLabels as string[] | null) || null,
+			remoteContentStatus: email.remoteContentStatus as RemoteContentStatus,
 			tags: (email.tags as string[] | null) || null,
 			path: email.path || null,
 		};

@@ -246,6 +246,41 @@
 			"when": 1774900882674,
 			"tag": "0034_stiff_toad",
 			"breakpoints": true
+		},
+		{
+			"idx": 35,
+			"version": "7",
+			"when": 1774910000000,
+			"tag": "0035_local_archive_folders",
+			"breakpoints": true
+		},
+		{
+			"idx": 36,
+			"version": "7",
+			"when": 1774911000000,
+			"tag": "0036_exact_duplicate_review",
+			"breakpoints": true
+		},
+		{
+			"idx": 37,
+			"version": "7",
+			"when": 1774912000000,
+			"tag": "0037_fuzzy_duplicate_review",
+			"breakpoints": true
+		},
+		{
+			"idx": 38,
+			"version": "7",
+			"when": 1774913000000,
+			"tag": "0038_remote_content_archiver",
+			"breakpoints": true
+		},
+		{
+			"idx": 39,
+			"version": "7",
+			"when": 1774914000000,
+			"tag": "0039_personal_owner_mode",
+			"breakpoints": true
 		}
 	]
 }

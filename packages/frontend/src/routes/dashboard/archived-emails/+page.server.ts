@@ -1,13 +1,87 @@
 import { api } from '$lib/server/api';
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import type { IngestionSource, PaginatedArchivedEmails } from '@open-archiver/types';
+import type {
+	ArchiveFolder,
+	ArchiveSearchField,
+	ArchiveSortField,
+	IngestionSource,
+	MatchingStrategy,
+	SearchResult,
+	SortDirection,
+} from '@open-archiver/types';
+
+const SORT_FIELDS = new Set<ArchiveSortField>([
+	'sentAt',
+	'archivedAt',
+	'sender',
+	'subject',
+	'sizeBytes',
+]);
+const DIRECTIONS = new Set<SortDirection>(['asc', 'desc']);
+const MATCHING_STRATEGIES = new Set<MatchingStrategy>(['last', 'all', 'frequency']);
+const SEARCH_FIELDS = new Set<ArchiveSearchField>([
+	'subject',
+	'body',
+	'from',
+	'senderName',
+	'to',
+	'cc',
+	'bcc',
+	'attachments.filename',
+	'attachments.content',
+	'userEmail',
+	'sourcePath',
+	'sourceLabels',
+	'localFolderPath',
+	'tags',
+]);
+
+function getPositiveInteger(value: string | null, fallback: number): number {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function getSort(value: string | null): ArchiveSortField {
+	return value && SORT_FIELDS.has(value as ArchiveSortField)
+		? (value as ArchiveSortField)
+		: 'sentAt';
+}
+
+function getDirection(value: string | null): SortDirection {
+	return value && DIRECTIONS.has(value as SortDirection) ? (value as SortDirection) : 'desc';
+}
+
+function getMatchingStrategy(value: string | null): MatchingStrategy {
+	return value && MATCHING_STRATEGIES.has(value as MatchingStrategy)
+		? (value as MatchingStrategy)
+		: 'last';
+}
+
+function getFields(value: string | null): ArchiveSearchField[] {
+	if (!value || value === 'all') return [];
+	return value
+		.split(',')
+		.map((field) => field.trim())
+		.filter((field): field is ArchiveSearchField =>
+			SEARCH_FIELDS.has(field as ArchiveSearchField)
+		);
+}
 
 export const load: PageServerLoad = async (event) => {
 	const { url } = event;
-	const ingestionSourceId = url.searchParams.get('ingestionSourceId');
-	const page = url.searchParams.get('page') || '1';
-	const limit = url.searchParams.get('limit') || '10';
+	const q = url.searchParams.get('q') || '';
+	const fields = getFields(url.searchParams.get('fields'));
+	const ingestionSourceId = url.searchParams.get('ingestionSourceId') || 'all';
+	const hasAttachments = url.searchParams.get('hasAttachments') || 'any';
+	const sourcePath = url.searchParams.get('sourcePath') || '';
+	const localFolderPath = url.searchParams.get('localFolderPath') || '';
+	const tags = url.searchParams.get('tags') || '';
+	const page = getPositiveInteger(url.searchParams.get('page'), 1);
+	const limit = Math.min(getPositiveInteger(url.searchParams.get('limit'), 25), 100);
+	const sort = getSort(url.searchParams.get('sort'));
+	const direction = getDirection(url.searchParams.get('direction'));
+	const matchingStrategy = getMatchingStrategy(url.searchParams.get('matchingStrategy'));
 
 	const sourcesResponse = await api('/ingestion-sources', event);
 	const sourcesResponseText = await sourcesResponse.json();
@@ -23,34 +97,73 @@ export const load: PageServerLoad = async (event) => {
 		}
 	}
 
-	let archivedEmails: PaginatedArchivedEmails = {
-		items: [],
-		total: 0,
-		page: 1,
-		limit: 10,
-	};
-
-	// Use the provided ingestionSourceId, or default to the first one if it's not provided.
-	const selectedIngestionSourceId = ingestionSourceId || ingestionSources[0]?.id;
-
-	if (selectedIngestionSourceId) {
-		const emailsResponse = await api(
-			`/archived-emails/ingestion-source/${selectedIngestionSourceId}?page=${page}&limit=${limit}`,
-			event
-		);
-		const responseText = await emailsResponse.json();
-		if (!emailsResponse.ok) {
+	const foldersResponse = await api('/archived-emails/folders', event);
+	const foldersResponseText = await foldersResponse.json();
+	let folders: ArchiveFolder[] = foldersResponseText;
+	if (!foldersResponse.ok) {
+		if (foldersResponse.status === 403) {
+			folders = [];
+		} else {
 			return error(
-				emailsResponse.status,
-				responseText.message || 'Failed to load archived emails.'
+				foldersResponse.status,
+				foldersResponseText.message || 'Failed to load archive folders.'
 			);
 		}
-		archivedEmails = responseText;
+	}
+
+	const archiveParams = new URLSearchParams({
+		page: page.toString(),
+		limit: limit.toString(),
+		sort,
+		direction,
+		matchingStrategy,
+	});
+
+	if (q) archiveParams.set('q', q);
+	if (fields.length > 0) archiveParams.set('fields', fields.join(','));
+	if (ingestionSourceId !== 'all') archiveParams.set('ingestionSourceId', ingestionSourceId);
+	if (hasAttachments === 'true' || hasAttachments === 'false') {
+		archiveParams.set('hasAttachments', hasAttachments);
+	}
+	if (sourcePath) archiveParams.set('sourcePath', sourcePath);
+	if (localFolderPath) archiveParams.set('localFolderPath', localFolderPath);
+	if (tags) archiveParams.set('tags', tags);
+
+	const emptySearchResult: SearchResult = {
+		hits: [],
+		total: 0,
+		page,
+		limit,
+		totalPages: 0,
+		processingTimeMs: 0,
+	};
+
+	const emailsResponse = await api(`/archived-emails?${archiveParams.toString()}`, event);
+	const emailsResponseBody = await emailsResponse.json();
+	if (!emailsResponse.ok) {
+		return error(
+			emailsResponse.status,
+			emailsResponseBody.message || 'Failed to load archived emails.'
+		);
 	}
 
 	return {
 		ingestionSources,
-		archivedEmails,
-		selectedIngestionSourceId,
+		folders,
+		searchResult: (emailsResponseBody as SearchResult) || emptySearchResult,
+		filters: {
+			q,
+			fields: fields.join(',') || 'all',
+			ingestionSourceId,
+			hasAttachments,
+			sourcePath,
+			localFolderPath,
+			tags,
+			page,
+			limit,
+			sort,
+			direction,
+			matchingStrategy,
+		},
 	};
 };

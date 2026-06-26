@@ -5,6 +5,10 @@ import 'dotenv/config';
 
 const JWT_SECRET_ENCODED = new TextEncoder().encode(process.env.JWT_SECRET);
 
+const isEnabled = (value: unknown) =>
+	value === true || (typeof value === 'string' && ['true', '1'].includes(value.toLowerCase()));
+const isDisabled = (value: unknown) => typeof value === 'string' && value.toLowerCase() === 'false';
+
 export const handle: Handle = async ({ event, resolve }) => {
 	const token = event.cookies.get('accessToken');
 
@@ -22,11 +26,11 @@ export const handle: Handle = async ({ event, resolve }) => {
 		event.locals.user = null;
 		event.locals.accessToken = null;
 	}
-	if (import.meta.env.VITE_ENTERPRISE_MODE === true) {
-		event.locals.enterpriseMode = true;
-	} else {
-		event.locals.enterpriseMode = false;
-	}
+	const enterpriseMode =
+		isEnabled(import.meta.env.VITE_ENTERPRISE_MODE) ||
+		isEnabled(process.env.VITE_ENTERPRISE_MODE);
+	event.locals.enterpriseMode = enterpriseMode;
+	event.locals.personalMode = !enterpriseMode && !isDisabled(process.env.PERSONAL_MODE);
 
 	return resolve(event);
 };

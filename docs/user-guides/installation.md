@@ -7,6 +7,7 @@ This guide will walk you through setting up Open Archiver using Docker Compose. 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) installed on your server or local machine.
 - A server or local machine with at least 4GB of RAM (2GB of RAM if you use external Postgres, Redis (Valkey) and Meilisearch instances).
 - [Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git) installed on your server or local machine.
+- Node.js 22 or newer for the local setup script. If Node is not installed, Docker can run the script with the command shown below.
 
 ## 1. Clone the Repository
 
@@ -17,59 +18,45 @@ git clone https://github.com/LogicLabs-OU/OpenArchiver.git
 cd OpenArchiver
 ```
 
-## 2. Create a Directory for Local Storage (Important)
-
-Before configuring the application, you **must** create a directory on your host machine where Open Archiver will store its data (such as emails and attachments). Manually creating this directory helps prevent potential permission issues.
-
-Foe examples, you can use this path `/var/data/open-archiver`.
-
-Run the following commands to create the directory and set the correct permissions:
-
-```bash
-sudo mkdir -p /var/data/open-archiver
-sudo chown -R $(id -u):$(id -g) /var/data/open-archiver
-```
-
-This ensures the directory is owned by your current user, which is necessary for the application to have write access. You will set this path in your `.env` file in the next step.
-
-## 3. Configure Your Environment
+## 2. Configure Your Local Environment
 
 The application is configured using environment variables. You'll need to create a `.env` file to store your configuration.
 
-Copy the example environment file for Docker:
+Generate a local-only `.env` file with fresh secrets:
 
 ```bash
-cp .env.example.docker .env
+npm run setup:local
 ```
 
-Now, open the `.env` file in a text editor and customize the settings.
+If you do not have Node.js installed locally, run the same script through Docker:
 
-### Key Configuration Steps
+```bash
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work -w /work node:22-alpine node scripts/setup-local-env.mjs
+```
 
-1.  **Set the Storage Path**: Find the `STORAGE_LOCAL_ROOT_PATH` variable and set it to the path you just created.
+This command:
 
-    ```env
-    STORAGE_LOCAL_ROOT_PATH=/var/data/open-archiver
-    ```
+- Generates database, Valkey, Meilisearch, JWT, database-encryption, and storage-encryption secrets.
+- Sets `PERSONAL_MODE=true`, which hides multi-user role/admin surfaces from the UI.
+- Binds the web UI to `127.0.0.1` through Docker Compose so the archive is only reachable from the local machine by default.
+- Leaves Apache Tika disabled for the fastest lightweight local install.
 
-2.  **Secure Your Instance**: You must change the following placeholder values to secure your instance:
+If you want Apache Tika for broader attachment text extraction, generate the environment with Tika enabled. This sets `COMPOSE_PROFILES=tika`, so the normal start command includes the Tika container:
 
-- `POSTGRES_PASSWORD`: A strong, unique password for the database.
-- `REDIS_PASSWORD`: A strong, unique password for the Valkey/Redis service.
-- `MEILI_MASTER_KEY`: A complex key for Meilisearch.
-- `JWT_SECRET`: A long, random string for signing authentication tokens.
-- `ENCRYPTION_KEY`: A 32-byte hex string for encrypting sensitive data in the database. You can generate one with the following command:
-    ```bash
-    openssl rand -hex 32
-    ```
-- `STORAGE_ENCRYPTION_KEY`: **(Optional but Recommended)** A 32-byte hex string for encrypting emails and attachments at rest. If this key is not provided, storage encryption will be disabled. You can generate one with:
-    ```bash
-    openssl rand -hex 32
-    ```
+```bash
+npm run setup:local -- --with-tika
+npm run local:up
+```
+
+### Key Configuration Notes
+
+- Re-run `npm run setup:local -- --force` only if you intentionally want to replace your `.env`.
+- The generated `DATABASE_URL` is concrete; `.env` files do not safely expand nested variables across every runtime.
+- `TIKA_URL` is blank by default. This avoids starting a heavy attachment extraction service unless you opt in.
 
 ### Storage Configuration
 
-By default, the Docker Compose setup uses local filesystem storage, which is persisted using a Docker volume named `archiver-data`. This is suitable for most use cases.
+By default, the Docker Compose setup uses local filesystem storage persisted in a Docker volume named `archiver-data`. This avoids host directory permission issues and is suitable for most local laptop archives.
 
 If you want to use S3-compatible object storage, change the `STORAGE_TYPE` to `s3` and fill in your S3 credentials (`STORAGE_S3_*` variables). When `STORAGE_TYPE` is set to `local`, the S3-related variables are not required.
 
@@ -90,71 +77,78 @@ Here is a complete list of environment variables available for configuration:
 
 #### Application Settings
 
-| Variable                | Description                                                                                                                                                  | Default Value           |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
-| `NODE_ENV`              | The application environment.                                                                                                                                 | `development`           |
-| `PORT_BACKEND`          | The port for the backend service.                                                                                                                            | `4000`                  |
-| `PORT_FRONTEND`         | The port for the frontend service.                                                                                                                           | `3000`                  |
-| `APP_URL`               | The public-facing URL of your application. This is used by the backend to configure CORS.                                                                    | `http://localhost:3000` |
-| `ORIGIN`                | Used by the SvelteKit Node adapter to determine the server's public-facing URL. It should always be set to the value of `APP_URL` (e.g., `ORIGIN=$APP_URL`). | `http://localhost:3000` |
-| `SYNC_FREQUENCY`        | The frequency of continuous email syncing. See [cron syntax](https://crontab.guru/) for more details.                                                        | `* * * * *`             |
-| `ALL_INCLUSIVE_ARCHIVE` | Set to `true` to include all emails, including Junk and Trash folders, in the email archive.                                                                 | `false`                 |
+| Variable                | Description                                                                                                                        | Default Value           |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `NODE_ENV`              | The application environment.                                                                                                       | `production`            |
+| `PORT_BACKEND`          | The port for the backend service.                                                                                                  | `4000`                  |
+| `PORT_FRONTEND`         | The port for the frontend service.                                                                                                 | `3000`                  |
+| `PERSONAL_MODE`         | Use the local-owner UI for personal, on-device installs.                                                                           | `true`                  |
+| `APP_URL`               | The public-facing URL of your application. This is used by the backend to configure CORS.                                          | `http://127.0.0.1:3000` |
+| `ORIGIN`                | Used by the SvelteKit Node adapter to determine the server's public-facing URL. It should always be set to the value of `APP_URL`. | `http://127.0.0.1:3000` |
+| `SYNC_FREQUENCY`        | The frequency of continuous email syncing. See [cron syntax](https://crontab.guru/) for more details.                              | `* * * * *`             |
+| `ALL_INCLUSIVE_ARCHIVE` | Set to `true` to include all emails, including Junk and Trash folders, in the email archive.                                       | `false`                 |
 
 #### Docker Compose Service Configuration
 
 These variables are used by `docker-compose.yml` to configure the services.
 
-| Variable               | Description                                          | Default Value                                            |
-| ---------------------- | ---------------------------------------------------- | -------------------------------------------------------- |
-| `POSTGRES_DB`          | The name of the PostgreSQL database.                 | `open_archive`                                           |
-| `POSTGRES_USER`        | The username for the PostgreSQL database.            | `admin`                                                  |
-| `POSTGRES_PASSWORD`    | The password for the PostgreSQL database.            | `password`                                               |
-| `DATABASE_URL`         | The connection URL for the PostgreSQL database.      | `postgresql://admin:password@postgres:5432/open_archive` |
-| `MEILI_MASTER_KEY`     | The master key for Meilisearch.                      | `aSampleMasterKey`                                       |
-| `MEILI_HOST`           | The host for the Meilisearch service.                | `http://meilisearch:7700`                                |
-| `MEILI_INDEXING_BATCH` | The number of emails to batch together for indexing. | `500`                                                    |
-| `REDIS_HOST`           | The host for the Valkey (Redis) service.             | `valkey`                                                 |
-| `REDIS_PORT`           | The port for the Valkey (Redis) service.             | `6379`                                                   |
-| `REDIS_USER`           | Optional Redis username if ACLs are used.            |                                                          |
-| `REDIS_PASSWORD`       | The password for the Valkey (Redis) service.         | `defaultredispassword`                                   |
-| `REDIS_TLS_ENABLED`    | Enable or disable TLS for Redis.                     | `false`                                                  |
+| Variable               | Description                                          | Default Value                      |
+| ---------------------- | ---------------------------------------------------- | ---------------------------------- |
+| `POSTGRES_DB`          | The name of the PostgreSQL database.                 | `open_archive`                     |
+| `POSTGRES_USER`        | The username for the PostgreSQL database.            | `admin`                            |
+| `COMPOSE_PROFILES`     | Optional Docker Compose profiles, such as `tika`.    | Blank by default                   |
+| `POSTGRES_PASSWORD`    | The password for the PostgreSQL database.            | Generated by `npm run setup:local` |
+| `DATABASE_URL`         | The connection URL for the PostgreSQL database.      | Generated by `npm run setup:local` |
+| `MEILI_MASTER_KEY`     | The master key for Meilisearch.                      | Generated by `npm run setup:local` |
+| `MEILI_HOST`           | The host for the Meilisearch service.                | `http://meilisearch:7700`          |
+| `MEILI_INDEXING_BATCH` | The number of emails to batch together for indexing. | `500`                              |
+| `REDIS_HOST`           | The host for the Valkey (Redis) service.             | `valkey`                           |
+| `REDIS_PORT`           | The port for the Valkey (Redis) service.             | `6379`                             |
+| `REDIS_USER`           | Optional Redis username if ACLs are used.            |                                    |
+| `REDIS_PASSWORD`       | The password for the Valkey (Redis) service.         | Generated by `npm run setup:local` |
+| `REDIS_TLS_ENABLED`    | Enable or disable TLS for Redis.                     | `false`                            |
 
 #### Storage Settings
 
-| Variable                       | Description                                                                                                 | Default Value             |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `STORAGE_TYPE`                 | The storage backend to use (`local` or `s3`).                                                               | `local`                   |
-| `BODY_SIZE_LIMIT`              | The maximum request body size for uploads. Can be a number in bytes or a string with a unit (e.g., `100M`). | `100M`                    |
-| `STORAGE_LOCAL_ROOT_PATH`      | The root path for Open Archiver app data.                                                                   | `/var/data/open-archiver` |
-| `STORAGE_S3_ENDPOINT`          | The endpoint for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                                |                           |
-| `STORAGE_S3_BUCKET`            | The bucket name for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                             |                           |
-| `STORAGE_S3_ACCESS_KEY_ID`     | The access key ID for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                           |                           |
-| `STORAGE_S3_SECRET_ACCESS_KEY` | The secret access key for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                       |                           |
-| `STORAGE_S3_REGION`            | The region for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                                  |                           |
-| `STORAGE_S3_FORCE_PATH_STYLE`  | Force path-style addressing for S3 (optional).                                                              | `false`                   |
-| `STORAGE_ENCRYPTION_KEY`       | A 32-byte hex string for AES-256 encryption of files at rest. If not set, files will not be encrypted.      |                           |
+| Variable                       | Description                                                                                                 | Default Value                      |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `STORAGE_TYPE`                 | The storage backend to use (`local` or `s3`).                                                               | `local`                            |
+| `BODY_SIZE_LIMIT`              | The maximum request body size for uploads. Can be a number in bytes or a string with a unit (e.g., `100M`). | `100M`                             |
+| `STORAGE_LOCAL_ROOT_PATH`      | The root path for Open Archiver app data.                                                                   | `/var/data/open-archiver`          |
+| `STORAGE_S3_ENDPOINT`          | The endpoint for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                                |                                    |
+| `STORAGE_S3_BUCKET`            | The bucket name for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                             |                                    |
+| `STORAGE_S3_ACCESS_KEY_ID`     | The access key ID for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                           |                                    |
+| `STORAGE_S3_SECRET_ACCESS_KEY` | The secret access key for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                       |                                    |
+| `STORAGE_S3_REGION`            | The region for S3-compatible storage (required if `STORAGE_TYPE` is `s3`).                                  |                                    |
+| `STORAGE_S3_FORCE_PATH_STYLE`  | Force path-style addressing for S3 (optional).                                                              | `false`                            |
+| `STORAGE_ENCRYPTION_KEY`       | A 32-byte hex string for AES-256 encryption of files at rest.                                               | Generated by `npm run setup:local` |
 
 #### Security & Authentication
 
-| Variable                         | Description                                                                                                                                                                         | Default Value                              |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `ENABLE_DELETION`                | Enable or disable deletion of emails and ingestion sources. If this option is not set, or is set to any value other than `true`, deletion will be disabled for the entire instance. | `false`                                    |
-| `JWT_SECRET`                     | A secret key for signing JWT tokens.                                                                                                                                                | `a-very-secret-key-that-you-should-change` |
-| `JWT_EXPIRES_IN`                 | The expiration time for JWT tokens.                                                                                                                                                 | `7d`                                       |
-| ~~`SUPER_API_KEY`~~ (Deprecated) | An API key with super admin privileges. (The SUPER_API_KEY is deprecated since v0.3.0 after we roll out the role-based access control system.)                                      |                                            |
-| `RATE_LIMIT_WINDOW_MS`           | The window in milliseconds for which API requests are checked.                                                                                                                      | `900000` (15 minutes)                      |
-| `RATE_LIMIT_MAX_REQUESTS`        | The maximum number of API requests allowed from an IP within the window.                                                                                                            | `100`                                      |
-| `ENCRYPTION_KEY`                 | A 32-byte hex string for encrypting sensitive data in the database.                                                                                                                 |                                            |
+| Variable                  | Description                                                                                                                                                                         | Default Value                      |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `ENABLE_DELETION`         | Enable or disable deletion of emails and ingestion sources. If this option is not set, or is set to any value other than `true`, deletion will be disabled for the entire instance. | `false`                            |
+| `JWT_SECRET`              | A secret key for signing JWT tokens.                                                                                                                                                | Generated by `npm run setup:local` |
+| `JWT_EXPIRES_IN`          | The expiration time for JWT tokens.                                                                                                                                                 | `7d`                               |
+| `RATE_LIMIT_WINDOW_MS`    | The window in milliseconds for which API requests are checked.                                                                                                                      | `900000` (15 minutes)              |
+| `RATE_LIMIT_MAX_REQUESTS` | The maximum number of API requests allowed from an IP within the window.                                                                                                            | `100`                              |
+| `ENCRYPTION_KEY`          | A 32-byte hex string for encrypting sensitive data in the database.                                                                                                                 | Generated by `npm run setup:local` |
 
 #### Apache Tika Integration
 
-| Variable   | Description                                                                                                                                                                          | Default Value      |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
-| `TIKA_URL` | Optional. The URL of an Apache Tika server for advanced text extraction from attachments. If not set, the application falls back to built-in parsers for PDF, Word, and Excel files. | `http://tika:9998` |
+| Variable   | Description                                                                                                                                                                          | Default Value    |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------- |
+| `TIKA_URL` | Optional. The URL of an Apache Tika server for advanced text extraction from attachments. If not set, the application falls back to built-in parsers for PDF, Word, and Excel files. | Blank by default |
 
-## 4. Run the Application
+## 3. Run the Application
 
-Once you have configured your `.env` file, you can start all the services using Docker Compose:
+Once you have configured your `.env` file, you can start the local services using Docker Compose:
+
+```bash
+npm run local:up
+```
+
+Without Node.js, use the equivalent Docker command:
 
 ```bash
 docker compose up -d
@@ -172,15 +166,15 @@ You can check the status of the running containers with:
 docker compose ps
 ```
 
-## 5. Access the Application
+## 4. Access the Application
 
-Once the services are running, you can access the Open Archiver web interface by navigating to `http://localhost:3000` in your web browser.
+Once the services are running, you can access the Open Archiver web interface by navigating to `http://127.0.0.1:3000` in your web browser.
 
 Upon first visit, you will be redirected to the `/setup` page where you can set up your admin account. Make sure you are the first person who accesses the instance.
 
 If you are not redirected to the `/setup` page but instead see the login page, there might be something wrong with the database. Restart the service and try again.
 
-## 6. Next Steps
+## 5. Next Steps
 
 After successfully deploying and logging into Open Archiver, the next step is to configure your ingestion sources to start archiving emails.
 

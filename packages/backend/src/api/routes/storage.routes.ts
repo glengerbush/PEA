@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { StorageController } from '../controllers/storage.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { requirePermission } from '../middleware/requirePermission';
 import { AuthService } from '../../services/AuthService';
 
 export const createStorageRouter = (
@@ -21,7 +20,7 @@ export const createStorageRouter = (
 	 *     description: >
 	 *       Downloads a file from the configured storage backend (local filesystem or S3-compatible).
 	 *       The path is sanitized to prevent directory traversal attacks.
-	 *       Requires `read:archive` permission.
+	 *       Requires authentication.
 	 *     operationId: downloadFile
 	 *     tags:
 	 *       - Storage
@@ -67,7 +66,7 @@ export const createStorageRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.get('/download', requirePermission('read', 'archive'), storageController.downloadFile);
+	router.get('/download', storageController.downloadFile);
 
 	return router;
 };

@@ -8,7 +8,8 @@ declare global {
 		interface Locals {
 			user: Omit<User, 'passwordHash'> | null;
 			accessToken: string | null;
-			enterpriseMode: boolean | null;
+			enterpriseMode: boolean;
+			personalMode: boolean;
 		}
 		// interface PageData {}
 		// interface PageState {}

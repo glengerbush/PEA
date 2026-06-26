@@ -135,19 +135,9 @@ Retention labels can be applied to individual archived emails through the email 
 
 Each email can have at most one retention label. When you apply a new label to an email that already has a label, the previous label is automatically removed and replaced with the new one.
 
-## Permissions Required
+## Authentication Required
 
-Different operations require different permission levels:
-
-### Label Management
-
-- **Create, Edit, Delete Labels**: Requires `manage:all` permission
-- **View Labels Table**: Requires `manage:all` permission
-
-### Email Label Operations
-
-- **View Email Labels**: Requires `read:archive` permission
-- **Apply/Remove Email Labels**: Requires `delete:archive` permission
+Retention label operations are available to the authenticated local owner.
 
 ## Status Indicators
 

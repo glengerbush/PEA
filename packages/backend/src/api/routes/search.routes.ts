@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { SearchController } from '../controllers/search.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { requirePermission } from '../middleware/requirePermission';
 import { AuthService } from '../../services/AuthService';
 
 export const createSearchRouter = (
@@ -17,7 +16,7 @@ export const createSearchRouter = (
 	 * /v1/search:
 	 *   get:
 	 *     summary: Search archived emails
-	 *     description: Performs a full-text search across indexed archived emails using Meilisearch. Requires `search:archive` permission.
+	 *     description: Performs a full-text search across indexed archived emails using Meilisearch. Requires authentication.
 	 *     operationId: searchEmails
 	 *     tags:
 	 *       - Search
@@ -74,7 +73,7 @@ export const createSearchRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.get('/', requirePermission('search', 'archive'), searchController.search);
+	router.get('/', searchController.search);
 
 	return router;
 };

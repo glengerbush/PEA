@@ -24,7 +24,7 @@ export const load: PageServerLoad = async (event) => {
 			const responseText = await emailResponse.json();
 			return error(
 				emailResponse.status,
-				responseText.message || 'You do not have permission to read this email.'
+				responseText.message || 'Unable to read this email.'
 			);
 		}
 

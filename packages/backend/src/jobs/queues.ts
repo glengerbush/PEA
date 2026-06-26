@@ -26,6 +26,11 @@ export const indexingQueue = new Queue('indexing', {
 	defaultJobOptions,
 });
 
+export const remoteContentQueue = new Queue('remote-content', {
+	connection,
+	defaultJobOptions,
+});
+
 // Queue for the Data Lifecycle Manager (retention policy enforcement)
 export const complianceLifecycleQueue = new Queue('compliance-lifecycle', {
 	connection,

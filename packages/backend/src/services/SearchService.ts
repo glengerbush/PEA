@@ -1,15 +1,109 @@
 import { Index, MeiliSearch, SearchParams } from 'meilisearch';
 import { config } from '../config';
 import type {
+	ArchiveQuery,
+	ArchiveQueryFilters,
+	ArchiveSearchField,
+	ArchiveSortField,
 	SearchQuery,
 	SearchResult,
 	EmailDocument,
 	TopSender,
-	User,
+	SortDirection,
 } from '@open-archiver/types';
-import { FilterBuilder } from './FilterBuilder';
 import { AuditService } from './AuditService';
 import { IngestionService } from './IngestionService';
+
+type EmailSearchParams = SearchParams & {
+	attributesToSearchOn?: string[];
+};
+
+const DEFAULT_SEARCH_FIELDS: ArchiveSearchField[] = [
+	'subject',
+	'body',
+	'from',
+	'senderName',
+	'to',
+	'cc',
+	'bcc',
+	'attachments.filename',
+	'attachments.content',
+	'userEmail',
+	'sourcePath',
+	'sourceLabels',
+	'localFolderPath',
+	'tags',
+];
+
+const SORT_FIELD_MAP: Record<ArchiveSortField, string> = {
+	sentAt: 'timestamp',
+	archivedAt: 'archivedAt',
+	sender: 'from',
+	subject: 'subject',
+	sizeBytes: 'sizeBytes',
+};
+
+const FILTERABLE_FALLBACK_FIELDS = new Set([
+	'from',
+	'senderName',
+	'to',
+	'cc',
+	'bcc',
+	'timestamp',
+	'archivedAt',
+	'ingestionSourceId',
+	'userEmail',
+	'hasAttachments',
+	'sourcePath',
+	'sourceLabels',
+	'localFolderId',
+	'localFolderPath',
+	'tags',
+	'threadId',
+	'messageIdHeader',
+	'duplicateOfEmailId',
+	'duplicateReviewStatus',
+	'isDuplicateHidden',
+	'sizeBytes',
+]);
+
+function clampPositiveInteger(value: number | undefined, fallback: number, max: number): number {
+	if (!value || !Number.isFinite(value) || value < 1) {
+		return fallback;
+	}
+	return Math.min(Math.floor(value), max);
+}
+
+function quoteFilterValue(value: string): string {
+	return JSON.stringify(value);
+}
+
+function toTimestamp(value: string | number | Date | undefined): number | null {
+	if (value === undefined) return null;
+	if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.getTime();
+	if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
+	const parsed = Date.parse(value);
+	return Number.isNaN(parsed) ? null : parsed;
+}
+
+function normalizeSearchFields(fields: ArchiveSearchField[] | undefined): ArchiveSearchField[] {
+	if (!fields || fields.length === 0) {
+		return DEFAULT_SEARCH_FIELDS;
+	}
+
+	const allowed = new Set(DEFAULT_SEARCH_FIELDS);
+	const normalized = fields.filter((field) => allowed.has(field));
+	return normalized.length > 0 ? normalized : DEFAULT_SEARCH_FIELDS;
+}
+
+function normalizeSort(sort: ArchiveSortField | undefined): string {
+	return SORT_FIELD_MAP[sort || 'sentAt'];
+}
+
+function normalizeDirection(direction: SortDirection | undefined): SortDirection {
+	return direction === 'asc' ? 'asc' : 'desc';
+}
 
 export class SearchService {
 	private client: MeiliSearch;
@@ -39,6 +133,18 @@ export class SearchService {
 		return index.addDocuments(documents);
 	}
 
+	public async updateDocuments<T extends Record<string, any>>(
+		indexName: string,
+		documents: T[],
+		primaryKey?: string
+	) {
+		const index = await this.getIndex<T>(indexName);
+		if (primaryKey) {
+			index.update({ primaryKey });
+		}
+		return index.updateDocuments(documents);
+	}
+
 	public async search<T extends Record<string, any>>(
 		indexName: string,
 		query: string,
@@ -63,69 +169,82 @@ export class SearchService {
 		userId: string,
 		actorIp: string
 	): Promise<SearchResult> {
-		const { query, filters, page = 1, limit = 10, matchingStrategy = 'last' } = dto;
+		return this.queryArchivedEmails(
+			{
+				query: dto.query,
+				filters: dto.filters as ArchiveQueryFilters,
+				fields: dto.fields,
+				sort: dto.sort,
+				direction: dto.direction,
+				page: dto.page,
+				limit: dto.limit,
+				matchingStrategy: dto.matchingStrategy,
+			},
+			userId,
+			actorIp
+		);
+	}
+
+	public async queryArchivedEmails(
+		dto: ArchiveQuery,
+		userId: string,
+		actorIp: string
+	): Promise<SearchResult> {
+		const query = dto.query || '';
+		const page = clampPositiveInteger(dto.page, 1, Number.MAX_SAFE_INTEGER);
+		const limit = clampPositiveInteger(dto.limit, 10, 100);
+		const matchingStrategy = dto.matchingStrategy || 'last';
+		const fields = normalizeSearchFields(dto.fields);
+		const sortField = normalizeSort(dto.sort);
+		const direction = normalizeDirection(dto.direction);
 		const index = await this.getIndex<EmailDocument>('emails');
 
-		const searchParams: SearchParams = {
+		const searchParams: EmailSearchParams = {
 			limit,
 			offset: (page - 1) * limit,
-			attributesToHighlight: ['*'],
+			attributesToHighlight: fields,
 			showMatchesPosition: true,
-			sort: ['timestamp:desc'],
+			sort: [`${sortField}:${direction}`],
 			matchingStrategy,
 		};
 
-		if (filters) {
-			const filterParts: string[] = [];
-			for (const [key, value] of Object.entries(filters)) {
-				// Expand ingestionSourceId to the full merge group
-				if (key === 'ingestionSourceId' && typeof value === 'string') {
-					const groupIds = await IngestionService.findGroupSourceIds(value);
-					if (groupIds.length === 1) {
-						filterParts.push(`ingestionSourceId = '${groupIds[0]}'`);
-					} else {
-						const inList = groupIds.map((id) => `'${id}'`).join(', ');
-						filterParts.push(`ingestionSourceId IN [${inList}]`);
-					}
-				} else if (typeof value === 'string') {
-					filterParts.push(`${key} = '${value}'`);
-				} else {
-					filterParts.push(`${key} = ${value}`);
-				}
-			}
+		if (query) {
+			searchParams.attributesToSearchOn = fields;
+		}
+
+		const filterParts = await this.buildArchiveFilterParts(dto.filters);
+		if (
+			!dto.filters?.includeHiddenDuplicates &&
+			typeof dto.filters?.isDuplicateHidden !== 'boolean'
+		) {
+			filterParts.push('isDuplicateHidden = false');
+		}
+		if (filterParts.length > 0) {
 			searchParams.filter = filterParts.join(' AND ');
 		}
 
-		// Create a filter based on the user's permissions.
-		// This ensures that the user can only search for emails they are allowed to see.
-		const { searchFilter } = await FilterBuilder.create(userId, 'archive', 'read');
-		if (searchFilter) {
-			// Convert the MongoDB-style filter from CASL to a MeiliSearch filter string.
-			if (searchParams.filter) {
-				// If there are existing filters, append the access control filter.
-				searchParams.filter = `${searchParams.filter} AND ${searchFilter}`;
-			} else {
-				// Otherwise, just use the access control filter.
-				searchParams.filter = searchFilter;
-			}
-		}
 		// console.log('searchParams', searchParams);
 		const searchResults = await index.search(query, searchParams);
 
-		await this.auditService.createAuditLog({
-			actorIdentifier: userId,
-			actionType: 'SEARCH',
-			targetType: 'ArchivedEmail',
-			targetId: '',
-			actorIp,
-			details: {
-				query,
-				filters,
-				page,
-				limit,
-				matchingStrategy,
-			},
-		});
+		if (query) {
+			await this.auditService.createAuditLog({
+				actorIdentifier: userId,
+				actionType: 'SEARCH',
+				targetType: 'ArchivedEmail',
+				targetId: '',
+				actorIp,
+				details: {
+					query,
+					filters: dto.filters,
+					fields,
+					sort: dto.sort,
+					direction,
+					page,
+					limit,
+					matchingStrategy,
+				},
+			});
+		}
 
 		return {
 			hits: searchResults.hits,
@@ -137,6 +256,118 @@ export class SearchService {
 			),
 			processingTimeMs: searchResults.processingTimeMs,
 		};
+	}
+
+	private async buildArchiveFilterParts(
+		filters: ArchiveQueryFilters | undefined
+	): Promise<string[]> {
+		if (!filters) {
+			return [];
+		}
+
+		const filterParts: string[] = [];
+		const handled = new Set<string>();
+
+		if (filters.ingestionSourceId) {
+			const groupIds = await IngestionService.findGroupSourceIds(filters.ingestionSourceId);
+			if (groupIds.length === 1) {
+				filterParts.push(`ingestionSourceId = ${quoteFilterValue(groupIds[0])}`);
+			} else {
+				const inList = groupIds.map(quoteFilterValue).join(', ');
+				filterParts.push(`ingestionSourceId IN [${inList}]`);
+			}
+			handled.add('ingestionSourceId');
+		}
+
+		for (const key of [
+			'userEmail',
+			'from',
+			'to',
+			'cc',
+			'bcc',
+			'sourcePath',
+			'localFolderId',
+			'localFolderPath',
+			'duplicateOfEmailId',
+			'duplicateReviewStatus',
+			'isDuplicateHidden',
+		] as const) {
+			const value = filters[key];
+			if (typeof value === 'string' && value.length > 0) {
+				filterParts.push(`${key} = ${quoteFilterValue(value)}`);
+				handled.add(key);
+			}
+		}
+
+		if (typeof filters.hasAttachments === 'boolean') {
+			filterParts.push(`hasAttachments = ${filters.hasAttachments}`);
+			handled.add('hasAttachments');
+		}
+
+		if (typeof filters.isDuplicateHidden === 'boolean') {
+			filterParts.push(`isDuplicateHidden = ${filters.isDuplicateHidden}`);
+			handled.add('isDuplicateHidden');
+		}
+
+		handled.add('includeHiddenDuplicates');
+
+		if (Array.isArray(filters.sourceLabels)) {
+			for (const label of filters.sourceLabels) {
+				if (typeof label === 'string' && label.length > 0) {
+					filterParts.push(`sourceLabels = ${quoteFilterValue(label)}`);
+				}
+			}
+			handled.add('sourceLabels');
+		}
+
+		if (Array.isArray(filters.tags)) {
+			for (const tag of filters.tags) {
+				if (typeof tag === 'string' && tag.length > 0) {
+					filterParts.push(`tags = ${quoteFilterValue(tag)}`);
+				}
+			}
+			handled.add('tags');
+		}
+
+		const sentAfter = toTimestamp(filters.sentAfter);
+		if (sentAfter !== null) {
+			filterParts.push(`timestamp >= ${sentAfter}`);
+			handled.add('sentAfter');
+		}
+
+		const sentBefore = toTimestamp(filters.sentBefore);
+		if (sentBefore !== null) {
+			filterParts.push(`timestamp <= ${sentBefore}`);
+			handled.add('sentBefore');
+		}
+
+		const archivedAfter = toTimestamp(filters.archivedAfter);
+		if (archivedAfter !== null) {
+			filterParts.push(`archivedAt >= ${archivedAfter}`);
+			handled.add('archivedAfter');
+		}
+
+		const archivedBefore = toTimestamp(filters.archivedBefore);
+		if (archivedBefore !== null) {
+			filterParts.push(`archivedAt <= ${archivedBefore}`);
+			handled.add('archivedBefore');
+		}
+
+		for (const [key, value] of Object.entries(filters)) {
+			if (handled.has(key) || !FILTERABLE_FALLBACK_FIELDS.has(key)) {
+				continue;
+			}
+
+			if (typeof value === 'string' && value.length > 0) {
+				filterParts.push(`${key} = ${quoteFilterValue(value)}`);
+			} else if (typeof value === 'number' && Number.isFinite(value)) {
+				filterParts.push(`${key} = ${value}`);
+			} else if (typeof value === 'boolean') {
+				filterParts.push(`${key} = ${value}`);
+			}
+		}
+
+		return filterParts;
 	}
 
 	public async getTopSenders(limit = 10): Promise<TopSender[]> {
@@ -166,23 +397,45 @@ export class SearchService {
 				'subject',
 				'body',
 				'from',
+				'senderName',
 				'to',
 				'cc',
 				'bcc',
 				'attachments.filename',
 				'attachments.content',
 				'userEmail',
+				'sourcePath',
+				'sourceLabels',
+				'localFolderPath',
+				'tags',
 			],
 			filterableAttributes: [
 				'from',
+				'senderName',
 				'to',
 				'cc',
 				'bcc',
 				'timestamp',
+				'archivedAt',
 				'ingestionSourceId',
 				'userEmail',
+				'hasAttachments',
+				'sourcePath',
+				'sourceLabels',
+				'localFolderId',
+				'localFolderPath',
+				'tags',
+				'threadId',
+				'messageIdHeader',
+				'duplicateOfEmailId',
+				'duplicateReviewStatus',
+				'isDuplicateHidden',
+				'sizeBytes',
 			],
-			sortableAttributes: ['timestamp'],
+			sortableAttributes: ['timestamp', 'archivedAt', 'from', 'subject', 'sizeBytes'],
+			pagination: {
+				maxTotalHits: 1_000_000,
+			},
 		});
 	}
 }

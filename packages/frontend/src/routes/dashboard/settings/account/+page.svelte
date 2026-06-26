@@ -97,10 +97,6 @@
 					<Label class="text-muted-foreground">{$t('app.users.email')}</Label>
 					<p class="text-sm font-medium">{user?.email}</p>
 				</div>
-				<div>
-					<Label class="text-muted-foreground">{$t('app.users.role')}</Label>
-					<p class="text-sm font-medium">{user?.role?.name || '-'}</p>
-				</div>
 			</div>
 		</Card.Content>
 		<Card.Footer>

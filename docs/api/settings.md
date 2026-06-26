@@ -4,7 +4,7 @@ aside: false
 
 # Settings API
 
-Read and update system-wide configuration. The `GET` endpoint is public. The `PUT` endpoint requires `manage:settings` permission.
+Read and update system-wide configuration. The `GET` endpoint is public. The `PUT` endpoint requires authentication.
 
 ## Get System Settings
 

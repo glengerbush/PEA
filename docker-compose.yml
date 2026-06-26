@@ -1,16 +1,14 @@
-version: '3.8'
-
 services:
     open-archiver:
         image: logiclabshq/open-archiver:latest
         container_name: open-archiver
         restart: unless-stopped
         ports:
-            - '${PORT_FRONTEND:-3000}:3000' # Frontend
+            - '127.0.0.1:${PORT_FRONTEND:-3000}:3000' # Frontend, local machine only by default
         env_file:
             - .env
         volumes:
-            - ${STORAGE_LOCAL_ROOT_PATH}:${STORAGE_LOCAL_ROOT_PATH}
+            - archiver-data:${STORAGE_LOCAL_ROOT_PATH:-/var/data/open-archiver}
         depends_on:
             - postgres
             - valkey
@@ -25,7 +23,7 @@ services:
         environment:
             POSTGRES_DB: ${POSTGRES_DB:-open_archive}
             POSTGRES_USER: ${POSTGRES_USER:-admin}
-            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run npm run setup:local first}
         volumes:
             - pgdata:/var/lib/postgresql/data
         networks:
@@ -35,7 +33,7 @@ services:
         image: valkey/valkey:8-alpine
         container_name: valkey
         restart: unless-stopped
-        command: valkey-server --requirepass ${REDIS_PASSWORD}
+        command: valkey-server --requirepass ${REDIS_PASSWORD:?Run npm run setup:local first}
         volumes:
             - valkeydata:/data
         networks:
@@ -46,7 +44,7 @@ services:
         container_name: meilisearch
         restart: unless-stopped
         environment:
-            MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-aSampleMasterKey}
+            MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Run npm run setup:local first}
             MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:-86400}
         volumes:
             - meilidata:/meili_data
@@ -56,11 +54,15 @@ services:
     tika:
         image: apache/tika:3.2.2.0-full
         container_name: tika
-        restart: always
+        restart: unless-stopped
+        profiles:
+            - tika
         networks:
             - open-archiver-net
 
 volumes:
+    archiver-data:
+        driver: local
     pgdata:
         driver: local
     valkeydata:

@@ -1,7 +1,12 @@
 import { api } from '$lib/server/api';
+import { redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async (event) => {
+	if (event.locals.personalMode) {
+		throw redirect(307, '/dashboard/settings/account');
+	}
+
 	const response = await api('/api-keys', event);
 	const apiKeys = await response.json();
 
@@ -12,6 +17,10 @@ export const load: PageServerLoad = async (event) => {
 
 export const actions: Actions = {
 	generate: async (event) => {
+		if (event.locals.personalMode) {
+			throw redirect(303, '/dashboard/settings/account');
+		}
+
 		const data = await event.request.formData();
 		const name = data.get('name') as string;
 		const expiresInDays = Number(data.get('expiresInDays'));
@@ -35,6 +44,10 @@ export const actions: Actions = {
 		};
 	},
 	delete: async (event) => {
+		if (event.locals.personalMode) {
+			throw redirect(303, '/dashboard/settings/account');
+		}
+
 		const data = await event.request.formData();
 		const id = data.get('id') as string;
 

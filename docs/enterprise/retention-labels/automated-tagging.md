@@ -62,11 +62,10 @@ Automated retention label application allows external systems and services to pr
 
 ### Step 1: Authentication Setup
 
-Create an API key with appropriate permissions:
+Create an API key for the local owner:
 
-- Navigate to **Dashboard → Admin → Roles/Users**
-- Create a user with `read:archive` and `delete:archive` permissions (minimum required)
-- Generate an API for the newly created user
+- Navigate to **Dashboard → Settings → API Keys**
+- Generate an API key for automation
 - Securely store the API key for use in automated systems
 
 ### Step 2: Identify Target Emails

@@ -1,5 +1,6 @@
 import {
 	Attachment,
+	DuplicateReviewStatus,
 	EmailAddress,
 	EmailDocument,
 	EmailObject,
@@ -14,6 +15,7 @@ import { eq } from 'drizzle-orm';
 import { streamToBuffer } from '../helpers/streamToBuffer';
 import { simpleParser, type Attachment as ParsedAttachment } from 'mailparser';
 import { logger } from '../config/logger';
+import { remoteContentQueue } from '../jobs/queues';
 
 interface DbRecipients {
 	to: { name: string; address: string }[];
@@ -26,6 +28,20 @@ type AttachmentsType = {
 	buffer: Buffer;
 	mimeType: string;
 }[];
+
+const DUPLICATE_REVIEW_STATUSES = new Set<DuplicateReviewStatus>([
+	'unique',
+	'keeper',
+	'approved_duplicate',
+	'ignored',
+]);
+
+function normalizeDuplicateReviewStatus(status: unknown): DuplicateReviewStatus {
+	return typeof status === 'string' &&
+		DUPLICATE_REVIEW_STATUSES.has(status as DuplicateReviewStatus)
+		? (status as DuplicateReviewStatus)
+		: 'unique';
+}
 
 /**
  * Sanitizes text content by removing invalid characters that could cause JSON serialization issues
@@ -176,6 +192,9 @@ export class IndexingService {
 			logger.debug({ documentCount: validDocuments.length }, 'Sending batch to Meilisearch');
 
 			await this.searchService.addDocuments('emails', validDocuments, 'id');
+			await remoteContentQueue.add('archive-remote-content-batch', {
+				emailIds: validDocuments.map((doc) => doc.id),
+			});
 
 			logger.info(
 				{
@@ -365,7 +384,8 @@ export class IndexingService {
 		return {
 			id: archivedEmailId,
 			userEmail: userEmail,
-			from: email.from[0]?.address,
+			from: email.from[0]?.address || '',
+			senderName: email.from[0]?.name || '',
 			to: email.to.map((i: EmailAddress) => i.address) || [],
 			cc: email.cc?.map((i: EmailAddress) => i.address) || [],
 			bcc: email.bcc?.map((i: EmailAddress) => i.address) || [],
@@ -373,7 +393,20 @@ export class IndexingService {
 			body: email.body || email.html || '',
 			attachments: extractedAttachments,
 			timestamp: new Date(email.receivedAt).getTime(),
+			archivedAt: Date.now(),
 			ingestionSourceId: ingestionSourceId,
+			threadId: email.threadId || null,
+			messageIdHeader: null,
+			hasAttachments: attachments.length > 0,
+			sourcePath: email.path || null,
+			sourceLabels: email.tags || [],
+			localFolderId: null,
+			localFolderPath: null,
+			tags: email.tags || [],
+			duplicateOfEmailId: null,
+			duplicateReviewStatus: 'unique',
+			isDuplicateHidden: false,
+			sizeBytes: 0,
 		};
 	}
 
@@ -411,6 +444,7 @@ export class IndexingService {
 			id: email.id,
 			userEmail: userEmail,
 			from: email.senderEmail,
+			senderName: email.senderName || '',
 			to: recipients.to?.map((r) => r.address) || [],
 			cc: recipients.cc?.map((r) => r.address) || [],
 			bcc: recipients.bcc?.map((r) => r.address) || [],
@@ -418,7 +452,20 @@ export class IndexingService {
 			body: emailBodyText,
 			attachments: attachmentContents,
 			timestamp: new Date(email.sentAt).getTime(),
+			archivedAt: new Date(email.archivedAt).getTime(),
 			ingestionSourceId: email.ingestionSourceId,
+			threadId: email.threadId,
+			messageIdHeader: email.messageIdHeader,
+			hasAttachments: email.hasAttachments,
+			sourcePath: email.sourcePath || email.path,
+			sourceLabels: (email.sourceLabels as string[] | null) || [],
+			localFolderId: email.localFolderId,
+			localFolderPath: email.localFolderPath,
+			tags: (email.tags as string[] | null) || [],
+			duplicateOfEmailId: email.duplicateOfEmailId,
+			duplicateReviewStatus: normalizeDuplicateReviewStatus(email.duplicateReviewStatus),
+			isDuplicateHidden: email.isDuplicateHidden,
+			sizeBytes: email.sizeBytes,
 		};
 	}
 
@@ -535,6 +582,7 @@ export class IndexingService {
 			id: doc.id || 'missing-id',
 			userEmail: doc.userEmail || 'unknown',
 			from: doc.from || '',
+			senderName: doc.senderName || '',
 			to: Array.isArray(doc.to) ? doc.to : [],
 			cc: Array.isArray(doc.cc) ? doc.cc : [],
 			bcc: Array.isArray(doc.bcc) ? doc.bcc : [],
@@ -542,7 +590,20 @@ export class IndexingService {
 			body: doc.body || '',
 			attachments: Array.isArray(doc.attachments) ? doc.attachments : [],
 			timestamp: typeof doc.timestamp === 'number' ? doc.timestamp : Date.now(),
+			archivedAt: typeof doc.archivedAt === 'number' ? doc.archivedAt : Date.now(),
 			ingestionSourceId: doc.ingestionSourceId || 'unknown',
+			threadId: doc.threadId || null,
+			messageIdHeader: doc.messageIdHeader || null,
+			hasAttachments: doc.hasAttachments || false,
+			sourcePath: doc.sourcePath || null,
+			sourceLabels: Array.isArray(doc.sourceLabels) ? doc.sourceLabels : [],
+			localFolderId: doc.localFolderId || null,
+			localFolderPath: doc.localFolderPath || null,
+			tags: Array.isArray(doc.tags) ? doc.tags : [],
+			duplicateOfEmailId: doc.duplicateOfEmailId || null,
+			duplicateReviewStatus: normalizeDuplicateReviewStatus(doc.duplicateReviewStatus),
+			isDuplicateHidden: doc.isDuplicateHidden || false,
+			sizeBytes: typeof doc.sizeBytes === 'number' ? doc.sizeBytes : 0,
 		};
 	}
 

@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { IntegrityController } from '../controllers/integrity.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { requirePermission } from '../middleware/requirePermission';
 import { AuthService } from '../../services/AuthService';
 
 export const integrityRoutes = (authService: AuthService): Router => {
@@ -15,7 +14,7 @@ export const integrityRoutes = (authService: AuthService): Router => {
 	 * /v1/integrity/{id}:
 	 *   get:
 	 *     summary: Check email integrity
-	 *     description: Verifies the SHA-256 hash of an archived email and all its attachments against the hashes stored at archival time. Returns per-item integrity results. Requires `read:archive` permission.
+	 *     description: Verifies the SHA-256 hash of an archived email and all its attachments against the hashes stored at archival time. Returns per-item integrity results. Requires authentication.
 	 *     operationId: checkIntegrity
 	 *     tags:
 	 *       - Integrity
@@ -53,7 +52,7 @@ export const integrityRoutes = (authService: AuthService): Router => {
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.get('/:id', requirePermission('read', 'archive'), controller.checkIntegrity);
+	router.get('/:id', controller.checkIntegrity);
 
 	return router;
 };

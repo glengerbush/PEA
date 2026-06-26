@@ -1,50 +1,29 @@
-import type { PageServerLoad, RequestEvent } from './$types';
-import { api } from '$lib/server/api';
-import type { SearchResult } from '@open-archiver/types';
+import { redirect } from '@sveltejs/kit';
+import type { PageServerLoad } from './$types';
 
-import type { MatchingStrategy } from '@open-archiver/types';
+export const load: PageServerLoad = async ({ url }) => {
+	const params = new URLSearchParams();
+	const query = url.searchParams.get('q') || url.searchParams.get('keywords') || '';
 
-async function performSearch(
-	keywords: string,
-	page: number,
-	matchingStrategy: MatchingStrategy,
-	event: RequestEvent
-) {
-	if (!keywords) {
-		return { searchResult: null, keywords: '', page: 1, matchingStrategy: 'last' };
+	if (query) params.set('q', query);
+
+	for (const key of [
+		'fields',
+		'page',
+		'limit',
+		'matchingStrategy',
+		'ingestionSourceId',
+		'hasAttachments',
+		'sourcePath',
+		'localFolderPath',
+		'tags',
+		'sort',
+		'direction',
+	] as const) {
+		const value = url.searchParams.get(key);
+		if (value) params.set(key, value);
 	}
 
-	try {
-		const response = await api(
-			`/search?keywords=${keywords}&page=${page}&limit=10&matchingStrategy=${matchingStrategy}`,
-			event,
-			{
-				method: 'GET',
-			}
-		);
-
-		if (!response.ok) {
-			const error = await response.json();
-			return { searchResult: null, keywords, page, matchingStrategy, error: error.message };
-		}
-
-		const searchResult = (await response.json()) as SearchResult;
-		return { searchResult, keywords, page, matchingStrategy };
-	} catch (error) {
-		return {
-			searchResult: null,
-			keywords,
-			page,
-			matchingStrategy,
-			error: error instanceof Error ? error.message : 'Unknown error',
-		};
-	}
-}
-
-export const load: PageServerLoad = async (event) => {
-	const keywords = event.url.searchParams.get('keywords') || '';
-	const page = parseInt(event.url.searchParams.get('page') || '1');
-	const matchingStrategy = (event.url.searchParams.get('matchingStrategy') ||
-		'last') as MatchingStrategy;
-	return performSearch(keywords, page, matchingStrategy, event);
+	const suffix = params.toString();
+	throw redirect(307, `/dashboard/archived-emails${suffix ? `?${suffix}` : ''}`);
 };

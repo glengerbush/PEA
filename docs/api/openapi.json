@@ -57,7 +57,7 @@
 				}
 			},
 			"Forbidden": {
-				"description": "The authenticated user does not have permission to perform this action.",
+				"description": "The authenticated user is not allowed to perform this action.",
 				"content": {
 					"application/json": {
 						"schema": {
@@ -168,93 +168,12 @@
 						"format": "email",
 						"example": "jane.doe@example.com"
 					},
-					"role": {
-						"$ref": "#/components/schemas/Role",
-						"nullable": true
-					},
 					"createdAt": {
 						"type": "string",
 						"format": "date-time"
 					}
 				},
 				"required": ["id", "email", "createdAt"]
-			},
-			"Role": {
-				"type": "object",
-				"properties": {
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"slug": {
-						"type": "string",
-						"nullable": true,
-						"example": "predefined_super_admin"
-					},
-					"name": {
-						"type": "string",
-						"example": "Super Admin"
-					},
-					"policies": {
-						"type": "array",
-						"items": {
-							"$ref": "#/components/schemas/CaslPolicy"
-						}
-					},
-					"createdAt": {
-						"type": "string",
-						"format": "date-time"
-					},
-					"updatedAt": {
-						"type": "string",
-						"format": "date-time"
-					}
-				},
-				"required": ["id", "name", "policies", "createdAt", "updatedAt"]
-			},
-			"CaslPolicy": {
-				"type": "object",
-				"description": "An CASL-style permission policy statement. `action` and `subject` can be strings or arrays of strings. `conditions` optionally restricts access to specific resource attributes.",
-				"properties": {
-					"action": {
-						"oneOf": [
-							{
-								"type": "string",
-								"example": "read"
-							},
-							{
-								"type": "array",
-								"items": {
-									"type": "string"
-								},
-								"example": ["read", "search"]
-							}
-						]
-					},
-					"subject": {
-						"oneOf": [
-							{
-								"type": "string",
-								"example": "archive"
-							},
-							{
-								"type": "array",
-								"items": {
-									"type": "string"
-								},
-								"example": ["archive", "ingestion"]
-							}
-						]
-					},
-					"conditions": {
-						"type": "object",
-						"description": "Optional attribute-level conditions. Supports `${user.id}` interpolation.",
-						"example": {
-							"userId": "${user.id}"
-						}
-					}
-				},
-				"required": ["action", "subject"]
 			},
 			"ApiKey": {
 				"type": "object",
@@ -1150,7 +1069,7 @@
 		"/v1/archived-emails/ingestion-source/{ingestionSourceId}": {
 			"get": {
 				"summary": "List archived emails for an ingestion source",
-				"description": "Returns a paginated list of archived emails belonging to the specified ingestion source. Requires `read:archive` permission.",
+				"description": "Returns a paginated list of archived emails belonging to the specified ingestion source. Requires authentication.",
 				"operationId": "getArchivedEmails",
 				"tags": ["Archived Emails"],
 				"security": [
@@ -1218,7 +1137,7 @@
 		"/v1/archived-emails/{id}": {
 			"get": {
 				"summary": "Get a single archived email",
-				"description": "Retrieves the full details of a single archived email by ID, including attachments and thread. Requires `read:archive` permission.",
+				"description": "Retrieves the full details of a single archived email by ID, including attachments and thread. Requires authentication.",
 				"operationId": "getArchivedEmailById",
 				"tags": ["Archived Emails"],
 				"security": [
@@ -1265,7 +1184,7 @@
 			},
 			"delete": {
 				"summary": "Delete an archived email",
-				"description": "Permanently deletes an archived email by ID. Deletion must be enabled in system settings and the email must not be on legal hold. Requires `delete:archive` permission.",
+				"description": "Permanently deletes an archived email by ID. Deletion must be enabled in system settings and the email must not be on legal hold. Requires authentication.",
 				"operationId": "deleteArchivedEmail",
 				"tags": ["Archived Emails"],
 				"security": [
@@ -1490,7 +1409,7 @@
 		"/v1/dashboard/stats": {
 			"get": {
 				"summary": "Get dashboard stats",
-				"description": "Returns high-level statistics including total archived emails, total storage used, and failed ingestions in the last 7 days. Requires `read:dashboard` permission.",
+				"description": "Returns high-level statistics including total archived emails, total storage used, and failed ingestions in the last 7 days. Requires authentication.",
 				"operationId": "getDashboardStats",
 				"tags": ["Dashboard"],
 				"security": [
@@ -1524,7 +1443,7 @@
 		"/v1/dashboard/ingestion-history": {
 			"get": {
 				"summary": "Get ingestion history",
-				"description": "Returns time-series data of email ingestion counts for the last 30 days. Requires `read:dashboard` permission.",
+				"description": "Returns time-series data of email ingestion counts for the last 30 days. Requires authentication.",
 				"operationId": "getIngestionHistory",
 				"tags": ["Dashboard"],
 				"security": [
@@ -1577,7 +1496,7 @@
 		"/v1/dashboard/ingestion-sources": {
 			"get": {
 				"summary": "Get ingestion source summaries",
-				"description": "Returns a summary list of ingestion sources with their storage usage. Requires `read:dashboard` permission.",
+				"description": "Returns a summary list of ingestion sources with their storage usage. Requires authentication.",
 				"operationId": "getDashboardIngestionSources",
 				"tags": ["Dashboard"],
 				"security": [
@@ -1614,7 +1533,7 @@
 		"/v1/dashboard/recent-syncs": {
 			"get": {
 				"summary": "Get recent sync activity",
-				"description": "Returns the most recent sync sessions across all ingestion sources. Requires `read:dashboard` permission.",
+				"description": "Returns the most recent sync sessions across all ingestion sources. Requires authentication.",
 				"operationId": "getRecentSyncs",
 				"tags": ["Dashboard"],
 				"security": [
@@ -1651,7 +1570,7 @@
 		"/v1/dashboard/indexed-insights": {
 			"get": {
 				"summary": "Get indexed email insights",
-				"description": "Returns top-sender statistics from the search index. Requires `read:dashboard` permission.",
+				"description": "Returns top-sender statistics from the search index. Requires authentication.",
 				"operationId": "getIndexedInsights",
 				"tags": ["Dashboard"],
 				"security": [
@@ -1682,280 +1601,10 @@
 				}
 			}
 		},
-		"/v1/iam/roles": {
-			"get": {
-				"summary": "List all roles",
-				"description": "Returns all IAM roles. If predefined roles do not yet exist, they are created automatically. Requires `read:roles` permission.",
-				"operationId": "getRoles",
-				"tags": ["IAM"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "List of roles.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"type": "array",
-									"items": {
-										"$ref": "#/components/schemas/Role"
-									}
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			},
-			"post": {
-				"summary": "Create a role",
-				"description": "Creates a new IAM role with the given name and CASL policies. Requires `manage:all` (Super Admin) permission.",
-				"operationId": "createRole",
-				"tags": ["IAM"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"type": "object",
-								"required": ["name", "policies"],
-								"properties": {
-									"name": {
-										"type": "string",
-										"example": "Compliance Officer"
-									},
-									"policies": {
-										"type": "array",
-										"items": {
-											"$ref": "#/components/schemas/CaslPolicy"
-										}
-									}
-								}
-							}
-						}
-					}
-				},
-				"responses": {
-					"201": {
-						"description": "Role created.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/Role"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "Missing fields or invalid policy.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/iam/roles/{id}": {
-			"get": {
-				"summary": "Get a role",
-				"description": "Returns a single IAM role by ID. Requires `read:roles` permission.",
-				"operationId": "getRoleById",
-				"tags": ["IAM"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "Role details.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/Role"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			},
-			"delete": {
-				"summary": "Delete a role",
-				"description": "Permanently deletes an IAM role. Requires `manage:all` (Super Admin) permission.",
-				"operationId": "deleteRole",
-				"tags": ["IAM"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"204": {
-						"description": "Role deleted. No content returned."
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			},
-			"put": {
-				"summary": "Update a role",
-				"description": "Updates the name or policies of an IAM role. Requires `manage:all` (Super Admin) permission.",
-				"operationId": "updateRole",
-				"tags": ["IAM"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"type": "object",
-								"properties": {
-									"name": {
-										"type": "string",
-										"example": "Senior Compliance Officer"
-									},
-									"policies": {
-										"type": "array",
-										"items": {
-											"$ref": "#/components/schemas/CaslPolicy"
-										}
-									}
-								}
-							}
-						}
-					}
-				},
-				"responses": {
-					"200": {
-						"description": "Updated role.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/Role"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "No update fields provided or invalid policy.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
 		"/v1/ingestion-sources": {
 			"post": {
 				"summary": "Create an ingestion source",
-				"description": "Creates a new ingestion source and validates the connection. Returns the created source without credentials. Requires `create:ingestion` permission.",
+				"description": "Creates a new ingestion source and validates the connection. Returns the created source without credentials. Requires authentication.",
 				"operationId": "createIngestionSource",
 				"tags": ["Ingestion"],
 				"security": [
@@ -2004,7 +1653,7 @@
 			},
 			"get": {
 				"summary": "List ingestion sources",
-				"description": "Returns all ingestion sources accessible to the authenticated user. Credentials are excluded from the response. Requires `read:ingestion` permission.",
+				"description": "Returns all ingestion sources accessible to the authenticated user. Credentials are excluded from the response. Requires authentication.",
 				"operationId": "listIngestionSources",
 				"tags": ["Ingestion"],
 				"security": [
@@ -2041,7 +1690,7 @@
 		"/v1/ingestion-sources/{id}": {
 			"get": {
 				"summary": "Get an ingestion source",
-				"description": "Returns a single ingestion source by ID. Credentials are excluded. Requires `read:ingestion` permission.",
+				"description": "Returns a single ingestion source by ID. Credentials are excluded. Requires authentication.",
 				"operationId": "getIngestionSourceById",
 				"tags": ["Ingestion"],
 				"security": [
@@ -2087,7 +1736,7 @@
 			},
 			"put": {
 				"summary": "Update an ingestion source",
-				"description": "Updates configuration for an existing ingestion source. Requires `update:ingestion` permission.",
+				"description": "Updates configuration for an existing ingestion source. Requires authentication.",
 				"operationId": "updateIngestionSource",
 				"tags": ["Ingestion"],
 				"security": [
@@ -2143,7 +1792,7 @@
 			},
 			"delete": {
 				"summary": "Delete an ingestion source",
-				"description": "Permanently deletes an ingestion source. Deletion must be enabled in system settings. Requires `delete:ingestion` permission.",
+				"description": "Permanently deletes an ingestion source. Deletion must be enabled in system settings. Requires authentication.",
 				"operationId": "deleteIngestionSource",
 				"tags": ["Ingestion"],
 				"security": [
@@ -2194,7 +1843,7 @@
 		"/v1/ingestion-sources/{id}/import": {
 			"post": {
 				"summary": "Trigger initial import",
-				"description": "Enqueues an initial import job for the ingestion source. This imports all historical emails. Requires `create:ingestion` permission.",
+				"description": "Enqueues an initial import job for the ingestion source. This imports all historical emails. Requires authentication.",
 				"operationId": "triggerInitialImport",
 				"tags": ["Ingestion"],
 				"security": [
@@ -2242,7 +1891,7 @@
 		"/v1/ingestion-sources/{id}/pause": {
 			"post": {
 				"summary": "Pause an ingestion source",
-				"description": "Sets the ingestion source status to `paused`, stopping continuous sync. Requires `update:ingestion` permission.",
+				"description": "Sets the ingestion source status to `paused`, stopping continuous sync. Requires authentication.",
 				"operationId": "pauseIngestionSource",
 				"tags": ["Ingestion"],
 				"security": [
@@ -2290,7 +1939,7 @@
 		"/v1/ingestion-sources/{id}/sync": {
 			"post": {
 				"summary": "Force sync",
-				"description": "Triggers an out-of-schedule continuous sync for the ingestion source. Requires `sync:ingestion` permission.",
+				"description": "Triggers an out-of-schedule continuous sync for the ingestion source. Requires authentication.",
 				"operationId": "triggerForceSync",
 				"tags": ["Ingestion"],
 				"security": [
@@ -2338,7 +1987,7 @@
 		"/v1/integrity/{id}": {
 			"get": {
 				"summary": "Check email integrity",
-				"description": "Verifies the SHA-256 hash of an archived email and all its attachments against the hashes stored at archival time. Returns per-item integrity results. Requires `read:archive` permission.",
+				"description": "Verifies the SHA-256 hash of an archived email and all its attachments against the hashes stored at archival time. Returns per-item integrity results. Requires authentication.",
 				"operationId": "checkIntegrity",
 				"tags": ["Integrity"],
 				"security": [
@@ -2401,7 +2050,7 @@
 		"/v1/jobs/queues": {
 			"get": {
 				"summary": "List all queues",
-				"description": "Returns all BullMQ job queues and their current job counts broken down by status. Requires `manage:all` (Super Admin) permission.",
+				"description": "Returns all BullMQ job queues and their current job counts broken down by status. Requires authentication.",
 				"operationId": "getQueues",
 				"tags": ["Jobs"],
 				"security": [
@@ -2472,7 +2121,7 @@
 		"/v1/jobs/queues/{queueName}": {
 			"get": {
 				"summary": "Get jobs in a queue",
-				"description": "Returns a paginated list of jobs within a specific queue, filtered by status. Requires `manage:all` (Super Admin) permission.",
+				"description": "Returns a paginated list of jobs within a specific queue, filtered by status. Requires authentication.",
 				"operationId": "getQueueJobs",
 				"tags": ["Jobs"],
 				"security": [
@@ -2567,7 +2216,7 @@
 		"/v1/search": {
 			"get": {
 				"summary": "Search archived emails",
-				"description": "Performs a full-text search across indexed archived emails using Meilisearch. Requires `search:archive` permission.",
+				"description": "Performs a full-text search across indexed archived emails using Meilisearch. Requires authentication.",
 				"operationId": "searchEmails",
 				"tags": ["Search"],
 				"security": [
@@ -2677,7 +2326,7 @@
 			},
 			"put": {
 				"summary": "Update system settings",
-				"description": "Updates system settings. Requires `manage:settings` permission.",
+				"description": "Updates system settings. Requires authentication.",
 				"operationId": "updateSystemSettings",
 				"tags": ["Settings"],
 				"security": [
@@ -2724,7 +2373,7 @@
 		"/v1/storage/download": {
 			"get": {
 				"summary": "Download a stored file",
-				"description": "Downloads a file from the configured storage backend (local filesystem or S3-compatible). The path is sanitized to prevent directory traversal attacks. Requires `read:archive` permission.\n",
+				"description": "Downloads a file from the configured storage backend (local filesystem or S3-compatible). The path is sanitized to prevent directory traversal attacks. Requires authentication.\n",
 				"operationId": "downloadFile",
 				"tags": ["Storage"],
 				"security": [
@@ -2800,7 +2449,7 @@
 		"/v1/upload": {
 			"post": {
 				"summary": "Upload a file",
-				"description": "Uploads a file (PST, EML, MBOX, or other) to temporary storage for subsequent use in an ingestion source. Returns the storage path, which should be passed as `uploadedFilePath` when creating a file-based ingestion source. Requires `create:ingestion` permission.\n",
+				"description": "Uploads a file (PST, EML, MBOX, or other) to temporary storage for subsequent use in an ingestion source. Returns the storage path, which should be passed as `uploadedFilePath` when creating a file-based ingestion source. Requires authentication.\n",
 				"operationId": "uploadFile",
 				"tags": ["Upload"],
 				"security": [
@@ -2861,108 +2510,6 @@
 					},
 					"500": {
 						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/users": {
-			"get": {
-				"summary": "List all users",
-				"description": "Returns all user accounts in the system. Requires `read:users` permission.",
-				"operationId": "getUsers",
-				"tags": ["Users"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "List of users.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"type": "array",
-									"items": {
-										"$ref": "#/components/schemas/User"
-									}
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					}
-				}
-			},
-			"post": {
-				"summary": "Create a user",
-				"description": "Creates a new user account and optionally assigns a role. Requires `manage:all` (Super Admin) permission.",
-				"operationId": "createUser",
-				"tags": ["Users"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"type": "object",
-								"required": ["email", "first_name", "last_name", "password"],
-								"properties": {
-									"email": {
-										"type": "string",
-										"format": "email",
-										"example": "jane.doe@example.com"
-									},
-									"first_name": {
-										"type": "string",
-										"example": "Jane"
-									},
-									"last_name": {
-										"type": "string",
-										"example": "Doe"
-									},
-									"password": {
-										"type": "string",
-										"format": "password",
-										"example": "securepassword123"
-									},
-									"roleId": {
-										"type": "string",
-										"description": "Optional role ID to assign to the user.",
-										"example": "clx1y2z3a0000b4d2"
-									}
-								}
-							}
-						}
-					}
-				},
-				"responses": {
-					"201": {
-						"description": "User created.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/User"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
 					}
 				}
 			}
@@ -3130,168 +2677,6 @@
 								}
 							}
 						}
-					}
-				}
-			}
-		},
-		"/v1/users/{id}": {
-			"get": {
-				"summary": "Get a user",
-				"description": "Returns a single user by ID. Requires `read:users` permission.",
-				"operationId": "getUser",
-				"tags": ["Users"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "User details.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/User"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					}
-				}
-			},
-			"put": {
-				"summary": "Update a user",
-				"description": "Updates a user's email, name, or role assignment. Requires `manage:all` (Super Admin) permission.",
-				"operationId": "updateUser",
-				"tags": ["Users"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"type": "object",
-								"properties": {
-									"email": {
-										"type": "string",
-										"format": "email"
-									},
-									"first_name": {
-										"type": "string"
-									},
-									"last_name": {
-										"type": "string"
-									},
-									"roleId": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				},
-				"responses": {
-					"200": {
-						"description": "Updated user.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/User"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					}
-				}
-			},
-			"delete": {
-				"summary": "Delete a user",
-				"description": "Permanently deletes a user. Cannot delete the last remaining user. Requires `manage:all` (Super Admin) permission.",
-				"operationId": "deleteUser",
-				"tags": ["Users"],
-				"security": [
-					{
-						"bearerAuth": []
-					},
-					{
-						"apiKeyAuth": []
-					}
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"204": {
-						"description": "User deleted. No content returned."
-					},
-					"400": {
-						"description": "Cannot delete the only remaining user.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
 					}
 				}
 			}

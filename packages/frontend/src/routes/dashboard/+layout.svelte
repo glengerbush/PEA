@@ -31,25 +31,19 @@
 					href: '/dashboard/archived-emails',
 					label: $t('app.layout.archived_emails'),
 				},
+				{
+					href: '/dashboard/duplicates',
+					label: 'Duplicates',
+				},
 			],
 			position: 1,
 		},
-
-		{ href: '/dashboard/search', label: $t('app.layout.search'), position: 2 },
 		{
 			label: $t('app.layout.admin'),
 			subMenu: [
 				{
 					href: '/dashboard/admin/jobs',
 					label: $t('app.jobs.jobs'),
-				},
-				{
-					href: '/dashboard/settings/users',
-					label: $t('app.layout.users'),
-				},
-				{
-					href: '/dashboard/settings/roles',
-					label: $t('app.layout.roles'),
 				},
 			],
 			position: 4,
@@ -112,38 +106,51 @@
 	];
 
 	function mergeNavItems(baseItems: NavItem[], enterpriseItems: NavItem[]): NavItem[] {
-		const mergedItemsMap = new Map<number, NavItem>();
-
-		for (const item of baseItems) {
-			mergedItemsMap.set(item.position, {
-				...item,
-				subMenu: item.subMenu ? [...item.subMenu] : undefined,
-			});
-		}
+		const mergedItems = baseItems.map((item) => ({
+			...item,
+			subMenu: item.subMenu ? [...item.subMenu] : undefined,
+		}));
 
 		for (const enterpriseItem of enterpriseItems) {
-			const existingItem = mergedItemsMap.get(enterpriseItem.position);
+			const existingItem = mergedItems.find(
+				(item) => item.position === enterpriseItem.position
+			);
 
 			if (existingItem) {
 				if (existingItem.subMenu && enterpriseItem.subMenu) {
 					existingItem.subMenu = [...existingItem.subMenu, ...enterpriseItem.subMenu];
 				}
 			} else {
-				mergedItemsMap.set(enterpriseItem.position, {
+				mergedItems.push({
 					...enterpriseItem,
 					subMenu: enterpriseItem.subMenu ? [...enterpriseItem.subMenu] : undefined,
 				});
 			}
 		}
 
-		const mergedItems = Array.from(mergedItemsMap.values());
 		return mergedItems.sort((a, b) => a.position - b.position);
 	}
 
-	let navItems: NavItem[] = $state(baseNavItems);
-	if (data.enterpriseMode) {
-		navItems = mergeNavItems(baseNavItems, enterpriseNavItems);
+	const personalModeHiddenHrefs = new Set(['/dashboard/settings/api-keys']);
+
+	function filterPersonalModeNavItems(items: NavItem[]): NavItem[] {
+		return items
+			.map((item) => ({
+				...item,
+				subMenu: item.subMenu?.filter(
+					(subItem) => !personalModeHiddenHrefs.has(subItem.href)
+				),
+			}))
+			.filter((item) => item.href || (item.subMenu && item.subMenu.length > 0));
 	}
+
+	let navItems: NavItem[] = $derived.by(() => {
+		const items = data.enterpriseMode
+			? mergeNavItems(baseNavItems, enterpriseNavItems)
+			: baseNavItems;
+
+		return data.personalMode ? filterPersonalModeNavItems(items) : items;
+	});
 	function handleLogout() {
 		authStore.logout();
 		goto('/signin');
@@ -164,7 +171,7 @@
 		<div class="hidden lg:flex">
 			<NavigationMenu.Root viewport={false}>
 				<NavigationMenu.List class="flex items-center space-x-4">
-					{#each navItems as item}
+					{#each navItems as item (item.href || item.label)}
 						{#if item.subMenu && item.subMenu.length > 0}
 							<NavigationMenu.Item
 								class={item.subMenu.some((sub) =>
@@ -180,7 +187,7 @@
 								</NavigationMenu.Trigger>
 								<NavigationMenu.Content>
 									<ul class="grid w-fit min-w-40 gap-1 p-1">
-										{#each item.subMenu as subItem}
+										{#each item.subMenu as subItem (subItem.href)}
 											<li>
 												<NavigationMenu.Link href={subItem.href}>
 													{subItem.label}
@@ -218,12 +225,12 @@
 						{/snippet}
 					</DropdownMenu.Trigger>
 					<DropdownMenu.Content class="w-56" align="end">
-						{#each navItems as item}
+						{#each navItems as item (item.href || item.label)}
 							{#if item.subMenu && item.subMenu.length > 0}
 								<DropdownMenu.Sub>
 									<DropdownMenu.SubTrigger>{item.label}</DropdownMenu.SubTrigger>
 									<DropdownMenu.SubContent>
-										{#each item.subMenu as subItem}
+										{#each item.subMenu as subItem (subItem.href)}
 											<a href={subItem.href}>
 												<DropdownMenu.Item
 													>{subItem.label}</DropdownMenu.Item

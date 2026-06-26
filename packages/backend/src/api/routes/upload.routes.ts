@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { uploadFile } from '../controllers/upload.controller';
 import { requireAuth } from '../middleware/requireAuth';
 import { AuthService } from '../../services/AuthService';
-import { requirePermission } from '../middleware/requirePermission';
 
 export const createUploadRouter = (authService: AuthService): Router => {
 	const router = Router();
@@ -17,7 +16,7 @@ export const createUploadRouter = (authService: AuthService): Router => {
 	 *     description: >
 	 *       Uploads a file (PST, EML, MBOX, or other) to temporary storage for subsequent use in an ingestion source.
 	 *       Returns the storage path, which should be passed as `uploadedFilePath` when creating a file-based ingestion source.
-	 *       Requires `create:ingestion` permission.
+	 *       Requires authentication.
 	 *     operationId: uploadFile
 	 *     tags:
 	 *       - Upload
@@ -58,7 +57,7 @@ export const createUploadRouter = (authService: AuthService): Router => {
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.post('/', requirePermission('create', 'ingestion'), uploadFile);
+	router.post('/', uploadFile);
 
 	return router;
 };

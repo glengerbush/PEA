@@ -64,6 +64,7 @@ export const load: LayoutServerLoad = async (event) => {
 		user: locals.user,
 		accessToken: locals.accessToken,
 		enterpriseMode: locals.enterpriseMode,
+		personalMode: locals.personalMode,
 		systemSettings,
 		currentVersion: version,
 		newVersionInfo: newVersionInfo,

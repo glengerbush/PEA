@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { JobsController } from '../controllers/jobs.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { requirePermission } from '../middleware/requirePermission';
 import { AuthService } from '../../services/AuthService';
 
 export const createJobsRouter = (authService: AuthService): Router => {
@@ -15,7 +14,7 @@ export const createJobsRouter = (authService: AuthService): Router => {
 	 * /v1/jobs/queues:
 	 *   get:
 	 *     summary: List all queues
-	 *     description: Returns all BullMQ job queues and their current job counts broken down by status. Requires `manage:all` (Super Admin) permission.
+	 *     description: Returns all BullMQ job queues and their current job counts broken down by status. Requires authentication.
 	 *     operationId: getQueues
 	 *     tags:
 	 *       - Jobs
@@ -59,18 +58,14 @@ export const createJobsRouter = (authService: AuthService): Router => {
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.get(
-		'/queues',
-		requirePermission('manage', 'all', 'user.requiresSuperAdminRole'),
-		jobsController.getQueues
-	);
+	router.get('/queues', jobsController.getQueues);
 
 	/**
 	 * @openapi
 	 * /v1/jobs/queues/{queueName}:
 	 *   get:
 	 *     summary: Get jobs in a queue
-	 *     description: Returns a paginated list of jobs within a specific queue, filtered by status. Requires `manage:all` (Super Admin) permission.
+	 *     description: Returns a paginated list of jobs within a specific queue, filtered by status. Requires authentication.
 	 *     operationId: getQueueJobs
 	 *     tags:
 	 *       - Jobs
@@ -125,11 +120,7 @@ export const createJobsRouter = (authService: AuthService): Router => {
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.get(
-		'/queues/:queueName',
-		requirePermission('manage', 'all', 'user.requiresSuperAdminRole'),
-		jobsController.getQueueJobs
-	);
+	router.get('/queues/:queueName', jobsController.getQueueJobs);
 
 	return router;
 };

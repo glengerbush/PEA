@@ -3,9 +3,6 @@ import { SignJWT, jwtVerify } from 'jose';
 import type { AuthTokenPayload, LoginResponse } from '@open-archiver/types';
 import { UserService } from './UserService';
 import { AuditService } from './AuditService';
-import { db } from '../database';
-import * as schema from '../database/schema';
-import { eq } from 'drizzle-orm';
 
 export class AuthService {
 	#userService: UserService;
@@ -74,21 +71,9 @@ export class AuthService {
 			return null; // Invalid password
 		}
 
-		const userRoles = await db.query.userRoles.findMany({
-			where: eq(schema.userRoles.userId, user.id),
-			with: {
-				role: true,
-			},
-		});
-
-		const roles = userRoles.map((ur) => ur.role.name);
-
-		const { password: _, ...userWithoutPassword } = user;
-
 		const accessToken = await this.#generateAccessToken({
 			sub: user.id,
 			email: user.email,
-			roles: roles,
 		});
 
 		await this.#auditService.createAuditLog({
@@ -102,10 +87,7 @@ export class AuthService {
 
 		return {
 			accessToken,
-			user: {
-				...userWithoutPassword,
-				role: null,
-			},
+			user: this.#userService.toPublicUser(user),
 		};
 	}
 

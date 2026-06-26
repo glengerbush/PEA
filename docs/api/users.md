@@ -4,27 +4,7 @@ aside: false
 
 # Users API
 
-Manage user accounts. Creating, updating, and deleting users requires Super Admin (`manage:all`) permission.
-
-## List All Users
-
-<OAOperation operationId="getUsers" />
-
-## Create a User
-
-<OAOperation operationId="createUser" />
-
-## Get a User
-
-<OAOperation operationId="getUser" />
-
-## Update a User
-
-<OAOperation operationId="updateUser" />
-
-## Delete a User
-
-<OAOperation operationId="deleteUser" />
+Manage the local owner profile.
 
 ## Get Current User Profile
 

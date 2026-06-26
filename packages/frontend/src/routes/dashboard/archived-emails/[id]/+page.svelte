@@ -25,6 +25,7 @@
 		CircleAlert,
 		Tag,
 		FileDown,
+		Archive,
 	} from 'lucide-svelte';
 	import { page } from '$app/state';
 	import { enhance } from '$app/forms';
@@ -45,10 +46,10 @@
 	/** Scheduled deletion date from the matching retention policy: sentAt + appliedRetentionDays */
 	let scheduledDeletionDate = $derived.by(() => {
 		if (!email || !retentionPolicy || retentionPolicy.appliedRetentionDays === 0) return null;
-		const sentDate = new Date(email.sentAt);
-		const deletionDate = new Date(sentDate);
-		deletionDate.setDate(deletionDate.getDate() + retentionPolicy.appliedRetentionDays);
-		return deletionDate;
+		return new Date(
+			new Date(email.sentAt).getTime() +
+				retentionPolicy.appliedRetentionDays * 24 * 60 * 60 * 1000
+		);
 	});
 
 	/**
@@ -57,14 +58,16 @@
 	 */
 	let scheduledDeletionDateByLabel = $derived.by(() => {
 		if (!email || !emailRetentionLabel || emailRetentionLabel.isLabelDisabled) return null;
-		const sentDate = new Date(email.sentAt);
-		const deletionDate = new Date(sentDate);
-		deletionDate.setDate(deletionDate.getDate() + emailRetentionLabel.retentionPeriodDays);
-		return deletionDate;
+		return new Date(
+			new Date(email.sentAt).getTime() +
+				emailRetentionLabel.retentionPeriodDays * 24 * 60 * 60 * 1000
+		);
 	});
 
 	let isDeleteDialogOpen = $state(false);
 	let isDeleting = $state(false);
+	let isQueueingRemoteContent = $state(false);
+	let remoteContentQueued = $state(false);
 
 	// --- Label state ---
 	let selectedLabelId = $state('');
@@ -267,6 +270,63 @@
 			isDeleteDialogOpen = false;
 		}
 	}
+
+	function remoteContentLabel(status: string | undefined): string {
+		switch (status) {
+			case 'archived':
+				return 'Remote archived';
+			case 'partial':
+				return 'Remote partial';
+			case 'failed':
+				return 'Remote failed';
+			case 'skipped':
+				return 'No remote content';
+			case 'pending':
+				return 'Remote pending';
+			default:
+				return 'Remote not started';
+		}
+	}
+
+	function assetCountLabel(count: number): string {
+		return `${count} local asset${count === 1 ? '' : 's'}`;
+	}
+
+	async function queueRemoteContentArchive() {
+		if (!email) return;
+
+		isQueueingRemoteContent = true;
+		try {
+			const response = await api(`/archived-emails/${email.id}/remote-content/archive`, {
+				method: 'POST',
+			});
+			const body = await response.json();
+			if (!response.ok) {
+				throw new Error(body.message || 'Failed to queue remote content archive');
+			}
+			remoteContentQueued = true;
+			setAlert({
+				type: 'success',
+				title: 'Remote content queued',
+				message: 'The indexing worker will archive remote assets in the background.',
+				duration: 4000,
+				show: true,
+			});
+		} catch (error) {
+			setAlert({
+				type: 'error',
+				title: 'Remote content archive failed',
+				message:
+					error instanceof Error
+						? error.message
+						: 'Failed to queue remote content archive',
+				duration: 5000,
+				show: true,
+			});
+		} finally {
+			isQueueingRemoteContent = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -309,7 +369,7 @@
 								{#if email.tags && email.tags.length > 0}
 									<div class="flex flex-wrap items-center gap-2">
 										<span> {$t('app.archive.tags')}: </span>
-										{#each email.tags as tag}
+										{#each email.tags as tag (tag)}
 											<span class="bg-muted truncate rounded p-1.5 text-xs"
 												>{tag}</span
 											>
@@ -325,8 +385,39 @@
 							</div>
 						</div>
 						<div>
-							<h3 class="font-semibold">{$t('app.archive.email_preview')}</h3>
-							<EmailPreview raw={email.raw} />
+							<div class="flex flex-wrap items-center justify-between gap-2">
+								<div class="flex flex-wrap items-center gap-2">
+									<h3 class="font-semibold">{$t('app.archive.email_preview')}</h3>
+									<Badge variant="secondary">
+										{remoteContentLabel(email.remoteContentStatus)}
+									</Badge>
+									{#if email.remoteContentAssetCount > 0}
+										<Badge variant="outline">
+											{assetCountLabel(email.remoteContentAssetCount)}
+										</Badge>
+									{/if}
+								</div>
+								{#if email.remoteContentStatus !== 'archived' && email.remoteContentStatus !== 'skipped'}
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										class="gap-2 text-xs"
+										disabled={isQueueingRemoteContent || remoteContentQueued}
+										onclick={queueRemoteContentArchive}
+									>
+										<Archive class="h-3.5 w-3.5" />
+										{#if isQueueingRemoteContent}
+											Queueing...
+										{:else if remoteContentQueued}
+											Queued
+										{:else}
+											Archive Remote Content
+										{/if}
+									</Button>
+								{/if}
+							</div>
+							<EmailPreview emailId={email.id} />
 						</div>
 						{#if email.attachments && email.attachments.length > 0}
 							<div>
@@ -334,7 +425,7 @@
 									{$t('app.archive.attachments')}
 								</h3>
 								<ul class="mt-2 space-y-2">
-									{#each email.attachments as attachment}
+									{#each email.attachments as attachment (attachment.id)}
 										<li
 											class="flex items-center justify-between rounded-md border p-2"
 										>
@@ -366,7 +457,7 @@
 									{$t('app.archive.embedded_attachments')}
 								</h3>
 								<ul class="mt-2 space-y-2">
-									{#each embeddedAttachments as attachment}
+									{#each embeddedAttachments as attachment (attachment.filename)}
 										<li
 											class="flex items-center justify-between rounded-md border p-2"
 										>
@@ -451,7 +542,7 @@
 					</Card.Header>
 					<Card.Content class="space-y-2">
 						<ul class="space-y-2">
-							{#each integrityReport as item}
+							{#each integrityReport as item (item.id)}
 								<li class="flex items-center justify-between">
 									<div class="flex min-w-0 flex-row items-center space-x-2">
 										{#if item.isValid}
@@ -757,7 +848,7 @@
 											{$t('app.archive.retention_matching_policies')}:
 										</div>
 										<div class="flex flex-wrap gap-1">
-											{#each retentionPolicy.matchingPolicyIds as policyId}
+											{#each retentionPolicy.matchingPolicyIds as policyId (policyId)}
 												<Badge variant="outline" class="font-mono text-xs">
 													{policyId}
 												</Badge>

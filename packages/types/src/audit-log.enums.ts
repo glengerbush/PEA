@@ -31,7 +31,6 @@ export const AuditLogTargetTypes = [
 	'RetentionPolicy',
 	'RetentionLabel',
 	'LegalHold',
-	'Role',
 	'SystemEvent',
 	'SystemSettings',
 	'User',

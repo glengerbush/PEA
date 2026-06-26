@@ -6,9 +6,7 @@ import { IngestionController } from './controllers/ingestion.controller';
 import { ArchivedEmailController } from './controllers/archived-email.controller';
 import { StorageController } from './controllers/storage.controller';
 import { SearchController } from './controllers/search.controller';
-import { IamController } from './controllers/iam.controller';
 import { createAuthRouter } from './routes/auth.routes';
-import { createIamRouter } from './routes/iam.routes';
 import { createIngestionRouter } from './routes/ingestion.routes';
 import { createArchivedEmailRouter } from './routes/archived-email.routes';
 import { createStorageRouter } from './routes/storage.routes';
@@ -23,7 +21,6 @@ import { createJobsRouter } from './routes/jobs.routes';
 import { AuthService } from '../services/AuthService';
 import { AuditService } from '../services/AuditService';
 import { UserService } from '../services/UserService';
-import { IamService } from '../services/IamService';
 import { StorageService } from '../services/StorageService';
 import { SearchService } from '../services/SearchService';
 import { SettingsService } from '../services/SettingsService';
@@ -67,8 +64,6 @@ export async function createServer(modules: ArchiverModule[] = []): Promise<Expr
 	const storageController = new StorageController(storageService);
 	const searchService = new SearchService();
 	const searchController = new SearchController();
-	const iamService = new IamService();
-	const iamController = new IamController(iamService);
 	const settingsService = new SettingsService();
 
 	// --- i18next Initialization ---
@@ -116,7 +111,6 @@ export async function createServer(modules: ArchiverModule[] = []): Promise<Expr
 	const storageRouter = createStorageRouter(storageController, authService);
 	const searchRouter = createSearchRouter(searchController, authService);
 	const dashboardRouter = createDashboardRouter(authService);
-	const iamRouter = createIamRouter(iamController, authService);
 	const uploadRouter = createUploadRouter(authService);
 	const userRouter = createUserRouter(authService);
 	const settingsRouter = createSettingsRouter(authService);
@@ -142,7 +136,6 @@ export async function createServer(modules: ArchiverModule[] = []): Promise<Expr
 	app.use(i18nextMiddleware.handle(i18next));
 
 	app.use(`/${config.api.version}/auth`, authRouter);
-	app.use(`/${config.api.version}/iam`, iamRouter);
 	app.use(`/${config.api.version}/upload`, uploadRouter);
 	app.use(`/${config.api.version}/ingestion-sources`, ingestionRouter);
 	app.use(`/${config.api.version}/archived-emails`, archivedEmailRouter);

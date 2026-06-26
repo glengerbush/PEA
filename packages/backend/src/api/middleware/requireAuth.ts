@@ -15,6 +15,19 @@ declare global {
 	}
 }
 
+function readCookieValue(cookieHeader: string | undefined, name: string): string | null {
+	if (!cookieHeader) return null;
+
+	for (const cookie of cookieHeader.split(';')) {
+		const [rawKey, ...rawValue] = cookie.trim().split('=');
+		if (rawKey === name) {
+			return decodeURIComponent(rawValue.join('='));
+		}
+	}
+
+	return null;
+}
+
 export const requireAuth = (authService: AuthService) => {
 	return async (req: Request, res: Response, next: NextFunction) => {
 		const authHeader = req.headers.authorization;
@@ -32,16 +45,19 @@ export const requireAuth = (authService: AuthService) => {
 			req.user = {
 				sub: user.id,
 				email: user.email,
-				roles: user.role ? [user.role.name] : [],
 			};
 			return next();
 		}
 
-		if (!authHeader || !authHeader.startsWith('Bearer ')) {
+		const cookieToken = readCookieValue(req.headers.cookie, 'accessToken');
+		if ((!authHeader || !authHeader.startsWith('Bearer ')) && !cookieToken) {
 			return res.status(401).json({ message: 'Unauthorized: No token provided' });
 		}
-		const token = authHeader.split(' ')[1];
+		const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : cookieToken;
 		try {
+			if (!token) {
+				return res.status(401).json({ message: 'Unauthorized: No token provided' });
+			}
 			const payload = await authService.verifyToken(token);
 			if (!payload) {
 				return res.status(401).json({ message: 'Unauthorized: Invalid token' });

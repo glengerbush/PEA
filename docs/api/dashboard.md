@@ -4,7 +4,7 @@ aside: false
 
 # Dashboard API
 
-Aggregated statistics and summaries for the dashboard UI. Requires `read:dashboard` permission.
+Aggregated statistics and summaries for the dashboard UI. Requires authentication.
 
 ## Get Stats
 

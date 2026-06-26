@@ -1,12 +1,15 @@
 import { Worker } from 'bullmq';
 import { connection } from '../config/redis';
 import indexEmailBatchProcessor from '../jobs/processors/index-email-batch.processor';
+import scanFuzzyDuplicatesProcessor from '../jobs/processors/scan-fuzzy-duplicates.processor';
 import { logger } from '../config/logger';
 
 const processor = async (job: any) => {
 	switch (job.name) {
 		case 'index-email-batch':
 			return indexEmailBatchProcessor(job);
+		case 'scan-fuzzy-duplicates':
+			return scanFuzzyDuplicatesProcessor(job);
 		default:
 			throw new Error(`Unknown job name: ${job.name}`);
 	}

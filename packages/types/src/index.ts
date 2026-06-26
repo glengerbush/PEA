@@ -6,7 +6,6 @@ export * from './email.types';
 export * from './archived-emails.types';
 export * from './search.types';
 export * from './dashboard.types';
-export * from './iam.types';
 export * from './system.types';
 export * from './audit-log.types';
 export * from './audit-log.enums';

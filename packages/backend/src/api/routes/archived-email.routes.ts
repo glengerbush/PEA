@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { ArchivedEmailController } from '../controllers/archived-email.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { requirePermission } from '../middleware/requirePermission';
 import { AuthService } from '../../services/AuthService';
 
 export const createArchivedEmailRouter = (
@@ -13,12 +12,39 @@ export const createArchivedEmailRouter = (
 	// Secure all routes in this module
 	router.use(requireAuth(authService));
 
+	router.get('/', archivedEmailController.queryArchivedEmails);
+
+	router.get('/folders', archivedEmailController.listFolders);
+
+	router.post('/folders', archivedEmailController.createFolder);
+
+	router.post('/bulk/move', archivedEmailController.moveArchivedEmails);
+	router.post('/bulk/tags', archivedEmailController.updateArchivedEmailTags);
+
+	router.get('/duplicates/exact', archivedEmailController.listExactDuplicateGroups);
+
+	router.post('/duplicates/exact/approve', archivedEmailController.approveExactDuplicateGroups);
+
+	router.get('/duplicates/fuzzy', archivedEmailController.listFuzzyDuplicateGroups);
+
+	router.post('/duplicates/fuzzy/scan', archivedEmailController.scanFuzzyDuplicateGroups);
+
+	router.post('/duplicates/fuzzy/approve', archivedEmailController.approveFuzzyDuplicateGroups);
+
+	router.post('/duplicates/fuzzy/ignore', archivedEmailController.ignoreFuzzyDuplicateGroups);
+
+	router.get('/:id/preview', archivedEmailController.getRemoteContentPreview);
+
+	router.post('/:id/remote-content/archive', archivedEmailController.enqueueRemoteContentArchive);
+
+	router.get('/:id/remote-assets/:assetId', archivedEmailController.getRemoteContentAsset);
+
 	/**
 	 * @openapi
 	 * /v1/archived-emails/ingestion-source/{ingestionSourceId}:
 	 *   get:
 	 *     summary: List archived emails for an ingestion source
-	 *     description: Returns a paginated list of archived emails belonging to the specified ingestion source. Requires `read:archive` permission.
+	 *     description: Returns a paginated list of archived emails belonging to the specified ingestion source. Requires authentication.
 	 *     operationId: getArchivedEmails
 	 *     tags:
 	 *       - Archived Emails
@@ -61,18 +87,14 @@ export const createArchivedEmailRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.get(
-		'/ingestion-source/:ingestionSourceId',
-		requirePermission('read', 'archive'),
-		archivedEmailController.getArchivedEmails
-	);
+	router.get('/ingestion-source/:ingestionSourceId', archivedEmailController.getArchivedEmails);
 
 	/**
 	 * @openapi
 	 * /v1/archived-emails/{id}:
 	 *   get:
 	 *     summary: Get a single archived email
-	 *     description: Retrieves the full details of a single archived email by ID, including attachments and thread. Requires `read:archive` permission.
+	 *     description: Retrieves the full details of a single archived email by ID, including attachments and thread. Requires authentication.
 	 *     operationId: getArchivedEmailById
 	 *     tags:
 	 *       - Archived Emails
@@ -102,7 +124,7 @@ export const createArchivedEmailRouter = (
 	 *         $ref: '#/components/responses/InternalServerError'
 	 *   delete:
 	 *     summary: Delete an archived email
-	 *     description: Permanently deletes an archived email by ID. Deletion must be enabled in system settings and the email must not be on legal hold. Requires `delete:archive` permission.
+	 *     description: Permanently deletes an archived email by ID. Deletion must be enabled in system settings and the email must not be on legal hold. Requires authentication.
 	 *     operationId: deleteArchivedEmail
 	 *     tags:
 	 *       - Archived Emails
@@ -133,17 +155,9 @@ export const createArchivedEmailRouter = (
 	 *       '500':
 	 *         $ref: '#/components/responses/InternalServerError'
 	 */
-	router.get(
-		'/:id',
-		requirePermission('read', 'archive'),
-		archivedEmailController.getArchivedEmailById
-	);
+	router.get('/:id', archivedEmailController.getArchivedEmailById);
 
-	router.delete(
-		'/:id',
-		requirePermission('delete', 'archive'),
-		archivedEmailController.deleteArchivedEmail
-	);
+	router.delete('/:id', archivedEmailController.deleteArchivedEmail);
 
 	return router;
 };

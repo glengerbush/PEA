@@ -6,14 +6,15 @@ import type { User } from './user.types';
  * This is the data that will be encoded into the token.
  */
 export interface AuthTokenPayload extends JWTPayload {
+	[claim: string]: unknown;
+	/**
+	 * The user's unique identifier.
+	 */
+	sub: string;
 	/**
 	 * The user's email address.
 	 */
 	email: string;
-	/**
-	 * The user's assigned roles, which determines their permissions.
-	 */
-	roles: string[];
 }
 
 /**

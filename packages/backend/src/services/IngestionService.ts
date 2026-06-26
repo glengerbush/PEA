@@ -17,6 +17,7 @@ import { StorageService } from './StorageService';
 import type { IInitialImportJob, EmailObject } from '@open-archiver/types';
 import { stripAttachmentsFromEml } from '../helpers/emlUtils';
 import {
+	archiveFolders,
 	archivedEmails,
 	attachments as attachmentsSchema,
 	emailAttachments,
@@ -26,13 +27,149 @@ import { readFile, unlink } from 'fs/promises';
 import { logger } from '../config/logger';
 import { SearchService } from './SearchService';
 import { config } from '../config/index';
-import { FilterBuilder } from './FilterBuilder';
 import { AuditService } from './AuditService';
 import { User } from '@open-archiver/types';
 import { checkDeletionEnabled } from '../helpers/deletionGuard';
 
+type ArchiveFolderRecord = typeof archiveFolders.$inferSelect;
+
+function sanitizeFolderSegment(segment: string): string {
+	const normalized = segment.replace(/[\u0000/\\]+/g, '-').trim();
+	return normalized || 'Untitled';
+}
+
+function normalizeSourcePath(path: string | undefined): string {
+	if (!path) return '';
+	return path
+		.split(/[\\/]+/)
+		.map((part) => part.trim())
+		.filter(Boolean)
+		.join('/');
+}
+
+function buildDefaultLocalFolderPath(
+	source: IngestionSource,
+	userEmail: string,
+	sourcePath: string
+): string {
+	const sourceRoot = `${sanitizeFolderSegment(source.name)} (${source.id.slice(0, 8)})`;
+	const segments = ['Imports', sourceRoot, sanitizeFolderSegment(userEmail)];
+
+	if (sourcePath) {
+		segments.push(...sourcePath.split('/').map(sanitizeFolderSegment));
+	}
+
+	return segments.join('/');
+}
+
+function normalizeDuplicateText(value: string | null | undefined): string {
+	if (!value) return '';
+	return value
+		.replace(/<[^>]*>/g, ' ')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim()
+		.replace(/\s+/g, ' ');
+}
+
+function duplicateHash(value: string): string | null {
+	return value ? createHash('sha256').update(value).digest('hex') : null;
+}
+
+function buildFuzzyDuplicateGroupKey(
+	senderEmail: string | undefined,
+	subjectHash: string | null
+): string | null {
+	if (!senderEmail || !subjectHash) return null;
+	return duplicateHash(`${senderEmail.trim().toLowerCase()}|${subjectHash}`);
+}
+
+function buildRecipientFingerprint(email: EmailObject): string | null {
+	const addresses = [...(email.to || []), ...(email.cc || []), ...(email.bcc || [])]
+		.map((recipient) => recipient.address?.trim().toLowerCase())
+		.filter(Boolean)
+		.sort();
+
+	return addresses.length > 0 ? duplicateHash(addresses.join('|')) : null;
+}
+
 export class IngestionService {
 	private static auditService = new AuditService();
+	private static archiveFolderCache = new Map<string, Promise<ArchiveFolderRecord>>();
+
+	private static async ensureArchiveFolderPath(path: string): Promise<ArchiveFolderRecord> {
+		const cached = this.archiveFolderCache.get(path);
+		if (cached) {
+			return cached;
+		}
+
+		const createPromise = this.createArchiveFolderPath(path).catch((error) => {
+			this.archiveFolderCache.delete(path);
+			throw error;
+		});
+		this.archiveFolderCache.set(path, createPromise);
+		return createPromise;
+	}
+
+	private static async createArchiveFolderPath(path: string): Promise<ArchiveFolderRecord> {
+		const segments = path.split('/').map(sanitizeFolderSegment).filter(Boolean);
+		let parentId: string | null = null;
+		let currentPath = '';
+		let currentFolder: ArchiveFolderRecord | null = null;
+
+		for (const segment of segments) {
+			currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+
+			const cached =
+				currentPath === path ? undefined : this.archiveFolderCache.get(currentPath);
+			if (cached) {
+				currentFolder = await cached;
+				parentId = currentFolder.id;
+				continue;
+			}
+
+			currentFolder =
+				(await db.query.archiveFolders.findFirst({
+					where: eq(archiveFolders.path, currentPath),
+				})) || null;
+
+			if (!currentFolder) {
+				try {
+					const createdFolders: ArchiveFolderRecord[] = await db
+						.insert(archiveFolders)
+						.values({
+							name: segment,
+							path: currentPath,
+							parentId,
+						})
+						.returning();
+					currentFolder = createdFolders[0] || null;
+				} catch (error) {
+					const existingFolder = await db.query.archiveFolders.findFirst({
+						where: eq(archiveFolders.path, currentPath),
+					});
+					if (!existingFolder) {
+						throw error;
+					}
+					currentFolder = existingFolder;
+				}
+			}
+
+			if (!currentFolder) {
+				throw new Error(`Failed to create archive folder ${currentPath}`);
+			}
+
+			this.archiveFolderCache.set(currentPath, Promise.resolve(currentFolder));
+			parentId = currentFolder.id;
+		}
+
+		if (!currentFolder) {
+			throw new Error('Archive folder path cannot be empty.');
+		}
+
+		return currentFolder;
+	}
+
 	private static decryptSource(
 		source: typeof ingestionSources.$inferSelect
 	): IngestionSource | null {
@@ -122,15 +259,11 @@ export class IngestionService {
 		}
 	}
 
-	public static async findAll(userId: string): Promise<IngestionSource[]> {
-		const { drizzleFilter } = await FilterBuilder.create(userId, 'ingestion', 'read');
-		let query = db.select().from(ingestionSources).$dynamic();
-
-		if (drizzleFilter) {
-			query = query.where(drizzleFilter);
-		}
-
-		const sources = await query.orderBy(desc(ingestionSources.createdAt));
+	public static async findAll(_userId: string): Promise<IngestionSource[]> {
+		const sources = await db
+			.select()
+			.from(ingestionSources)
+			.orderBy(desc(ingestionSources.createdAt));
 		return sources.flatMap((source) => {
 			const decrypted = this.decryptSource(source);
 			return decrypted ? [decrypted] : [];
@@ -220,7 +353,18 @@ export class IngestionService {
 	 * If the source is standalone (no parent, no children), returns just its own ID.
 	 */
 	public static async findGroupSourceIds(sourceId: string): Promise<string[]> {
-		const source = await this.findById(sourceId);
+		const [source] = await db
+			.select({
+				id: ingestionSources.id,
+				mergedIntoId: ingestionSources.mergedIntoId,
+			})
+			.from(ingestionSources)
+			.where(eq(ingestionSources.id, sourceId))
+			.limit(1);
+		if (!source) {
+			throw new Error('Ingestion source not found');
+		}
+
 		const rootId = source.mergedIntoId ?? source.id;
 
 		const children = await db
@@ -495,7 +639,7 @@ export class IngestionService {
 	/**
 	 * Pre-fetch duplicate check to avoid unnecessary API calls during ingestion.
 	 * Checks both providerMessageId (for Google/Microsoft API IDs) and
-	 * messageIdHeader (for IMAP/PST/EML/Mbox RFC Message-IDs and pre-migration rows).
+	 * messageIdHeader (for IMAP/PST/EML/Mbox RFC Message-IDs).
 	 *
 	 * The check is scoped to the full merge group so that emails already archived
 	 * by a sibling source are not re-downloaded and stored again.
@@ -575,10 +719,28 @@ export class IngestionService {
 				return null;
 			}
 
-			const sanitizedPath = email.path ? email.path : '';
+			const sourcePath = normalizeSourcePath(email.path);
+			const sourceLabels = email.tags || [];
+			const localFolderPath = buildDefaultLocalFolderPath(
+				effectiveSource,
+				userEmail,
+				sourcePath
+			);
+			const senderEmail = email.from[0]?.address || '';
+			const duplicateSubjectHash = duplicateHash(normalizeDuplicateText(email.subject));
+			const duplicateFuzzyGroupKey = buildFuzzyDuplicateGroupKey(
+				senderEmail,
+				duplicateSubjectHash
+			);
+			const duplicateBodyHash = duplicateHash(
+				normalizeDuplicateText(email.body || email.html)
+			);
+			const duplicateRecipientFingerprint = buildRecipientFingerprint(email);
+			let duplicateAttachmentFingerprint: string | null = null;
+			const storagePathSegment = sourcePath ? `${sourcePath}/` : '';
 			// Use effectiveSource (root) for storage path and DB ownership.
 			// Child sources are assistants; all content physically belongs to the root.
-			const emailPath = `${config.storage.openArchiverFolderName}/${effectiveSource.name.replaceAll(' ', '-')}-${effectiveSource.id}/emails/${sanitizedPath}${email.id}.eml`;
+			const emailPath = `${config.storage.openArchiverFolderName}/${effectiveSource.name.replaceAll(' ', '-')}-${effectiveSource.id}/emails/${storagePathSegment}${email.id}.eml`;
 
 			// GoBD / Preserve Original File mode: store the unmodified raw EML as-is.
 			// No attachment stripping, no attachment table records — the full MIME body
@@ -604,6 +766,8 @@ export class IngestionService {
 					return null;
 				}
 
+				const localFolder = await IngestionService.ensureArchiveFolderPath(localFolderPath);
+
 				// Store the unmodified raw buffer — no modifications
 				await storage.put(emailPath, rawEmlBuffer);
 
@@ -619,7 +783,7 @@ export class IngestionService {
 						sentAt: email.receivedAt,
 						subject: email.subject,
 						senderName: email.from[0]?.name,
-						senderEmail: email.from[0]?.address,
+						senderEmail,
 						recipients: {
 							to: email.to,
 							cc: email.cc,
@@ -629,8 +793,17 @@ export class IngestionService {
 						storageHashSha256: emailHash,
 						sizeBytes: rawEmlBuffer.length,
 						hasAttachments: email.attachments.length > 0,
-						path: email.path,
-						tags: email.tags,
+						sourcePath,
+						sourceLabels,
+						localFolderId: localFolder.id,
+						localFolderPath,
+						duplicateSubjectHash,
+						duplicateFuzzyGroupKey,
+						duplicateBodyHash,
+						duplicateRecipientFingerprint,
+						duplicateAttachmentFingerprint,
+						path: sourcePath,
+						tags: sourceLabels,
 					})
 					.returning();
 
@@ -643,6 +816,7 @@ export class IngestionService {
 			// attachment data (attachments are stored separately).
 			const emlBuffer = await stripAttachmentsFromEml(rawEmlBuffer);
 			const emailHash = createHash('sha256').update(emlBuffer).digest('hex');
+			const localFolder = await IngestionService.ensureArchiveFolderPath(localFolderPath);
 			await storage.put(emailPath, emlBuffer);
 
 			const [archivedEmail] = await db
@@ -657,7 +831,7 @@ export class IngestionService {
 					sentAt: email.receivedAt,
 					subject: email.subject,
 					senderName: email.from[0]?.name,
-					senderEmail: email.from[0]?.address,
+					senderEmail,
 					recipients: {
 						to: email.to,
 						cc: email.cc,
@@ -667,17 +841,28 @@ export class IngestionService {
 					storageHashSha256: emailHash,
 					sizeBytes: emlBuffer.length,
 					hasAttachments: email.attachments.length > 0,
-					path: email.path,
-					tags: email.tags,
+					sourcePath,
+					sourceLabels,
+					localFolderId: localFolder.id,
+					localFolderPath,
+					duplicateSubjectHash,
+					duplicateFuzzyGroupKey,
+					duplicateBodyHash,
+					duplicateRecipientFingerprint,
+					duplicateAttachmentFingerprint,
+					path: sourcePath,
+					tags: sourceLabels,
 				})
 				.returning();
 
 			if (email.attachments.length > 0) {
+				const attachmentHashes: string[] = [];
 				for (const attachment of email.attachments) {
 					const attachmentBuffer = attachment.content;
 					const attachmentHash = createHash('sha256')
 						.update(attachmentBuffer)
 						.digest('hex');
+					attachmentHashes.push(attachmentHash);
 
 					// Check if an attachment with the same hash already exists for the root source
 					const existingAttachment = await db.query.attachments.findFirst({
@@ -729,6 +914,12 @@ export class IngestionService {
 						})
 						.onConflictDoNothing();
 				}
+
+				duplicateAttachmentFingerprint = duplicateHash(attachmentHashes.sort().join('|'));
+				await db
+					.update(archivedEmails)
+					.set({ duplicateAttachmentFingerprint })
+					.where(eq(archivedEmails.id, archivedEmail.id));
 			}
 
 			return {

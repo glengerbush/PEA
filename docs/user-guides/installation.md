@@ -230,7 +230,7 @@ To do this, you will need to make a small modification to your `docker-compose.y
     ```diff
     services:
       open-archiver:
-        image: logiclabshq/open-archiver:latest
+        image: glengerbush/open-archiver:latest
         # ... other settings
     -   networks:
     -     - open-archiver-net

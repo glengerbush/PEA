@@ -38,4 +38,6 @@ jobs:
                   file: ./apps/open-archiver/Dockerfile
                   platforms: linux/amd64,linux/arm64
                   push: true
-                  tags: logiclabshq/open-archiver:${{ steps.sha.outputs.sha }}
+                  tags: |
+                      glengerbush/open-archiver:latest
+                      glengerbush/open-archiver:${{ steps.sha.outputs.sha }}

@@ -1,6 +1,6 @@
 services:
     open-archiver:
-        image: logiclabshq/open-archiver:latest
+        image: glengerbush/open-archiver:latest
         container_name: open-archiver
         restart: unless-stopped
         ports:

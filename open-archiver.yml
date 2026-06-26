@@ -6,7 +6,7 @@
 
 services:
     open-archiver:
-        image: logiclabshq/open-archiver:latest
+        image: glengerbush/open-archiver:latest
         environment:
             - SERVICE_URL_3000
             - SERVICE_URL=${SERVICE_URL_3000}

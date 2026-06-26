@@ -48,7 +48,7 @@ Open Archiver is built on a modern, scalable, and maintainable technology stack:
 1.  **Clone the repository:**
 
     ```bash
-    git clone https://github.com/LogicLabs-OU/OpenArchiver.git
+    git clone https://github.com/glengerbush/OpenArchiver.git
     cd OpenArchiver
     ```
 

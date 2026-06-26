@@ -14,7 +14,7 @@ This guide will walk you through setting up Open Archiver using Docker Compose. 
 First, clone the Open Archiver repository to your machine:
 
 ```bash
-git clone https://github.com/LogicLabs-OU/OpenArchiver.git
+git clone https://github.com/glengerbush/OpenArchiver.git
 cd OpenArchiver
 ```
 

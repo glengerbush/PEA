@@ -3,10 +3,8 @@ import * as schema from '../database/schema';
 import { eq, sql } from 'drizzle-orm';
 import { hash, compare } from 'bcryptjs';
 import type { User } from '@open-archiver/types';
-import { AuditService } from './AuditService';
 
 export class UserService {
-	private static auditService = new AuditService();
 
 	public toPublicUser(user: typeof schema.users.$inferSelect): User {
 		return {
@@ -44,6 +42,29 @@ export class UserService {
 		return this.toPublicUser(user);
 	}
 
+	/**
+	 * Returns the single local user used when authentication is disabled (local
+	 * mode). Resolves the first existing user — which owns all archived content —
+	 * and provisions a placeholder user if the database is empty so foreign-key
+	 * constraints and ownership filters still have a valid identity.
+	 *
+	 * Used by the auth bypass; remove/ignore when restoring real authentication.
+	 */
+	public async getOrCreateLocalUser(): Promise<typeof schema.users.$inferSelect> {
+		const existing = await db.query.users.findFirst();
+		if (existing) return existing;
+
+		const [created] = await db
+			.insert(schema.users)
+			.values({
+				email: process.env.ADMIN_EMAIL || 'local@localhost',
+				first_name: 'Local',
+				last_name: 'User',
+			})
+			.returning();
+		return created;
+	}
+
 	public async updateUser(
 		id: string,
 		userDetails: Partial<Pick<User, 'email' | 'first_name' | 'last_name'>>,
@@ -56,16 +77,6 @@ export class UserService {
 			.where(eq(schema.users.id, id))
 			.returning();
 
-		await UserService.auditService.createAuditLog({
-			actorIdentifier: actor.id,
-			actionType: 'UPDATE',
-			targetType: 'User',
-			targetId: id,
-			actorIp,
-			details: {
-				fields: Object.keys(userDetails),
-			},
-		});
 
 		return updatedUser[0] ? this.toPublicUser(updatedUser[0]) : null;
 	}
@@ -98,16 +109,6 @@ export class UserService {
 			.set({ password: hashedPassword })
 			.where(eq(schema.users.id, id));
 
-		await UserService.auditService.createAuditLog({
-			actorIdentifier: actor.id,
-			actionType: 'UPDATE',
-			targetType: 'User',
-			targetId: id,
-			actorIp,
-			details: {
-				field: 'password',
-			},
-		});
 	}
 
 	/**
@@ -146,16 +147,6 @@ export class UserService {
 			})
 			.returning();
 
-		await UserService.auditService.createAuditLog({
-			actorIdentifier: 'SYSTEM',
-			actionType: 'SETUP',
-			targetType: 'User',
-			targetId: newUser[0].id,
-			actorIp: '::1', // System action
-			details: {
-				setupAdminEmail: newUser[0].email,
-			},
-		});
 
 		return newUser[0];
 	}

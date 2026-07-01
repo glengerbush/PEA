@@ -1,1 +1,0 @@
-ALTER TYPE "public"."ingestion_status" ADD VALUE 'auth_success';

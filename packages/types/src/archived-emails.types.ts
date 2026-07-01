@@ -25,24 +25,16 @@ export interface ThreadEmail {
 	hasAttachments: boolean;
 }
 
-export interface ArchiveFolder {
-	id: string;
-	parentId: string | null;
-	name: string;
-	path: string;
-	createdAt: Date;
-	updatedAt: Date;
-}
-
-export interface MoveArchivedEmailsDto {
+export interface BulkDeleteArchivedEmailsDto {
 	emailIds: string[];
-	localFolderPath: string;
 }
 
-export interface MoveArchivedEmailsResult {
+export interface BulkDeleteArchivedEmailsResult {
 	requestedCount: number;
-	movedCount: number;
-	folder: ArchiveFolder;
+	deletedCount: number;
+	deletedIds: string[];
+	/** Emails that could not be deleted (e.g. legal hold / retention policy). */
+	failed: { id: string; reason: string }[];
 }
 
 export interface UpdateArchivedEmailTagsDto {
@@ -64,7 +56,11 @@ export interface UpdateArchivedEmailTagsResult {
 	emails: UpdatedArchivedEmailTags[];
 }
 
-export type ExactDuplicateReason = 'message_id' | 'storage_hash' | 'attachment_hash_set';
+export type ExactDuplicateReason =
+	| 'message_id'
+	| 'storage_hash'
+	| 'attachment_hash_set'
+	| 'sender_recipients_sent';
 
 export interface ExactDuplicateEmail {
 	id: string;
@@ -76,17 +72,16 @@ export interface ExactDuplicateEmail {
 	archivedAt: Date;
 	hasAttachments: boolean;
 	sourcePath: string | null;
-	localFolderPath: string | null;
 	messageIdHeader: string | null;
 	storageHashSha256: string;
-	duplicateOfEmailId: string | null;
-	duplicateReviewStatus: string;
-	isDuplicateHidden: boolean;
 }
 
 export interface ExactDuplicateGroup {
 	groupKey: string;
+	/** Primary (highest-priority) reason this cluster was detected. */
 	reason: ExactDuplicateReason;
+	/** All reasons that link this cluster (a cluster can match several). */
+	reasons: ExactDuplicateReason[];
 	fingerprint: string;
 	count: number;
 	keeperEmailId: string;
@@ -112,7 +107,8 @@ export interface ApproveExactDuplicatesDto {
 
 export interface ApproveExactDuplicatesResult {
 	approvedGroups: number;
-	hiddenEmails: number;
+	/** Duplicate copies permanently deleted (the keeper of each group is preserved). */
+	deletedEmails: number;
 	keeperEmails: number;
 }
 
@@ -175,7 +171,8 @@ export interface ApproveFuzzyDuplicatesDto {
 
 export interface ApproveFuzzyDuplicatesResult {
 	approvedGroups: number;
-	hiddenEmails: number;
+	/** Duplicate copies permanently deleted (the keeper of each group is preserved). */
+	deletedEmails: number;
 	keeperEmails: number;
 }
 
@@ -228,6 +225,20 @@ export interface ArchiveRemoteContentResult {
 	emailIds: string[];
 }
 
+/** Slim, client-facing view of a remote-content asset for the detail-page list. */
+export interface RemoteContentAssetSummary {
+	id: string;
+	originalUrl: string;
+	contentType: string | null;
+	sizeBytes: number | null;
+	/** archived | failed | blocked (pending assets are not returned). */
+	status: RemoteContentAssetStatus;
+	/** Why the asset failed or was blocked (often includes an HTTP status / error code). */
+	failureReason: string | null;
+	/** True when archived and the content type is safe to render inline (e.g. images). */
+	previewable: boolean;
+}
+
 /**
  * Represents a single archived email.
  */
@@ -246,16 +257,9 @@ export interface ArchivedEmail {
 	sizeBytes: number;
 	isIndexed: boolean;
 	hasAttachments: boolean;
-	isOnLegalHold: boolean;
-	isJournaled: boolean | null;
 	archivedAt: Date;
 	sourcePath: string | null;
 	sourceLabels: string[] | null;
-	localFolderId: string | null;
-	localFolderPath: string | null;
-	duplicateOfEmailId: string | null;
-	duplicateReviewStatus: string;
-	isDuplicateHidden: boolean;
 	duplicateSubjectHash: string | null;
 	duplicateFuzzyGroupKey: string | null;
 	duplicateBodyHash: string | null;

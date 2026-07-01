@@ -14,7 +14,6 @@ export type ArchiveSearchField =
 	| 'userEmail'
 	| 'sourcePath'
 	| 'sourceLabels'
-	| 'localFolderPath'
 	| 'tags';
 export type ArchiveSortField = 'sentAt' | 'archivedAt' | 'sender' | 'subject' | 'sizeBytes';
 export type SortDirection = 'asc' | 'desc';
@@ -40,13 +39,7 @@ export interface ArchiveQueryFilters {
 	hasAttachments?: boolean;
 	sourcePath?: string;
 	sourceLabels?: string[];
-	localFolderId?: string;
-	localFolderPath?: string;
 	tags?: string[];
-	includeHiddenDuplicates?: boolean;
-	duplicateOfEmailId?: string;
-	duplicateReviewStatus?: string;
-	isDuplicateHidden?: boolean;
 	sentAfter?: string | number | Date;
 	sentBefore?: string | number | Date;
 	archivedAfter?: string | number | Date;

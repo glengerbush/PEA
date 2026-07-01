@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { pgTable, text, uuid, bigint, primaryKey, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, uuid, bigint, index } from 'drizzle-orm/pg-core';
 import { archivedEmails } from './archived-emails';
 import { ingestionSources } from './ingestion-sources';
 
@@ -22,6 +22,11 @@ export const attachments = pgTable(
 export const emailAttachments = pgTable(
 	'email_attachments',
 	{
+		// Surrogate PK (was a composite PK on email_id+attachment_id). The composite
+		// key silently collapsed two byte-identical attachments in the same email to
+		// one link — a fidelity loss on reconstruction. A surrogate id lets an email
+		// hold multiple links to the same deduplicated attachment record.
+		id: uuid('id').primaryKey().defaultRandom(),
 		emailId: uuid('email_id')
 			.notNull()
 			.references(() => archivedEmails.id, { onDelete: 'cascade' }),
@@ -30,7 +35,8 @@ export const emailAttachments = pgTable(
 			.references(() => attachments.id, { onDelete: 'restrict' }),
 	},
 	(t) => ({
-		pk: primaryKey({ columns: [t.emailId, t.attachmentId] }),
+		emailIdx: index('email_attachments_email_idx').on(t.emailId),
+		attachmentIdx: index('email_attachments_attachment_idx').on(t.attachmentId),
 	})
 );
 

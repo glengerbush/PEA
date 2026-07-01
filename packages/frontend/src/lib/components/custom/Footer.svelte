@@ -26,8 +26,16 @@
 				</Alert.Root>
 			{/if}
 			<p class="text-balance text-center text-xs font-medium leading-loose">
-				© {new Date().getFullYear()}
-				<a href="https://openarchiver.com/" target="_blank">Open Archiver</a>
+				© {new Date().getFullYear()} Open Archiver — a personal fork
+			</p>
+			<p class="text-muted-foreground text-balance text-center text-xs leading-loose">
+				Based on the upstream
+				<a
+					href="https://github.com/LogicLabs-OU/OpenArchiver"
+					target="_blank"
+					rel="noopener noreferrer"
+					class="underline hover:text-foreground">Open Archiver</a>, licensed under
+				AGPL-3.0.
 			</p>
 			<p class="text-balance text-center text-xs font-medium leading-loose">
 				Version: {currentVersion}

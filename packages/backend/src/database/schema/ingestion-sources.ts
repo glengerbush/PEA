@@ -1,5 +1,4 @@
 import {
-	boolean,
 	index,
 	jsonb,
 	pgEnum,
@@ -47,7 +46,6 @@ export const ingestionSources = pgTable(
 		lastSyncFinishedAt: timestamp('last_sync_finished_at', { withTimezone: true }),
 		lastSyncStatusMessage: text('last_sync_status_message'),
 		syncState: jsonb('sync_state'),
-		preserveOriginalFile: boolean('preserve_original_file').notNull().default(false),
 		/** Self-referencing FK for merge groups. When set, this source is a child
 		 *  whose emails are logically grouped with the root source. Flat hierarchy only. */
 		mergedIntoId: uuid('merged_into_id').references((): AnyPgColumn => ingestionSources.id, {

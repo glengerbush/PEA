@@ -3,6 +3,7 @@
 	import type { ArchivedEmail } from '@open-archiver/types';
 	import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
 	import { t } from '$lib/translations';
+	import { formatDateTime } from '$lib/stores/datetime.svelte';
 	import Paperclip from 'lucide-svelte/icons/paperclip';
 
 	let {
@@ -50,10 +51,10 @@
 							>
 								{#if item.id !== currentEmailId}
 									<a
-										href="/dashboard/archived-emails/{item.id}"
+										href="/mailbox/{item.id}"
 										onclick={(e) => {
 											e.preventDefault();
-											goto(`/dashboard/archived-emails/${item.id}`, {
+											goto(`/mailbox/${item.id}`, {
 												invalidateAll: true,
 											});
 										}}>{item.subject || $t('app.archive.no_subject')}</a
@@ -67,7 +68,7 @@
 							class="flex flex-col space-y-2 text-sm font-normal leading-none text-gray-400"
 						>
 							<span>{$t('app.archive.from')}: {item.senderEmail}</span>
-							<time class="">{new Date(item.sentAt).toLocaleString()}</time>
+							<time class="">{formatDateTime(item.sentAt)}</time>
 						</div>
 					</div>
 				{/each}

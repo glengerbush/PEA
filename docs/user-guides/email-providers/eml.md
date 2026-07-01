@@ -24,12 +24,12 @@ archive.zip
     └── email-05.eml
 ```
 
-## Creating an EML Ingestion Source
+## Importing EML Files
 
-1.  Go to the **Ingestion Sources** page in the OpenArchiver dashboard.
-2.  Click the **Create New** button.
+1.  Go to the **Imports** page in the OpenArchiver dashboard.
+2.  Click **Import Archive**.
 3.  Select **EML Import** as the provider.
-4.  Enter a name for the ingestion source.
+4.  Enter a name for the import.
 5.  **Choose Import Method:**
     - **Upload File:** Click **Choose File** and select the zip archive containing your EML files. (Best for smaller archives)
     - **Local Path:** Enter the path to the zip file **inside the container**. (Best for large archives)
@@ -41,4 +41,4 @@ archive.zip
 
 6.  Click the **Submit** button.
 
-OpenArchiver will then start importing the EML files from the zip archive. The ingestion process may take some time, depending on the size of the archive.
+OpenArchiver will then start importing the EML files from the zip archive. The import may take some time, depending on the size of the archive.

@@ -5,7 +5,7 @@ import type {
 	SyncState,
 	MailboxUser,
 } from '@open-archiver/types';
-import type { IEmailConnector, ConnectorOptions } from '../EmailProviderFactory';
+import type { IEmailConnector } from '../EmailProviderFactory';
 import { simpleParser, ParsedMail, Attachment, AddressObject } from 'mailparser';
 import { logger } from '../../config/logger';
 import { getThreadId } from './helpers/utils';
@@ -28,13 +28,8 @@ const streamToBuffer = (stream: Readable): Promise<Buffer> => {
 
 export class EMLConnector implements IEmailConnector {
 	private storage: StorageService;
-	private options: ConnectorOptions;
 
-	constructor(
-		private credentials: EMLImportCredentials,
-		options?: ConnectorOptions
-	) {
-		this.options = options ?? { preserveOriginalFile: false };
+	constructor(private credentials: EMLImportCredentials) {
 		this.storage = new StorageService();
 	}
 
@@ -163,24 +158,35 @@ export class EMLConnector implements IEmailConnector {
 		// Create an async iterator for zip entries
 		const entryIterator = this.zipEntryGenerator(zipfile);
 
-		for await (const { entry, openReadStream } of entryIterator) {
-			const fileName = entry.fileName.toString();
-			if (fileName.startsWith('__MACOSX/') || /\/$/.test(fileName)) {
-				continue;
-			}
-
-			if (fileName.endsWith('.eml')) {
-				try {
-					const readStream = await openReadStream();
-					const relativePath = dirname(fileName) === '.' ? '' : dirname(fileName);
-					const emailObject = await this.parseMessage(readStream, relativePath);
-					yield emailObject;
-				} catch (error) {
-					logger.error(
-						{ error, file: fileName },
-						'Failed to process a single EML file from zip. Skipping.'
-					);
+		try {
+			for await (const { entry, openReadStream } of entryIterator) {
+				const fileName = entry.fileName.toString();
+				if (fileName.startsWith('__MACOSX/') || /\/$/.test(fileName)) {
+					continue;
 				}
+
+				if (fileName.toLowerCase().endsWith('.eml')) {
+					try {
+						const readStream = await openReadStream();
+						const relativePath = dirname(fileName) === '.' ? '' : dirname(fileName);
+						const emailObject = await this.parseMessage(readStream, relativePath);
+						yield emailObject;
+					} catch (error) {
+						logger.error(
+							{ error, file: fileName },
+							'Failed to process a single EML file from zip. Skipping.'
+						);
+					}
+				}
+			}
+		} finally {
+			// Ensure the underlying file descriptor is released even if the
+			// consumer aborts iteration early (throw upstream) — otherwise the
+			// fd leaks against an already-unlinked temp file.
+			try {
+				zipfile.close();
+			} catch {
+				// already closed by yauzl autoClose — safe to ignore
 			}
 		}
 	}
@@ -275,15 +281,11 @@ export class EMLConnector implements IEmailConnector {
 		const tempFilePath = await writeEmailToTempFile(emlBuffer);
 		const parsedEmail: ParsedMail = await simpleParser(emlBuffer);
 
-		// In preserve-original mode, skip extracting full attachment binary content
-		// to avoid unnecessary memory allocation — the raw EML on disk is the source of truth.
 		const attachments = parsedEmail.attachments.map((attachment: Attachment) => ({
 			filename: attachment.filename || 'untitled',
 			contentType: attachment.contentType,
 			size: attachment.size,
-			content: this.options.preserveOriginalFile
-				? Buffer.alloc(0)
-				: (attachment.content as Buffer),
+			content: attachment.content as Buffer,
 		}));
 
 		const mapAddresses = (

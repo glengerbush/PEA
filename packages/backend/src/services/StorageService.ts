@@ -1,6 +1,5 @@
 import { IStorageProvider, StorageConfig } from '@open-archiver/types';
 import { LocalFileSystemProvider } from './storage/LocalFileSystemProvider';
-import { S3StorageProvider } from './storage/S3StorageProvider';
 import { config } from '../config/index';
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { streamToBuffer } from '../helpers/streamToBuffer';
@@ -24,9 +23,6 @@ export class StorageService implements IStorageProvider {
 		switch (storageConfig.type) {
 			case 'local':
 				this.provider = new LocalFileSystemProvider(storageConfig);
-				break;
-			case 's3':
-				this.provider = new S3StorageProvider(storageConfig);
 				break;
 			default:
 				throw new Error('Invalid storage provider type');

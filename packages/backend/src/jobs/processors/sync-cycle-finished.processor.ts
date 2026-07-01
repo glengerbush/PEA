@@ -49,8 +49,8 @@ export default async (job: Job<ISyncCycleFinishedJob>) => {
 			);
 		} else {
 			message = isInitialImport
-				? `Initial import finished for ${session.completedMailboxes} mailboxes.`
-				: 'Continuous sync cycle finished successfully.';
+				? `Import finished. Archived ${session.completedMailboxes} mailbox(es).`
+				: 'Import completed successfully.';
 			logger.info({ ingestionSourceId, sessionId }, 'Sync cycle finished successfully.');
 		}
 

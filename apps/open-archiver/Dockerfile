@@ -35,6 +35,19 @@ RUN pnpm build:oss
 # 2. Production Stage: Install only production dependencies and copy built artifacts
 FROM base AS production
 
+# Stamp the image with the git commit it was built from, so the running app can
+# report its version and check the fork for updates. Defaults to "unknown" when
+# built without --build-arg GIT_SHA=... (e.g. a bare `docker build`).
+ARG GIT_SHA=unknown
+ENV OA_GIT_SHA=$GIT_SHA
+
+# Install production dependencies into the image so the container doesn't run
+# `pnpm install` on every boot (much faster restarts). This image is built
+# locally for a single architecture; rebuild if you move it to a different arch.
+ENV PNPM_HOME="/pnpm"
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile --prod
+
 # Copy built application from build stage
 COPY --from=build /app/packages/backend/dist ./packages/backend/dist
 COPY --from=build /app/packages/backend/drizzle.config.ts ./packages/backend/drizzle.config.ts

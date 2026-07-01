@@ -1,7 +1,12 @@
-import { and, count, eq, gte, sql } from 'drizzle-orm';
-import type { IndexedInsights } from '@open-archiver/types';
+import { and, asc, count, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import type {
+	IndexedInsights,
+	RemoteContentIssue,
+	RemoteContentIssueAsset,
+	RemoteContentIssuesResult,
+} from '@open-archiver/types';
 
-import { archivedEmails, ingestionSources } from '../database/schema';
+import { archivedEmails, ingestionSources, remoteContentAssets } from '../database/schema';
 import { DatabaseService } from './DatabaseService';
 import { SearchService } from './SearchService';
 
@@ -33,11 +38,102 @@ class DashboardService {
 				)
 			);
 
+		// Remote-content fetch outcomes recorded per email (the batch job itself
+		// always succeeds; failures live here, not in the queue).
+		const remoteContent = await this.#db
+			.select({
+				failed: sql<number>`count(*) filter (where ${archivedEmails.remoteContentStatus} = 'failed')`,
+				partial: sql<number>`count(*) filter (where ${archivedEmails.remoteContentStatus} = 'partial')`,
+			})
+			.from(archivedEmails);
+
 		return {
 			totalEmailsArchived: totalEmailsArchived[0].count,
 			totalStorageUsed: totalStorageUsed[0].sum || 0,
 			failedIngestionsLast7Days: failedIngestionsLast7Days[0].count,
+			remoteContentFailed: Number(remoteContent[0]?.failed ?? 0),
+			remoteContentPartial: Number(remoteContent[0]?.partial ?? 0),
 		};
+	}
+
+	/**
+	 * Emails whose remote-content archiving failed or only partially succeeded,
+	 * with the specific asset failures (url + reason) so the cause is visible at
+	 * a glance from the dashboard.
+	 */
+	public async getRemoteContentIssuesPage(opts: {
+		page: number;
+		limit: number;
+		status: 'all' | 'failed' | 'partial';
+		sort: 'date' | 'subject' | 'status';
+		direction: 'asc' | 'desc';
+	}): Promise<RemoteContentIssuesResult> {
+		const statuses = opts.status === 'all' ? ['failed', 'partial'] : [opts.status];
+		const where = inArray(archivedEmails.remoteContentStatus, statuses);
+
+		const [{ total }] = await this.#db
+			.select({ total: count() })
+			.from(archivedEmails)
+			.where(where);
+
+		const sortColumn =
+			opts.sort === 'subject'
+				? archivedEmails.subject
+				: opts.sort === 'status'
+					? archivedEmails.remoteContentStatus
+					: archivedEmails.archivedAt;
+		const orderBy = opts.direction === 'asc' ? asc(sortColumn) : desc(sortColumn);
+
+		const emails = await this.#db
+			.select({
+				id: archivedEmails.id,
+				subject: archivedEmails.subject,
+				senderName: archivedEmails.senderName,
+				senderEmail: archivedEmails.senderEmail,
+				status: archivedEmails.remoteContentStatus,
+				archivedAt: archivedEmails.archivedAt,
+			})
+			.from(archivedEmails)
+			.where(where)
+			.orderBy(orderBy)
+			.limit(opts.limit)
+			.offset((opts.page - 1) * opts.limit);
+
+		const emailIds = emails.map((e) => e.id);
+		const assetsByEmail = new Map<string, RemoteContentIssueAsset[]>();
+		if (emailIds.length > 0) {
+			const assets = await this.#db
+				.select({
+					emailId: remoteContentAssets.emailId,
+					url: remoteContentAssets.originalUrl,
+					status: remoteContentAssets.status,
+					reason: remoteContentAssets.failureReason,
+				})
+				.from(remoteContentAssets)
+				.where(
+					and(
+						inArray(remoteContentAssets.emailId, emailIds),
+						inArray(remoteContentAssets.status, ['failed', 'blocked'])
+					)
+				);
+			for (const asset of assets) {
+				const list = assetsByEmail.get(asset.emailId) ?? [];
+				list.push({ url: asset.url, status: asset.status, reason: asset.reason });
+				assetsByEmail.set(asset.emailId, list);
+			}
+		}
+
+		const items: RemoteContentIssue[] = emails.map((e) => ({
+			emailId: e.id,
+			subject: e.subject || '(no subject)',
+			sender: e.senderName || e.senderEmail || 'Unknown sender',
+			status: e.status as 'failed' | 'partial',
+			archivedAt:
+				e.archivedAt instanceof Date ? e.archivedAt.toISOString() : String(e.archivedAt),
+			assets: assetsByEmail.get(e.id) ?? [],
+		}));
+
+		return { items, total: Number(total), page: opts.page, limit: opts.limit };
 	}
 
 	public async getIngestionHistory() {

@@ -1,16 +1,15 @@
 import { db } from '../database';
 import { systemSettings } from '../database/schema/system-settings';
 import type { SystemSettings, User } from '@open-archiver/types';
-import { AuditService } from './AuditService';
 
 const DEFAULT_SETTINGS: SystemSettings = {
 	language: 'en',
 	theme: 'system',
-	supportEmail: null,
+	timeZone: null,
+	clockFormat: '12h',
 };
 
 export class SettingsService {
-	private auditService = new AuditService();
 	/**
 	 * Retrieves the current system settings.
 	 * If no settings exist, it initializes and returns the default settings.
@@ -23,7 +22,9 @@ export class SettingsService {
 			return this.createDefaultSystemSettings();
 		}
 
-		return settings[0].config;
+		// Merge with defaults so settings added after this record was created
+		// (e.g. timeZone / clockFormat) still resolve to a value.
+		return { ...DEFAULT_SETTINGS, ...settings[0].config };
 	}
 
 	/**
@@ -41,25 +42,6 @@ export class SettingsService {
 
 		// Since getSettings ensures a record always exists, we can directly update.
 		const [result] = await db.update(systemSettings).set({ config: mergedConfig }).returning();
-
-		const changedFields = Object.keys(newConfig).filter(
-			(key) =>
-				currentConfig[key as keyof SystemSettings] !==
-				newConfig[key as keyof SystemSettings]
-		);
-
-		if (changedFields.length > 0) {
-			await this.auditService.createAuditLog({
-				actorIdentifier: actor.id,
-				actionType: 'UPDATE',
-				targetType: 'SystemSettings',
-				targetId: 'system',
-				actorIp,
-				details: {
-					changedFields,
-				},
-			});
-		}
 
 		return result.config;
 	}

@@ -1,1 +1,0 @@
-ALTER TYPE "public"."ingestion_status" ADD VALUE 'initial_syncing' BEFORE 'auth_success';

@@ -7,6 +7,7 @@
 	import { t } from '$lib/translations';
 
 	export let data: IngestionSourceStats[];
+	export let onSelect: (source: IngestionSourceStats) => void = () => {};
 
 	const chartConfig = {
 		storageUsed: {
@@ -24,6 +25,7 @@
 		key="name"
 		value="storageUsed"
 		label="name"
+		onArcClick={(_e, detail) => onSelect(detail.data as IngestionSourceStats)}
 		legend={{}}
 		cRange={[
 			'var(--color-chart-1)',

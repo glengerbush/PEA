@@ -92,13 +92,7 @@ export interface EmailDocument {
 	hasAttachments: boolean;
 	sourcePath: string | null;
 	sourceLabels: string[];
-	localFolderId: string | null;
-	localFolderPath: string | null;
 	tags: string[];
-	duplicateOfEmailId: string | null;
-	duplicateReviewStatus: DuplicateReviewStatus;
-	isDuplicateHidden: boolean;
 	sizeBytes: number;
 }
 
-export type DuplicateReviewStatus = 'unique' | 'keeper' | 'approved_duplicate' | 'ignored';

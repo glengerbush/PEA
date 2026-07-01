@@ -17,10 +17,7 @@ import { StorageService } from './StorageService';
 import { SearchService } from './SearchService';
 import { IngestionService } from './IngestionService';
 import type { Readable } from 'stream';
-import { AuditService } from './AuditService';
 import { User } from '@open-archiver/types';
-import { checkDeletionEnabled } from '../helpers/deletionGuard';
-import { RetentionHook } from '../hooks/RetentionHook';
 import { logger } from '../config/logger';
 
 interface DbRecipients {
@@ -39,7 +36,6 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
 }
 
 export class ArchivedEmailService {
-	private static auditService = new AuditService();
 	private static mapRecipients(dbRecipients: unknown): Recipient[] {
 		const { to = [], cc = [], bcc = [] } = dbRecipients as DbRecipients;
 
@@ -126,14 +122,6 @@ export class ArchivedEmailService {
 			return null;
 		}
 
-		await this.auditService.createAuditLog({
-			actorIdentifier: actor.id,
-			actionType: 'READ',
-			targetType: 'ArchivedEmail',
-			targetId: emailId,
-			actorIp,
-			details: {},
-		});
 
 		let threadEmails: ThreadEmail[] = [];
 
@@ -205,22 +193,8 @@ export class ArchivedEmailService {
 	public static async deleteArchivedEmail(
 		emailId: string,
 		actor: User,
-		actorIp: string,
-		options: {
-			systemDelete?: boolean;
-			/**
-			 * Human-readable name of the retention rule that triggered deletion
-			 */
-			governingRule?: string;
-		} = {}
+		actorIp: string
 	): Promise<void> {
-		checkDeletionEnabled({ allowSystemDelete: options.systemDelete });
-
-		const canDelete = await RetentionHook.canDelete(emailId);
-		if (!canDelete) {
-			throw new Error('Deletion blocked by retention policy (Legal Hold or similar).');
-		}
-
 		const [email] = await db
 			.select()
 			.from(archivedEmails)
@@ -289,22 +263,42 @@ export class ArchivedEmailService {
 
 		await db.delete(archivedEmails).where(eq(archivedEmails.id, emailId));
 
-		// Build audit details: system-initiated deletions carry retention context
-		// for GoBD compliance; manual deletions record only the reason.
-		const auditDetails: Record<string, unknown> = {
-			reason: options.systemDelete ? 'RetentionExpiration' : 'ManualDeletion',
-		};
-		if (options.systemDelete && options.governingRule) {
-			auditDetails.governingRule = options.governingRule;
-		}
+		// Auto-remove an emptied source, but only for a finished file-based import
+		// (mbox/eml). Pending/syncing/remote sources may legitimately sit at 0 emails,
+		// so they're left alone. Failure here must not fail the (already-done) email
+		// deletion, so it's best-effort.
+		if (email.ingestionSourceId) {
+			try {
+				const [remaining] = await db
+					.select({ count: count() })
+					.from(archivedEmails)
+					.where(eq(archivedEmails.ingestionSourceId, email.ingestionSourceId));
 
-		await this.auditService.createAuditLog({
-			actorIdentifier: actor.id,
-			actionType: 'DELETE',
-			targetType: 'ArchivedEmail',
-			targetId: emailId,
-			actorIp,
-			details: auditDetails,
-		});
+				if (remaining.count === 0) {
+					const [source] = await db
+						.select({
+							provider: ingestionSources.provider,
+							status: ingestionSources.status,
+						})
+						.from(ingestionSources)
+						.where(eq(ingestionSources.id, email.ingestionSourceId));
+
+					const fileBasedProviders = IngestionService.returnFileBasedIngestions();
+					const isTerminal = source?.status === 'imported' || source?.status === 'error';
+					if (source && fileBasedProviders.includes(source.provider) && isTerminal) {
+						await IngestionService.delete(email.ingestionSourceId, actor, actorIp, true);
+						logger.info(
+							{ ingestionSourceId: email.ingestionSourceId },
+							'Auto-deleted emptied file-based ingestion source after its last email was removed.'
+						);
+					}
+				}
+			} catch (cleanupError) {
+				logger.warn(
+					{ err: cleanupError, ingestionSourceId: email.ingestionSourceId },
+					'Failed to auto-clean emptied ingestion source (email deletion still succeeded).'
+				);
+			}
+		}
 	}
 }

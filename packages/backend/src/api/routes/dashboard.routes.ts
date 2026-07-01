@@ -156,5 +156,7 @@ export const createDashboardRouter = (authService: AuthService): Router => {
 	 */
 	router.get('/indexed-insights', dashboardController.getIndexedInsights);
 
+	router.get('/remote-content-issues', dashboardController.getRemoteContentIssues);
+
 	return router;
 };

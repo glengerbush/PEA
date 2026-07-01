@@ -23,13 +23,12 @@ To get your own instance of Open Archiver running, follow our detailed installat
 
 - [Installation Guide](./user-guides/installation.md)
 
-## Data Source Configuration 🔌
+## Importing Your Email 🔌
 
-After deploying the application, you will need to configure one or more ingestion sources to begin archiving emails. Follow our detailed guides to connect to your email provider:
+After deploying the application, import your existing email once from static files (`.mbox` or `.eml`). Follow our detailed guides:
 
-- [Connecting to Google Workspace](./user-guides/email-providers/google-workspace.md)
-- [Connecting to Microsoft 365](./user-guides/email-providers/microsoft-365.md)
-- [Connecting to a Generic IMAP Server](./user-guides/email-providers/imap.md)
+- [Mbox Import](./user-guides/email-providers/mbox.md)
+- [EML Import](./user-guides/email-providers/eml.md)
 
 ## Contributing
 

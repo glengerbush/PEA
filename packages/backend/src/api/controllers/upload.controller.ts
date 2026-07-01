@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import busboy from 'busboy';
 import { config } from '../../config/index';
 import { logger } from '../../config/logger';
+import { sanitizeFilename } from '../../helpers/sanitize';
 import i18next from 'i18next';
 
 export const uploadFile = async (req: Request, res: Response) => {
@@ -41,7 +42,7 @@ export const uploadFile = async (req: Request, res: Response) => {
 	bb.on('file', (fieldname, file, info) => {
 		originalFilename = info.filename;
 		const uuid = randomUUID();
-		filePath = `${config.storage.openArchiverFolderName}/tmp/${uuid}-${originalFilename}`;
+		filePath = `${config.storage.openArchiverFolderName}/tmp/${uuid}-${sanitizeFilename(originalFilename)}`;
 
 		logger.info({ filename: originalFilename, fieldname }, 'Receiving file stream');
 

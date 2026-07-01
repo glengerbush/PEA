@@ -37,25 +37,16 @@ export default defineConfig({
 					{ text: 'Installation', link: '/user-guides/installation' },
 					{ text: 'Email Integrity Check', link: '/user-guides/integrity-check' },
 					{
-						text: 'Email Providers',
+						text: 'Importing Email',
 						link: '/user-guides/email-providers/',
 						collapsed: true,
 						items: [
-							{
-								text: 'Generic IMAP Server',
-								link: '/user-guides/email-providers/imap',
-							},
-							{
-								text: 'Google Workspace',
-								link: '/user-guides/email-providers/google-workspace',
-							},
-							{
-								text: 'Microsoft 365',
-								link: '/user-guides/email-providers/microsoft-365',
-							},
-							{ text: 'EML Import', link: '/user-guides/email-providers/eml' },
-							{ text: 'PST Import', link: '/user-guides/email-providers/pst' },
 							{ text: 'Mbox Import', link: '/user-guides/email-providers/mbox' },
+							{ text: 'EML Import', link: '/user-guides/email-providers/eml' },
+							{
+								text: 'Merging Imports',
+								link: '/user-guides/email-providers/merging-sources',
+							},
 						],
 					},
 					{

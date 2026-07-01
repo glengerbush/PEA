@@ -6,12 +6,9 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import * as Select from '$lib/components/ui/select';
-	import * as Alert from '$lib/components/ui/alert/index.js';
-	import * as RadioGroup from '$lib/components/ui/radio-group/index.js';
-	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import { api } from '$lib/api.client';
-	import { Loader2, Info, ChevronDown } from 'lucide-svelte';
+	import { Loader2, Info } from 'lucide-svelte';
 	import tippy from 'tippy.js';
 	import 'tippy.js/dist/tippy.css';
 	import { t } from '$lib/translations';
@@ -26,59 +23,25 @@
 		onSubmit: (data: CreateIngestionSourceDto) => Promise<void>;
 	} = $props();
 
-	const providerOptions = [
-		{
-			value: 'generic_imap',
-			label: $t('app.components.ingestion_source_form.provider_generic_imap'),
-		},
-		{
-			value: 'google_workspace',
-			label: $t('app.components.ingestion_source_form.provider_google_workspace'),
-		},
-		{
-			value: 'microsoft_365',
-			label: $t('app.components.ingestion_source_form.provider_microsoft_365'),
-		},
-		{
-			value: 'pst_import',
-			label: $t('app.components.ingestion_source_form.provider_pst_import'),
-		},
-		{
-			value: 'eml_import',
-			label: $t('app.components.ingestion_source_form.provider_eml_import'),
-		},
-		{
-			value: 'mbox_import',
-			label: $t('app.components.ingestion_source_form.provider_mbox_import'),
-		},
-	];
+	// This fork only imports static mailbox files, so there is no live-connection or
+	// user-facing "provider" concept. One Import Method selector drives the form and
+	// the backend provider (mbox_import / eml_import) is derived from the choice.
 
 	/** Only show root sources (not children) in the merge dropdown */
 	const mergeableRootSources = $derived(existingSources.filter((s) => !s.mergedIntoId));
 
 	let formData: CreateIngestionSourceDto = $state({
 		name: source?.name ?? '',
-		provider: source?.provider ?? 'generic_imap',
+		provider: source?.provider ?? 'mbox_import',
 		providerConfig: {
-			type: source?.provider ?? 'generic_imap',
+			type: source?.provider ?? 'mbox_import',
 			secure: true,
 			allowInsecureCert: false,
 		},
-		preserveOriginalFile: source?.preserveOriginalFile ?? false,
 	});
-
-	$effect(() => {
-		formData.providerConfig.type = formData.provider;
-	});
-
-	const triggerContent = $derived(
-		providerOptions.find((p) => p.value === formData.provider)?.label ??
-			$t('app.components.ingestion_source_form.select_provider')
-	);
 
 	let isSubmitting = $state(false);
 	let fileUploading = $state(false);
-	let showAdvanced = $state(false);
 	let mergeEnabled = $state(false);
 
 	/** When merge is toggled off, clear the mergedIntoId */
@@ -88,28 +51,61 @@
 		}
 	});
 
-	let importMethod = $state<'upload' | 'local'>('upload');
+	// The single source of truth for the create form. Each option maps to a backend
+	// provider + input shape:
+	//   mbox-files   → mbox_import, upload flat .mbox file(s)
+	//   mbox-folder  → mbox_import, upload an Apple Mail .mbox package (folder)
+	//   eml-zip      → eml_import, upload a .zip of .eml files
+	//   local        → server path; format detected from the extension (.zip → eml)
+	type ImportMethod = 'mbox-files' | 'mbox-folder' | 'eml-zip' | 'local';
+	let importMethod = $state<ImportMethod>('mbox-files');
 
+	const importMethodLabel = $derived(
+		importMethod === 'mbox-files'
+			? $t('app.components.import_source_form.mbox_files')
+			: importMethod === 'mbox-folder'
+				? $t('app.components.import_source_form.apple_mail_folder')
+				: importMethod === 'eml-zip'
+					? $t('app.components.import_source_form.provider_eml_import')
+					: $t('app.components.import_source_form.local_path')
+	);
+
+	// Derive the backend provider from the chosen method (create mode only).
 	$effect(() => {
-		if (importMethod === 'upload') {
-			if ('localFilePath' in formData.providerConfig) {
-				delete formData.providerConfig.localFilePath;
-			}
-		} else {
-			if ('uploadedFilePath' in formData.providerConfig) {
-				delete formData.providerConfig.uploadedFilePath;
-			}
-			if ('uploadedFileName' in formData.providerConfig) {
-				delete formData.providerConfig.uploadedFileName;
-			}
+		if (source) return;
+		const isZipPath =
+			importMethod === 'local' &&
+			(formData.providerConfig.localFilePath ?? '').toLowerCase().endsWith('.zip');
+		const provider = importMethod === 'eml-zip' || isZipPath ? 'eml_import' : 'mbox_import';
+		formData.provider = provider;
+		formData.providerConfig.type = provider;
+	});
+
+	// Keep only the providerConfig fields that belong to the selected method, so a
+	// stale upload path is never submitted after switching. Mbox uploads accumulate
+	// into uploadedFiles; eml uses a single uploaded file; local uses a path.
+	$effect(() => {
+		const cfg = formData.providerConfig;
+		const isMbox = importMethod === 'mbox-files' || importMethod === 'mbox-folder';
+		if (!isMbox && 'uploadedFiles' in cfg) delete cfg.uploadedFiles;
+		if (importMethod !== 'eml-zip') {
+			if ('uploadedFilePath' in cfg) delete cfg.uploadedFilePath;
+			if ('uploadedFileName' in cfg) delete cfg.uploadedFileName;
 		}
+		if (importMethod !== 'local' && 'localFilePath' in cfg) delete cfg.localFilePath;
 	});
 
 	const handleSubmit = async (event: Event) => {
 		event.preventDefault();
 		isSubmitting = true;
 		try {
-			await onSubmit(formData);
+			// Edit mode only renames the import. Send just the name so we don't overwrite
+			// the stored provider credentials (file paths) with an empty stub — and so
+			// editing never re-runs or alters the already-imported emails.
+			const payload = source
+				? ({ name: formData.name } as CreateIngestionSourceDto)
+				: formData;
+			await onSubmit(payload);
 		} finally {
 			isSubmitting = false;
 		}
@@ -117,44 +113,90 @@
 
 	const handleFileChange = async (event: Event) => {
 		const target = event.target as HTMLInputElement;
-		const file = target.files?.[0];
-		fileUploading = true;
-		if (!file) {
-			fileUploading = false;
+		const selectedFiles = Array.from(target.files ?? []);
+		if (selectedFiles.length === 0) {
 			return;
 		}
-
-		const uploadFormData = new FormData();
-		uploadFormData.append('file', file);
+		fileUploading = true;
 
 		try {
-			const response = await api('/upload', {
-				method: 'POST',
-				body: uploadFormData,
-			});
+			const isMboxImport = importMethod === 'mbox-files' || importMethod === 'mbox-folder';
+			const compatibleFiles = isMboxImport
+				? selectedFiles.filter(
+						(file) =>
+							file.name.toLowerCase().endsWith('.mbox') ||
+							file.name.toLowerCase().endsWith('.emlx')
+					)
+				: selectedFiles.slice(0, 1);
+			const existingFiles: Array<{
+				fileName: string;
+				filePath: string;
+				relativePath?: string;
+			}> =
+				isMboxImport && Array.isArray(formData.providerConfig.uploadedFiles)
+					? formData.providerConfig.uploadedFiles
+					: [];
+			const existingFileKeys = new Set(
+				existingFiles.map((file) => file.relativePath || file.fileName)
+			);
+			const filesToUpload = compatibleFiles.filter(
+				(file) => !existingFileKeys.has(file.webkitRelativePath || file.name)
+			);
 
-			// Safely parse the response body — it may not be valid JSON
-			// (e.g. if the proxy rejected the request with an HTML error page)
-			let result: Record<string, string>;
-			try {
-				result = await response.json();
-			} catch {
-				throw new Error($t('app.components.ingestion_source_form.upload_network_error'));
+			if (filesToUpload.length === 0) {
+				throw new Error($t('app.components.import_source_form.no_new_mbox_messages'));
 			}
 
-			if (!response.ok) {
-				throw new Error(
-					result.message || $t('app.components.ingestion_source_form.upload_failed')
-				);
+			const uploadedFiles: Array<{
+				fileName: string;
+				filePath: string;
+				relativePath?: string;
+			}> = [];
+
+			for (const file of filesToUpload) {
+				const uploadFormData = new FormData();
+				uploadFormData.append('file', file);
+				const response = await api('/upload', {
+					method: 'POST',
+					body: uploadFormData,
+				});
+
+				let result: Record<string, string>;
+				try {
+					result = await response.json();
+				} catch {
+					throw new Error(
+						$t('app.components.import_source_form.upload_network_error')
+					);
+				}
+
+				if (!response.ok) {
+					throw new Error(
+						result.message || $t('app.components.import_source_form.upload_failed')
+					);
+				}
+
+				uploadedFiles.push({
+					fileName: file.name,
+					filePath: result.filePath,
+					relativePath: file.webkitRelativePath || undefined,
+				});
 			}
 
-			formData.providerConfig.uploadedFilePath = result.filePath;
-			formData.providerConfig.uploadedFileName = file.name;
+			if (isMboxImport) {
+				formData.providerConfig.uploadedFiles = [...existingFiles, ...uploadedFiles];
+				delete formData.providerConfig.uploadedFilePath;
+				delete formData.providerConfig.uploadedFileName;
+				target.value = '';
+			} else {
+				formData.providerConfig.uploadedFilePath = uploadedFiles[0].filePath;
+				formData.providerConfig.uploadedFileName = uploadedFiles[0].fileName;
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			setAlert({
 				type: 'error',
-				title: $t('app.components.ingestion_source_form.upload_failed'),
+				title: $t('app.components.import_source_form.upload_failed'),
 				message,
 				duration: 5000,
 				show: true,
@@ -169,388 +211,177 @@
 	const mergeTriggerContent = $derived(
 		formData.mergedIntoId
 			? (mergeableRootSources.find((s) => s.id === formData.mergedIntoId)?.name ??
-					$t('app.components.ingestion_source_form.merge_into_select'))
-			: $t('app.components.ingestion_source_form.merge_into_select')
+					$t('app.components.import_source_form.merge_into_select'))
+			: $t('app.components.import_source_form.merge_into_select')
 	);
 </script>
 
 <form onsubmit={handleSubmit} class="grid gap-4 py-4">
 	<div class="grid grid-cols-4 items-center gap-4">
-		<Label for="name" class="text-left">{$t('app.ingestions.name')}</Label>
+		<Label for="name" class="text-left">{$t('app.imports.name')}</Label>
 		<Input id="name" bind:value={formData.name} class="col-span-3" />
 	</div>
-	<div class="grid grid-cols-4 items-center gap-4">
-		<Label for="provider" class="text-left">{$t('app.ingestions.provider')}</Label>
-		<Select.Root name="provider" bind:value={formData.provider} type="single">
-			<Select.Trigger class="col-span-3">
-				{triggerContent}
-			</Select.Trigger>
-			<Select.Content>
-				{#each providerOptions as option}
-					<Select.Item value={option.value}>{option.label}</Select.Item>
-				{/each}
-			</Select.Content>
-		</Select.Root>
-	</div>
-
-	{#if formData.provider === 'google_workspace'}
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="serviceAccountKeyJson" class="text-left"
-				>{$t('app.components.ingestion_source_form.service_account_key')}</Label
-			>
-			<Textarea
-				placeholder={$t(
-					'app.components.ingestion_source_form.service_account_key_placeholder'
-				)}
-				id="serviceAccountKeyJson"
-				bind:value={formData.providerConfig.serviceAccountKeyJson}
-				class="col-span-3 max-h-32"
-			/>
-		</div>
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="impersonatedAdminEmail" class="text-left"
-				>{$t('app.components.ingestion_source_form.impersonated_admin_email')}</Label
-			>
-			<Input
-				id="impersonatedAdminEmail"
-				bind:value={formData.providerConfig.impersonatedAdminEmail}
-				class="col-span-3"
-			/>
-		</div>
-	{:else if formData.provider === 'microsoft_365'}
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="clientId" class="text-left"
-				>{$t('app.components.ingestion_source_form.client_id')}</Label
-			>
-			<Input id="clientId" bind:value={formData.providerConfig.clientId} class="col-span-3" />
-		</div>
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="clientSecret" class="text-left"
-				>{$t('app.components.ingestion_source_form.client_secret')}</Label
-			>
-			<Input
-				id="clientSecret"
-				type="password"
-				placeholder={$t('app.components.ingestion_source_form.client_secret_placeholder')}
-				bind:value={formData.providerConfig.clientSecret}
-				class="col-span-3"
-			/>
-		</div>
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="tenantId" class="text-left"
-				>{$t('app.components.ingestion_source_form.tenant_id')}</Label
-			>
-			<Input id="tenantId" bind:value={formData.providerConfig.tenantId} class="col-span-3" />
-		</div>
-	{:else if formData.provider === 'generic_imap'}
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="host" class="text-left"
-				>{$t('app.components.ingestion_source_form.host')}</Label
-			>
-			<Input id="host" bind:value={formData.providerConfig.host} class="col-span-3" />
-		</div>
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="port" class="text-left"
-				>{$t('app.components.ingestion_source_form.port')}</Label
-			>
-			<Input
-				id="port"
-				type="number"
-				bind:value={formData.providerConfig.port}
-				class="col-span-3"
-			/>
-		</div>
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="username" class="text-left"
-				>{$t('app.components.ingestion_source_form.username')}</Label
-			>
-			<Input id="username" bind:value={formData.providerConfig.username} class="col-span-3" />
-		</div>
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="password" class="text-left">{$t('app.auth.password')}</Label>
-			<Input
-				id="password"
-				type="password"
-				bind:value={formData.providerConfig.password}
-				class="col-span-3"
-			/>
-		</div>
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="secure" class="text-left"
-				>{$t('app.components.ingestion_source_form.use_tls')}</Label
-			>
-			<Checkbox id="secure" bind:checked={formData.providerConfig.secure} />
-		</div>
-		<div class="grid grid-cols-4 items-center gap-4">
-			<Label for="allowInsecureCert" class="text-left"
-				>{$t('app.components.ingestion_source_form.allow_insecure_cert')}</Label
-			>
-			<Checkbox
-				id="allowInsecureCert"
-				bind:checked={formData.providerConfig.allowInsecureCert}
-			/>
-		</div>
-	{:else if formData.provider === 'pst_import'}
+	<!-- Import method and file inputs are create-only. Editing an import just renames
+	     it; the emails are already imported and are never changed here. -->
+	{#if !source}
 		<div class="grid grid-cols-4 items-start gap-4">
 			<Label class="pt-2 text-left"
-				>{$t('app.components.ingestion_source_form.import_method')}</Label
+				>{$t('app.components.import_source_form.import_method')}</Label
 			>
-			<RadioGroup.Root bind:value={importMethod} class="col-span-3 flex flex-col space-y-1">
-				<div class="flex items-center space-x-2">
-					<RadioGroup.Item value="upload" id="pst-upload" />
-					<Label for="pst-upload"
-						>{$t('app.components.ingestion_source_form.upload_file')}</Label
+			<Select.Root name="importMethod" bind:value={importMethod} type="single">
+				<Select.Trigger class="col-span-3">
+					{importMethodLabel}
+				</Select.Trigger>
+				<Select.Content>
+					<Select.Item value="mbox-files"
+						>{$t('app.components.import_source_form.mbox_files')}</Select.Item
 					>
-				</div>
-				<div class="flex items-center space-x-2">
-					<RadioGroup.Item value="local" id="pst-local" />
-					<Label for="pst-local"
-						>{$t('app.components.ingestion_source_form.local_path')}</Label
+					<Select.Item value="mbox-folder"
+						>{$t('app.components.import_source_form.apple_mail_folder')}</Select.Item
 					>
-				</div>
-			</RadioGroup.Root>
+					<Select.Item value="eml-zip"
+						>{$t(
+							'app.components.import_source_form.provider_eml_import'
+						)}</Select.Item
+					>
+					<Select.Item value="local"
+						>{$t('app.components.import_source_form.local_path')}</Select.Item
+					>
+				</Select.Content>
+			</Select.Root>
 		</div>
 
-		{#if importMethod === 'upload'}
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="pst-file" class="text-left"
-					>{$t('app.components.ingestion_source_form.pst_file')}</Label
-				>
-				<div class="col-span-3 flex flex-row items-center space-x-2">
-					<Input
-						id="pst-file"
-						type="file"
-						class=""
-						accept=".pst"
-						onchange={handleFileChange}
-					/>
-					{#if fileUploading}
-						<span class=" text-primary animate-spin"><Loader2 /></span>
-					{/if}
-				</div>
-			</div>
-		{:else}
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="pst-local-path" class="text-left"
-					>{$t('app.components.ingestion_source_form.local_file_path')}</Label
-				>
-				<Input
-					id="pst-local-path"
-					bind:value={formData.providerConfig.localFilePath}
-					placeholder="/path/to/file.pst"
-					class="col-span-3"
-				/>
-			</div>
-		{/if}
-	{:else if formData.provider === 'eml_import'}
-		<div class="grid grid-cols-4 items-start gap-4">
-			<Label class="pt-2 text-left"
-				>{$t('app.components.ingestion_source_form.import_method')}</Label
-			>
-			<RadioGroup.Root bind:value={importMethod} class="col-span-3 flex flex-col space-y-1">
-				<div class="flex items-center space-x-2">
-					<RadioGroup.Item value="upload" id="eml-upload" />
-					<Label for="eml-upload"
-						>{$t('app.components.ingestion_source_form.upload_file')}</Label
-					>
-				</div>
-				<div class="flex items-center space-x-2">
-					<RadioGroup.Item value="local" id="eml-local" />
-					<Label for="eml-local"
-						>{$t('app.components.ingestion_source_form.local_path')}</Label
-					>
-				</div>
-			</RadioGroup.Root>
-		</div>
-
-		{#if importMethod === 'upload'}
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="eml-file" class="text-left"
-					>{$t('app.components.ingestion_source_form.eml_file')}</Label
-				>
-				<div class="col-span-3 flex flex-row items-center space-x-2">
-					<Input
-						id="eml-file"
-						type="file"
-						class=""
-						accept=".zip"
-						onchange={handleFileChange}
-					/>
-					{#if fileUploading}
-						<span class=" text-primary animate-spin"><Loader2 /></span>
-					{/if}
-				</div>
-			</div>
-		{:else}
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="eml-local-path" class="text-left"
-					>{$t('app.components.ingestion_source_form.local_file_path')}</Label
-				>
-				<Input
-					id="eml-local-path"
-					bind:value={formData.providerConfig.localFilePath}
-					placeholder="/path/to/file.zip"
-					class="col-span-3"
-				/>
-			</div>
-		{/if}
-	{:else if formData.provider === 'mbox_import'}
-		<div class="grid grid-cols-4 items-start gap-4">
-			<Label class="pt-2 text-left"
-				>{$t('app.components.ingestion_source_form.import_method')}</Label
-			>
-			<RadioGroup.Root bind:value={importMethod} class="col-span-3 flex flex-col space-y-1">
-				<div class="flex items-center space-x-2">
-					<RadioGroup.Item value="upload" id="mbox-upload" />
-					<Label for="mbox-upload"
-						>{$t('app.components.ingestion_source_form.upload_file')}</Label
-					>
-				</div>
-				<div class="flex items-center space-x-2">
-					<RadioGroup.Item value="local" id="mbox-local" />
-					<Label for="mbox-local"
-						>{$t('app.components.ingestion_source_form.local_path')}</Label
-					>
-				</div>
-			</RadioGroup.Root>
-		</div>
-
-		{#if importMethod === 'upload'}
+		{#if importMethod === 'mbox-files'}
 			<div class="grid grid-cols-4 items-center gap-4">
 				<Label for="mbox-file" class="text-left"
-					>{$t('app.components.ingestion_source_form.mbox_file')}</Label
+					>{$t('app.components.import_source_form.mbox_files')}</Label
 				>
-				<div class="col-span-3 flex flex-row items-center space-x-2">
+				<div class="col-span-3">
 					<Input
 						id="mbox-file"
 						type="file"
-						class=""
 						accept=".mbox"
+						multiple
 						onchange={handleFileChange}
 					/>
+				</div>
+			</div>
+		{:else if importMethod === 'mbox-folder'}
+			<div class="grid grid-cols-4 items-start gap-4">
+				<Label for="mbox-folder" class="pt-2 text-left"
+					>{$t('app.components.import_source_form.apple_mail_folder')}</Label
+				>
+				<div class="col-span-3 space-y-1">
+					<Input
+						id="mbox-folder"
+						type="file"
+						accept=".emlx"
+						multiple
+						webkitdirectory
+						onchange={handleFileChange}
+					/>
+					<p class="text-muted-foreground text-xs">
+						{$t('app.components.import_source_form.apple_mail_folder_help')}
+					</p>
+				</div>
+			</div>
+		{:else if importMethod === 'eml-zip'}
+			<div class="grid grid-cols-4 items-center gap-4">
+				<Label for="eml-file" class="text-left"
+					>{$t('app.components.import_source_form.eml_file')}</Label
+				>
+				<div class="col-span-3 flex flex-row items-center space-x-2">
+					<Input id="eml-file" type="file" accept=".zip" onchange={handleFileChange} />
 					{#if fileUploading}
 						<span class=" text-primary animate-spin"><Loader2 /></span>
 					{/if}
 				</div>
 			</div>
 		{:else}
-			<div class="grid grid-cols-4 items-center gap-4">
+			<div class="grid grid-cols-4 items-start gap-4">
 				<Label for="mbox-local-path" class="text-left"
-					>{$t('app.components.ingestion_source_form.local_file_path')}</Label
+					>{$t('app.components.import_source_form.local_file_path')}</Label
 				>
-				<Input
-					id="mbox-local-path"
-					bind:value={formData.providerConfig.localFilePath}
-					placeholder="/path/to/file-or-folder"
-					class="col-span-3"
-				/>
-			</div>
-		{/if}
-	{/if}
-	{#if formData.provider === 'google_workspace' || formData.provider === 'microsoft_365'}
-		<Alert.Root>
-			<Alert.Title>{$t('app.components.ingestion_source_form.heads_up')}</Alert.Title>
-			<Alert.Description>
-				<div class="my-1">
-					{@html $t('app.components.ingestion_source_form.org_wide_warning')}
-				</div>
-			</Alert.Description>
-		</Alert.Root>
-	{/if}
-
-	<!-- Advanced Options (collapsible) -->
-	<div class="border-t pt-2">
-		<button
-			type="button"
-			class="text-muted-foreground flex w-full cursor-pointer items-center gap-1 text-sm font-medium"
-			onclick={() => (showAdvanced = !showAdvanced)}
-		>
-			<ChevronDown class="h-4 w-4 transition-transform {showAdvanced ? 'rotate-180' : ''}" />
-			{$t('app.components.ingestion_source_form.advanced_options')}
-		</button>
-
-		{#if showAdvanced}
-			<div class="mt-3 grid gap-4">
-				<div class="grid grid-cols-4 items-center gap-4">
-					<div class="flex items-center gap-1 text-left">
-						<Label for="preserveOriginalFile"
-							>{$t(
-								'app.components.ingestion_source_form.preserve_original_file'
-							)}</Label
-						>
-						<span
-							use:tippy={{
-								allowHTML: true,
-								content: $t(
-									'app.components.ingestion_source_form.preserve_original_file_tooltip'
-								),
-								interactive: true,
-								delay: 500,
-							}}
-							class="text-muted-foreground cursor-help"
-						>
-							<Info class="h-4 w-4" />
-						</span>
-					</div>
-					<Checkbox
-						id="preserveOriginalFile"
-						bind:checked={formData.preserveOriginalFile}
+				<div class="col-span-3 space-y-1">
+					<Input
+						id="mbox-local-path"
+						bind:value={formData.providerConfig.localFilePath}
+						placeholder="/path/inside-container"
 					/>
+					<p class="text-muted-foreground text-xs">
+						{$t('app.components.import_source_form.local_path_container_help')}
+					</p>
 				</div>
-
-				<!-- Merge into existing ingestion (create mode only, when existing sources exist) -->
-				{#if !source && mergeableRootSources.length > 0}
-					<div class="grid grid-cols-4 items-center gap-4">
-						<div class="flex items-center gap-1 text-left">
-							<Label for="mergeEnabled"
-								>{$t('app.components.ingestion_source_form.merge_into')}</Label
-							>
-							<span
-								use:tippy={{
-									allowHTML: true,
-									content: $t(
-										'app.components.ingestion_source_form.merge_into_tooltip'
-									),
-									interactive: true,
-									delay: 500,
-								}}
-								class="text-muted-foreground cursor-help"
-							>
-								<Info class="h-4 w-4" />
-							</span>
-						</div>
-						<Checkbox id="mergeEnabled" bind:checked={mergeEnabled} />
-					</div>
-
-					{#if mergeEnabled}
-						<div class="grid grid-cols-4 items-center gap-4">
-							<div class="col-span-1"></div>
-							<div class="col-span-3">
-								<Select.Root
-									name="mergedIntoId"
-									bind:value={formData.mergedIntoId}
-									type="single"
-								>
-									<Select.Trigger class="w-full">
-										{mergeTriggerContent}
-									</Select.Trigger>
-									<Select.Content>
-										{#each mergeableRootSources as rootSource}
-											<Select.Item value={rootSource.id}>
-												{rootSource.name} ({rootSource.provider
-													.split('_')
-													.join(' ')})
-											</Select.Item>
-										{/each}
-									</Select.Content>
-								</Select.Root>
-							</div>
-						</div>
-					{/if}
-				{/if}
 			</div>
 		{/if}
-	</div>
+
+		{#if (importMethod === 'mbox-files' || importMethod === 'mbox-folder') && (fileUploading || formData.providerConfig.uploadedFiles?.length)}
+			<div class="grid grid-cols-4 items-center gap-4">
+				<div></div>
+				<div class="text-muted-foreground col-span-3 flex items-center gap-2 text-sm">
+					{#if fileUploading}
+						<span class="text-primary animate-spin"><Loader2 /></span>
+					{/if}
+					{#if formData.providerConfig.uploadedFiles?.length}
+						<span>
+							{formData.providerConfig.uploadedFiles.length}
+							{$t('app.components.import_source_form.mbox_messages_ready')}
+						</span>
+					{/if}
+				</div>
+			</div>
+		{/if}
+	{/if}
+	<!-- Merge into existing import — shown only when a merge target exists -->
+	{#if !source && mergeableRootSources.length > 0}
+		<div class="mt-2 grid gap-4 border-t pt-4">
+			<div class="grid grid-cols-4 items-center gap-4">
+				<div class="flex items-center gap-1 text-left">
+					<Label for="mergeEnabled"
+						>{$t('app.components.import_source_form.merge_into')}</Label
+					>
+					<span
+						use:tippy={{
+							allowHTML: true,
+							content: $t('app.components.import_source_form.merge_into_tooltip'),
+							interactive: true,
+							delay: 500,
+						}}
+						class="text-muted-foreground cursor-help"
+					>
+						<Info class="h-4 w-4" />
+					</span>
+				</div>
+				<Checkbox id="mergeEnabled" bind:checked={mergeEnabled} />
+			</div>
+
+			{#if mergeEnabled}
+				<div class="grid grid-cols-4 items-center gap-4">
+					<div class="col-span-1"></div>
+					<div class="col-span-3">
+						<Select.Root
+							name="mergedIntoId"
+							bind:value={formData.mergedIntoId}
+							type="single"
+						>
+							<Select.Trigger class="w-full">
+								{mergeTriggerContent}
+							</Select.Trigger>
+							<Select.Content>
+								{#each mergeableRootSources as rootSource}
+									<Select.Item value={rootSource.id}>
+										{rootSource.name} ({rootSource.provider
+											.split('_')
+											.join(' ')})
+									</Select.Item>
+								{/each}
+							</Select.Content>
+						</Select.Root>
+					</div>
+				</div>
+			{/if}
+		</div>
+	{/if}
 
 	<Dialog.Footer>
 		<Button type="submit" disabled={isSubmitting || fileUploading}>

@@ -11,18 +11,17 @@
 
 This fork focuses on a local only, on device archiver, in order to get emails out of bad email clients or off of email servers, into an app that can handle searching and organizing your emails, completely offline.
 
-The changes towards that goal:
+The changes that support that goal:
 
-- **Local-first focus:** setup is oriented around one-device use, local Docker services, generated secrets, loopback defaults, optional heavy services, and personal mode.
-- **Unified archive/search view:** browsing and searching are merged around /dashboard/archived-emails, with advanced filters, field-specific search, sorting, pagination, tags, folders, source filters, attachment filters, and URL-backed controls.
-- **Tags and folders:** added backend services and UI flows for creating folders, moving emails in bulk, and adding/removing tags with batched search-index updates.
-- **Duplicate review:** added exact duplicate grouping/approval and fuzzy duplicate review, with fuzzy scans handled through background jobs and a new /dashboard/duplicates UI.
-- **Remote content archiving:** added remote asset capture, sanitized preview rendering, remote-content worker/queue, safe image-only storage, and strong protections against private IPs, DNS rebinding, redirects, unsafe ports, oversized files, and unsafe content types.
-- **IAM/multi-user complexity removed:** IAM routes, services, policies, permission middleware, role/user admin screens, and IAM docs were removed or hidden. The app now treats the local authenticated owner as having full local access.
-- **Import provenance and folders:** imported emails now preserve source folder/label paths while also getting a mutable local folder path. New imports land under their own import tree, but messages can be moved later.
-- **Attachment indicators:** email/search/thread rows use indexed hasAttachments metadata instead of per-row attachment lookups.
-- **Performance tooling:** added scripts/perf-baseline.mjs and packages/backend/scripts/seed-perf-data.mjs, plus a synthetic benchmark fixture. Current synthetic baseline was clean on 2,500 messages.
-- **Docs/install changes:** README, install docs, API docs, .env.example, Docker Compose, and local setup scripts were updated for the local-first direction.
+- **Runs entirely on your machine.** No accounts and no login — you're the sole owner with full access. It stays on `127.0.0.1` and starts with one command.
+- **Import from files, not live mailboxes.** Bring your mail in once from `.mbox` or `.eml` files instead of connecting to email servers, keeping the original folder structure.
+- **Your mailbox is the home screen.** Browse and search your whole archive in one place; the dashboard is still there, just not the center.
+- **Fast search and filtering.** Search by field, tag, source, or attachment, then sort and page through results — every view is a URL you can bookmark.
+- **Organize with tags.** Add or remove tags on any email and filter by them.
+- **Clean up duplicates.** Exact copies are grouped for one-click removal; near-duplicates are surfaced for review.
+- **Emails render correctly offline.** Remote images are saved at import time and shown in a safe preview, so archived mail looks right without going back online.
+- **Easier on the eyes:** Uses [Everforest](https://github.com/sainnhe/everforest)
+
 
 ## Tech Stack
 
@@ -32,7 +31,7 @@ Open Archiver is built on a modern, scalable, and maintainable technology stack:
 - **Backend**: Node.js with Express.js & TypeScript
 - **Job Queue**: BullMQ on Redis for robust, asynchronous processing. (We use Valkey as the Redis service in the Docker Compose deployment mode, but you can use Redis as well.)
 - **Search Engine**: Meilisearch for blazingly fast and resource-efficient search
-- **Database**: PostgreSQL for metadata, user management, and audit logs
+- **Database**: PostgreSQL for email metadata and application state
 - **Deployment**: Docker Compose deployment
 
 ## Deployment
@@ -78,32 +77,30 @@ Open Archiver is built on a modern, scalable, and maintainable technology stack:
     npm run local:up:tika
     ```
 
-    For reference, [.env.example](.env.example) shows every variable used by the local Docker install. You normally do not need to copy it manually.
+    For reference, [.env.example](.env.example) lists the variables the local Docker install can use, including optional ones you normally won't need. You normally do not need to copy it manually.
 
 3.  **Access the application:**
     Once the services are running, you can access the Open Archiver web interface by navigating to `http://127.0.0.1:3000` in your web browser.
 
 ### Updating A Running Local Install
 
-When a new Docker image has been published, update the running local stack with:
+The app image is built from your local source, so update by rebuilding. `update-local.sh` runs the whole update end to end:
 
 ```bash
-git pull
-docker compose pull
-docker compose up -d
-docker compose ps
+./update-local.sh
 ```
 
-This preserves the Docker volumes that hold your database, search index, queue data, and archived files. To watch the app restart, run:
+It backs up the database to `backups/` as a safety net, pulls the latest code (`git pull --ff-only`), rebuilds the image, recreates the app container (schema migrations run automatically on start), and waits for the app to return healthy.
+
+Your data is safe regardless — recreating the container preserves the named Docker volumes that hold your database, search index, queue data, and archived files. To watch the app restart afterward, run:
 
 ```bash
 docker compose logs -f open-archiver
 ```
 
-## Data Source Configuration
+## Importing Your Email
 
-After deploying the application, you will need to configure one or more ingestion sources to begin archiving emails. Or you can import .mbox, .eml, or .pst. Follow detailed guides to connect to your email provider:
+This fork does not connect to live mailboxes or run continuous ingestion. Instead, you import your existing mail once from static files through the web interface. Two formats are supported:
 
-- [Connecting to Google Workspace](https://docs.openarchiver.com/user-guides/email-providers/google-workspace.html)
-- [Connecting to Microsoft 365](https://docs.openarchiver.com/user-guides/email-providers/imap.html)
-- [Connecting to a Generic IMAP Server](https://docs.openarchiver.com/user-guides/email-providers/imap.html)
+- **[Mbox import](docs/user-guides/email-providers/mbox.md)** — a single `.mbox` file, or a folder of them (nested directories are scanned recursively).
+- **[EML import](docs/user-guides/email-providers/eml.md)** — a zip archive of `.eml` files; the folder structure inside the zip is preserved.

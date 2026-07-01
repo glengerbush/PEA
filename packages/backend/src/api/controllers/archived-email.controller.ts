@@ -1,9 +1,7 @@
 import { Request, Response } from 'express';
 import { ArchivedEmailService } from '../../services/ArchivedEmailService';
 import { UserService } from '../../services/UserService';
-import { checkDeletionEnabled } from '../../helpers/deletionGuard';
 import { SearchService } from '../../services/SearchService';
-import { ArchiveFolderService } from '../../services/ArchiveFolderService';
 import { ArchiveTagService } from '../../services/ArchiveTagService';
 import { DuplicateReviewService } from '../../services/DuplicateReviewService';
 import { RemoteContentService } from '../../services/RemoteContentService';
@@ -11,11 +9,11 @@ import type {
 	ApproveExactDuplicatesDto,
 	ApproveFuzzyDuplicatesDto,
 	ArchiveQuery,
+	BulkDeleteArchivedEmailsDto,
 	ArchiveSearchField,
 	ArchiveSortField,
 	IgnoreFuzzyDuplicateGroupsDto,
 	MatchingStrategy,
-	MoveArchivedEmailsDto,
 	ScanFuzzyDuplicatesDto,
 	SortDirection,
 	UpdateArchivedEmailTagsDto,
@@ -34,7 +32,6 @@ const SEARCH_FIELDS = new Set<ArchiveSearchField>([
 	'userEmail',
 	'sourcePath',
 	'sourceLabels',
-	'localFolderPath',
 	'tags',
 ]);
 
@@ -126,12 +123,7 @@ export class ArchivedEmailController {
 			const sourcePath = firstQueryValue(req.query.sourcePath);
 			const sourceLabels = splitQueryList(req.query.sourceLabels);
 			const tags = splitQueryList(req.query.tags);
-			const localFolderId = firstQueryValue(req.query.localFolderId);
-			const localFolderPath = firstQueryValue(req.query.localFolderPath);
-			const duplicateReviewStatus = firstQueryValue(req.query.duplicateReviewStatus);
 			const hasAttachments = parseBoolean(req.query.hasAttachments);
-			const includeHiddenDuplicates = parseBoolean(req.query.includeHiddenDuplicates);
-			const isDuplicateHidden = parseBoolean(req.query.isDuplicateHidden);
 
 			if (ingestionSourceId) filters.ingestionSourceId = ingestionSourceId;
 			if (userEmail) filters.userEmail = userEmail;
@@ -142,14 +134,7 @@ export class ArchivedEmailController {
 			if (sourcePath) filters.sourcePath = sourcePath;
 			if (sourceLabels.length > 0) filters.sourceLabels = sourceLabels;
 			if (tags.length > 0) filters.tags = tags;
-			if (localFolderId) filters.localFolderId = localFolderId;
-			if (localFolderPath) filters.localFolderPath = localFolderPath;
-			if (duplicateReviewStatus) filters.duplicateReviewStatus = duplicateReviewStatus;
 			if (hasAttachments !== undefined) filters.hasAttachments = hasAttachments;
-			if (includeHiddenDuplicates !== undefined) {
-				filters.includeHiddenDuplicates = includeHiddenDuplicates;
-			}
-			if (isDuplicateHidden !== undefined) filters.isDuplicateHidden = isDuplicateHidden;
 
 			for (const key of [
 				'sentAfter',
@@ -188,74 +173,20 @@ export class ArchivedEmailController {
 		}
 	};
 
-	public listFolders = async (req: Request, res: Response): Promise<Response> => {
+	public listFilterFacets = async (req: Request, res: Response): Promise<Response> => {
 		try {
 			const userId = req.user?.sub;
 			if (!userId) {
 				return res.status(401).json({ message: req.t('errors.unauthorized') });
 			}
 
-			const folders = await ArchiveFolderService.listFolders();
-			return res.status(200).json(folders);
+			const facets = await this.searchService.getFilterFacets();
+			return res.status(200).json(facets);
 		} catch (error) {
-			console.error('List archive folders error:', error);
+			console.error('List archive filter facets error:', error);
 			const message =
 				error instanceof Error ? error.message : req.t('errors.internalServerError');
 			return res.status(500).json({ message });
-		}
-	};
-
-	public createFolder = async (req: Request, res: Response): Promise<Response> => {
-		try {
-			const userId = req.user?.sub;
-			if (!userId) {
-				return res.status(401).json({ message: req.t('errors.unauthorized') });
-			}
-
-			const localFolderPath =
-				typeof req.body?.localFolderPath === 'string'
-					? req.body.localFolderPath
-					: req.body?.path;
-			if (typeof localFolderPath !== 'string') {
-				return res.status(400).json({ message: 'Folder path is required' });
-			}
-
-			const folder = await ArchiveFolderService.createFolder(localFolderPath);
-			return res.status(201).json(folder);
-		} catch (error) {
-			console.error('Create archive folder error:', error);
-			const message =
-				error instanceof Error ? error.message : req.t('errors.internalServerError');
-			return res.status(400).json({ message });
-		}
-	};
-
-	public moveArchivedEmails = async (req: Request, res: Response): Promise<Response> => {
-		try {
-			const userId = req.user?.sub;
-			if (!userId) {
-				return res.status(401).json({ message: req.t('errors.unauthorized') });
-			}
-
-			const dto = req.body as Partial<MoveArchivedEmailsDto>;
-			if (!Array.isArray(dto.emailIds) || typeof dto.localFolderPath !== 'string') {
-				return res.status(400).json({
-					message: 'emailIds and localFolderPath are required',
-				});
-			}
-
-			const result = await ArchiveFolderService.moveEmailsToFolder(
-				dto.emailIds,
-				dto.localFolderPath,
-				userId,
-				req.ip || 'unknown'
-			);
-			return res.status(200).json(result);
-		} catch (error) {
-			console.error('Move archived emails error:', error);
-			const message =
-				error instanceof Error ? error.message : req.t('errors.internalServerError');
-			return res.status(400).json({ message });
 		}
 	};
 
@@ -296,9 +227,19 @@ export class ArchivedEmailController {
 				return res.status(401).json({ message: req.t('errors.unauthorized') });
 			}
 
+			const allowedReasons = new Set([
+				'message_id',
+				'storage_hash',
+				'attachment_hash_set',
+				'sender_recipients_sent',
+			]);
+			const reasonParam = firstQueryValue(req.query.reason);
+			const reason = reasonParam && allowedReasons.has(reasonParam) ? reasonParam : undefined;
+
 			const result = await DuplicateReviewService.listExactDuplicateGroups(
 				parsePositiveInteger(req.query.page),
-				parsePositiveInteger(req.query.limit)
+				parsePositiveInteger(req.query.limit),
+				reason
 			);
 			return res.status(200).json(result);
 		} catch (error) {
@@ -456,6 +397,24 @@ export class ArchivedEmailController {
 		}
 	};
 
+	public listRemoteContentAssets = async (req: Request, res: Response): Promise<Response> => {
+		try {
+			const userId = req.user?.sub;
+			if (!userId) {
+				return res.status(401).json({ message: req.t('errors.unauthorized') });
+			}
+
+			const assets = await RemoteContentService.listRemoteAssets(req.params.id);
+			return res.status(200).json(assets);
+		} catch (error) {
+			console.error('List remote content assets error:', error);
+			const message =
+				error instanceof Error ? error.message : req.t('errors.internalServerError');
+			const status = message === 'Archived email not found' ? 404 : 500;
+			return res.status(status).json({ message });
+		}
+	};
+
 	public getRemoteContentAsset = async (req: Request, res: Response): Promise<void> => {
 		try {
 			const userId = req.user?.sub;
@@ -540,16 +499,46 @@ export class ArchivedEmailController {
 		}
 	};
 
-	public deleteArchivedEmail = async (req: Request, res: Response): Promise<Response> => {
-		// Guard: return 400 if deletion is disabled in system settings before touching anything else
-		try {
-			checkDeletionEnabled();
-		} catch (error) {
-			return res.status(400).json({
-				message: error instanceof Error ? error.message : req.t('errors.deletionDisabled'),
-			});
+	public bulkDeleteArchivedEmails = async (req: Request, res: Response): Promise<Response> => {
+		const userId = req.user?.sub;
+		if (!userId) {
+			return res.status(401).json({ message: req.t('errors.unauthorized') });
+		}
+		const actor = await this.userService.findById(userId);
+		if (!actor) {
+			return res.status(401).json({ message: req.t('errors.unauthorized') });
 		}
 
+		const dto = req.body as Partial<BulkDeleteArchivedEmailsDto>;
+		if (!Array.isArray(dto.emailIds) || dto.emailIds.length === 0) {
+			return res.status(400).json({ message: 'emailIds are required' });
+		}
+
+		const deletedIds: string[] = [];
+		const failed: { id: string; reason: string }[] = [];
+		// Delete one at a time so each email keeps its per-email guards (legal
+		// hold / retention policy) and a single blocked email doesn't fail the batch.
+		for (const id of dto.emailIds) {
+			try {
+				await ArchivedEmailService.deleteArchivedEmail(id, actor, req.ip || 'unknown');
+				deletedIds.push(id);
+			} catch (error) {
+				failed.push({
+					id,
+					reason: error instanceof Error ? error.message : 'Unknown error',
+				});
+			}
+		}
+
+		return res.status(200).json({
+			requestedCount: dto.emailIds.length,
+			deletedCount: deletedIds.length,
+			deletedIds,
+			failed,
+		});
+	};
+
+	public deleteArchivedEmail = async (req: Request, res: Response): Promise<Response> => {
 		const { id } = req.params;
 		const userId = req.user?.sub;
 		if (!userId) {
@@ -568,10 +557,6 @@ export class ArchivedEmailController {
 			if (error instanceof Error) {
 				if (error.message === 'Archived email not found') {
 					return res.status(404).json({ message: req.t('archivedEmail.notFound') });
-				}
-				// Retention policy / legal hold blocks are user-facing 400 errors
-				if (error.message.startsWith('Deletion blocked by retention policy')) {
-					return res.status(400).json({ message: error.message });
 				}
 				return res.status(500).json({ message: error.message });
 			}

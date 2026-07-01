@@ -2,22 +2,18 @@ import { compare } from 'bcryptjs';
 import { SignJWT, jwtVerify } from 'jose';
 import type { AuthTokenPayload, LoginResponse } from '@open-archiver/types';
 import { UserService } from './UserService';
-import { AuditService } from './AuditService';
 
 export class AuthService {
 	#userService: UserService;
-	#auditService: AuditService;
 	#jwtSecret: Uint8Array;
 	#jwtExpiresIn: string;
 
 	constructor(
 		userService: UserService,
-		auditService: AuditService,
 		jwtSecret: string,
 		jwtExpiresIn: string
 	) {
 		this.#userService = userService;
-		this.#auditService = auditService;
 		this.#jwtSecret = new TextEncoder().encode(jwtSecret);
 		this.#jwtExpiresIn = jwtExpiresIn;
 	}
@@ -42,32 +38,12 @@ export class AuthService {
 		const user = await this.#userService.findByEmail(email);
 
 		if (!user || !user.password) {
-			await this.#auditService.createAuditLog({
-				actorIdentifier: email,
-				actionType: 'LOGIN',
-				targetType: 'User',
-				targetId: email,
-				actorIp: ip,
-				details: {
-					error: 'UserNotFound',
-				},
-			});
 			return null; // User not found or password not set
 		}
 
 		const isPasswordValid = await this.verifyPassword(password, user.password);
 
 		if (!isPasswordValid) {
-			await this.#auditService.createAuditLog({
-				actorIdentifier: user.id,
-				actionType: 'LOGIN',
-				targetType: 'User',
-				targetId: user.id,
-				actorIp: ip,
-				details: {
-					error: 'InvalidPassword',
-				},
-			});
 			return null; // Invalid password
 		}
 
@@ -76,14 +52,6 @@ export class AuthService {
 			email: user.email,
 		});
 
-		await this.#auditService.createAuditLog({
-			actorIdentifier: user.id,
-			actionType: 'LOGIN',
-			targetType: 'User',
-			targetId: user.id,
-			actorIp: ip,
-			details: {},
-		});
 
 		return {
 			accessToken,

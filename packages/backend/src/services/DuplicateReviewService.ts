@@ -1,8 +1,9 @@
-import { inArray, sql } from 'drizzle-orm';
+import { asc, inArray, sql } from 'drizzle-orm';
 import { db } from '../database';
 import { archivedEmails, fuzzyDuplicateGroups } from '../database/schema';
-import { AuditService } from './AuditService';
-import { SearchService } from './SearchService';
+import { ArchivedEmailService } from './ArchivedEmailService';
+import { UserService } from './UserService';
+import { logger } from '../config/logger';
 import { indexingQueue } from '../jobs/queues';
 import type {
 	ApproveExactDuplicateGroupDto,
@@ -19,6 +20,7 @@ import type {
 	FuzzyDuplicateSignals,
 	IgnoreFuzzyDuplicateGroupsResult,
 	ScanFuzzyDuplicatesResult,
+	User,
 } from '@open-archiver/types';
 
 type RawGroupRow = {
@@ -37,12 +39,8 @@ type RawEmailRow = {
 	archived_at: Date | string;
 	has_attachments: boolean;
 	source_path: string | null;
-	local_folder_path: string | null;
 	message_id_header: string | null;
 	storage_hash_sha256: string;
-	duplicate_of_email_id: string | null;
-	duplicate_review_status: string;
-	is_duplicate_hidden: boolean;
 };
 
 type RawFuzzyGroupRow = {
@@ -63,7 +61,6 @@ const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const DEFAULT_FUZZY_SCAN_BATCH_SIZE = 100;
 const MAX_FUZZY_SCAN_BATCH_SIZE = 500;
-const INDEX_UPDATE_BATCH_SIZE = 500;
 
 function clampPositiveInteger(value: number | undefined, fallback: number, max: number): number {
 	if (!value || !Number.isFinite(value) || value < 1) {
@@ -97,12 +94,8 @@ function mapEmail(row: RawEmailRow): ExactDuplicateEmail {
 		archivedAt: new Date(row.archived_at),
 		hasAttachments: row.has_attachments,
 		sourcePath: row.source_path,
-		localFolderPath: row.local_folder_path,
 		messageIdHeader: row.message_id_header,
 		storageHashSha256: row.storage_hash_sha256,
-		duplicateOfEmailId: row.duplicate_of_email_id,
-		duplicateReviewStatus: row.duplicate_review_status,
-		isDuplicateHidden: row.is_duplicate_hidden,
 	};
 }
 
@@ -113,119 +106,161 @@ function mapFuzzyEmail(row: RawFuzzyEmailRow): FuzzyDuplicateEmail {
 	};
 }
 
+// From + recipients + exact send time. Catches duplicates whose body/subject or
+// styling differ (e.g. broken HTML) but whose headers are identical — if the
+// sender, the full recipient set, and the send timestamp all match, it's almost
+// certainly the same message.
+function headersFingerprintSql() {
+	return sql`md5(lower(coalesce(sender_email, '')) || '|' || coalesce(duplicate_recipient_fingerprint, '') || '|' || extract(epoch from sent_at)::text)`;
+}
+
 export class DuplicateReviewService {
-	private static auditService = new AuditService();
-	private static searchService = new SearchService();
 
 	public static async listExactDuplicateGroups(
 		page?: number,
-		limit?: number
+		limit?: number,
+		reason?: string
 	): Promise<ExactDuplicateGroupsResult> {
 		const normalizedPage = clampPositiveInteger(page, 1, Number.MAX_SAFE_INTEGER);
 		const normalizedLimit = clampPositiveInteger(limit, DEFAULT_LIMIT, MAX_LIMIT);
 		const offset = (normalizedPage - 1) * normalizedLimit;
 
-		const totalRows = toRows<{ total_groups: number | string | bigint }>(
+		// Pull every email's duplicate signals in one pass, then group by CONNECTED
+		// COMPONENT (union-find). A cluster that matches several signals (e.g. same
+		// Message-ID AND same raw hash) becomes ONE group tagged with all matching
+		// reasons — not one overlapping group per signal. Scoped to a personal-size
+		// archive; a very large archive would want an incremental approach.
+		const signalRows = toRows<{
+			id: string;
+			message_id: string | null;
+			storage_hash: string | null;
+			attachment_fp: string | null;
+			headers_fp: string | null;
+		}>(
 			await db.execute(sql`
 				WITH attachment_sets AS (
-					SELECT
-						ae.id AS email_id,
-						string_agg(a.content_hash_sha256, ',' ORDER BY a.content_hash_sha256) AS fingerprint
+					SELECT ae.id AS email_id,
+						string_agg(a.content_hash_sha256, ',' ORDER BY a.content_hash_sha256) AS att_fp
 					FROM archived_emails ae
 					JOIN email_attachments ea ON ea.email_id = ae.id
 					JOIN attachments a ON a.id = ea.attachment_id
-					WHERE ae.is_duplicate_hidden = false
 					GROUP BY ae.id
 					HAVING count(a.id) > 0
-				),
-				exact_groups AS (
-					SELECT 'message_id'::text AS reason, message_id_header::text AS fingerprint
-					FROM archived_emails
-					WHERE is_duplicate_hidden = false
-						AND message_id_header IS NOT NULL
-						AND message_id_header <> ''
-					GROUP BY message_id_header
-					HAVING count(*) > 1
-					UNION ALL
-					SELECT 'storage_hash'::text AS reason, storage_hash_sha256::text AS fingerprint
-					FROM archived_emails
-					WHERE is_duplicate_hidden = false
-						AND storage_hash_sha256 IS NOT NULL
-						AND storage_hash_sha256 <> ''
-					GROUP BY storage_hash_sha256
-					HAVING count(*) > 1
-					UNION ALL
-					SELECT 'attachment_hash_set'::text AS reason, fingerprint::text AS fingerprint
-					FROM attachment_sets
-					WHERE fingerprint IS NOT NULL AND fingerprint <> ''
-					GROUP BY fingerprint
-					HAVING count(*) > 1
 				)
-				SELECT count(*) AS total_groups FROM exact_groups
+				SELECT ae.id::text AS id,
+					nullif(ae.message_id_header, '') AS message_id,
+					nullif(ae.storage_hash_sha256, '') AS storage_hash,
+					s.att_fp AS attachment_fp,
+					CASE
+						WHEN ae.sender_email IS NOT NULL AND ae.sender_email <> ''
+							AND ae.duplicate_recipient_fingerprint IS NOT NULL
+						THEN ${headersFingerprintSql()}
+					END AS headers_fp
+				FROM archived_emails ae
+				LEFT JOIN attachment_sets s ON s.email_id = ae.id
 			`)
 		);
 
-		const groupRows = toRows<RawGroupRow>(
-			await db.execute(sql`
-				WITH attachment_sets AS (
-					SELECT
-						ae.id AS email_id,
-						string_agg(a.content_hash_sha256, ',' ORDER BY a.content_hash_sha256) AS fingerprint
-					FROM archived_emails ae
-					JOIN email_attachments ea ON ea.email_id = ae.id
-					JOIN attachments a ON a.id = ea.attachment_id
-					WHERE ae.is_duplicate_hidden = false
-					GROUP BY ae.id
-					HAVING count(a.id) > 0
-				),
-				exact_groups AS (
-					SELECT
-						'message_id'::text AS reason,
-						message_id_header::text AS fingerprint,
-						count(*) AS count
-					FROM archived_emails
-					WHERE is_duplicate_hidden = false
-						AND message_id_header IS NOT NULL
-						AND message_id_header <> ''
-					GROUP BY message_id_header
-					HAVING count(*) > 1
-					UNION ALL
-					SELECT
-						'storage_hash'::text AS reason,
-						storage_hash_sha256::text AS fingerprint,
-						count(*) AS count
-					FROM archived_emails
-					WHERE is_duplicate_hidden = false
-						AND storage_hash_sha256 IS NOT NULL
-						AND storage_hash_sha256 <> ''
-					GROUP BY storage_hash_sha256
-					HAVING count(*) > 1
-					UNION ALL
-					SELECT
-						'attachment_hash_set'::text AS reason,
-						fingerprint::text AS fingerprint,
-						count(*) AS count
-					FROM attachment_sets
-					WHERE fingerprint IS NOT NULL AND fingerprint <> ''
-					GROUP BY fingerprint
-					HAVING count(*) > 1
-				)
-				SELECT reason, fingerprint, count
-				FROM exact_groups
-				ORDER BY count DESC, reason ASC, fingerprint ASC
-				LIMIT ${normalizedLimit}
-				OFFSET ${offset}
-			`)
+		// Reason priority (strongest first) — also the primary-reason order.
+		const REASON_KEYS: {
+			key: 'storage_hash' | 'message_id' | 'attachment_fp' | 'headers_fp';
+			reason: ExactDuplicateReason;
+		}[] = [
+			{ key: 'storage_hash', reason: 'storage_hash' },
+			{ key: 'message_id', reason: 'message_id' },
+			{ key: 'attachment_fp', reason: 'attachment_hash_set' },
+			{ key: 'headers_fp', reason: 'sender_recipients_sent' },
+		];
+
+		// value → member email ids, per signal (used for union + reason detection).
+		const byKeyValue: Record<string, Map<string, string[]>> = {
+			storage_hash: new Map(),
+			message_id: new Map(),
+			attachment_fp: new Map(),
+			headers_fp: new Map(),
+		};
+		const parent = new Map<string, string>();
+		const find = (x: string): string => {
+			let root = x;
+			while (parent.get(root) !== root) root = parent.get(root) as string;
+			let cur = x;
+			while (parent.get(cur) !== root) {
+				const next = parent.get(cur) as string;
+				parent.set(cur, root);
+				cur = next;
+			}
+			return root;
+		};
+		const union = (a: string, b: string) => {
+			const ra = find(a);
+			const rb = find(b);
+			if (ra !== rb) parent.set(ra, rb);
+		};
+
+		for (const row of signalRows) {
+			parent.set(row.id, row.id);
+			for (const { key } of REASON_KEYS) {
+				const value = row[key];
+				if (!value) continue;
+				const map = byKeyValue[key];
+				const arr = map.get(value);
+				if (arr) arr.push(row.id);
+				else map.set(value, [row.id]);
+			}
+		}
+		for (const { key } of REASON_KEYS) {
+			for (const ids of byKeyValue[key].values()) {
+				for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+			}
+		}
+
+		// Assemble connected components (size ≥ 2 = a duplicate cluster).
+		const components = new Map<string, string[]>();
+		for (const row of signalRows) {
+			const root = find(row.id);
+			const arr = components.get(root);
+			if (arr) arr.push(row.id);
+			else components.set(root, [row.id]);
+		}
+
+		const minId = (ids: string[]) => ids.reduce((m, x) => (x < m ? x : m), ids[0]);
+		const clusters: { ids: string[]; reasons: ExactDuplicateReason[] }[] = [];
+		for (const ids of components.values()) {
+			if (ids.length < 2) continue;
+			const idSet = new Set(ids);
+			const reasons: ExactDuplicateReason[] = [];
+			for (const { key, reason } of REASON_KEYS) {
+				const applies = [...byKeyValue[key].values()].some(
+					(members) => members.filter((id) => idSet.has(id)).length >= 2
+				);
+				if (applies) reasons.push(reason);
+			}
+			clusters.push({ ids, reasons });
+		}
+
+		const filtered = reason
+			? clusters.filter((c) => c.reasons.includes(reason as ExactDuplicateReason))
+			: clusters;
+		filtered.sort(
+			(a, b) => b.ids.length - a.ids.length || (minId(a.ids) < minId(b.ids) ? -1 : 1)
 		);
+
+		const totalGroups = filtered.length;
+		const pageClusters = filtered.slice(offset, offset + normalizedLimit);
 
 		const groups = await Promise.all(
-			groupRows.map(async (row): Promise<ExactDuplicateGroup> => {
-				const emails = await this.findEmailsForGroup(row.reason, row.fingerprint);
+			pageClusters.map(async (cluster): Promise<ExactDuplicateGroup> => {
+				const emails = await this.findEmailsByIds(cluster.ids);
+				const key = minId(cluster.ids);
+				const primary =
+					REASON_KEYS.map((r) => r.reason).find((r) => cluster.reasons.includes(r)) ||
+					cluster.reasons[0];
 				return {
-					groupKey: groupKey(row.reason, row.fingerprint),
-					reason: row.reason,
-					fingerprint: row.fingerprint,
-					count: toNumber(row.count),
+					groupKey: `cluster:${key}`,
+					reason: primary,
+					reasons: cluster.reasons,
+					fingerprint: key,
+					count: emails.length,
 					keeperEmailId: emails[0]?.id || '',
 					emails,
 				};
@@ -234,10 +269,57 @@ export class DuplicateReviewService {
 
 		return {
 			groups: groups.filter((group) => group.emails.length > 1 && group.keeperEmailId),
-			totalGroups: totalRows[0] ? toNumber(totalRows[0].total_groups) : 0,
+			totalGroups,
 			page: normalizedPage,
 			limit: normalizedLimit,
 		};
+	}
+
+	private static async findEmailsByIds(ids: string[]): Promise<ExactDuplicateEmail[]> {
+		if (ids.length === 0) return [];
+		const rows = await db
+			.select({
+				id: archivedEmails.id,
+				subject: archivedEmails.subject,
+				sender_name: archivedEmails.senderName,
+				sender_email: archivedEmails.senderEmail,
+				user_email: archivedEmails.userEmail,
+				sent_at: archivedEmails.sentAt,
+				archived_at: archivedEmails.archivedAt,
+				has_attachments: archivedEmails.hasAttachments,
+				source_path: archivedEmails.sourcePath,
+				message_id_header: archivedEmails.messageIdHeader,
+				storage_hash_sha256: archivedEmails.storageHashSha256,
+			})
+			.from(archivedEmails)
+			.where(inArray(archivedEmails.id, ids))
+			.orderBy(asc(archivedEmails.sentAt), asc(archivedEmails.archivedAt), asc(archivedEmails.id));
+		return rows.map((row) => mapEmail(row as unknown as RawEmailRow));
+	}
+
+	/**
+	 * Permanently deletes the duplicate copies of a group, reusing the standard
+	 * delete path (DB + search + storage + empty-folder cleanup). The keeper is
+	 * preserved by the caller.
+	 */
+	private static async deleteDuplicateEmails(
+		duplicateEmailIds: string[],
+		actor: User,
+		actorIp: string
+	): Promise<number> {
+		let deleted = 0;
+		for (const emailId of duplicateEmailIds) {
+			try {
+				await ArchivedEmailService.deleteArchivedEmail(emailId, actor, actorIp);
+				deleted += 1;
+			} catch (error) {
+				logger.warn(
+					{ emailId, error: error instanceof Error ? error.message : String(error) },
+					'Failed to delete duplicate email during approval'
+				);
+			}
+		}
+		return deleted;
 	}
 
 	public static async approveExactDuplicateGroups(
@@ -245,14 +327,12 @@ export class DuplicateReviewService {
 		userId: string,
 		actorIp: string
 	): Promise<ApproveExactDuplicatesResult> {
-		const indexUpdates: {
-			id: string;
-			duplicateOfEmailId: string | null;
-			duplicateReviewStatus: string;
-			isDuplicateHidden: boolean;
-		}[] = [];
+		const actor = await new UserService().findById(userId);
+		if (!actor) {
+			throw new Error('Acting user not found');
+		}
 		let approvedGroups = 0;
-		let hiddenEmails = 0;
+		let deletedEmails = 0;
 		let keeperEmails = 0;
 
 		for (const group of groups) {
@@ -269,73 +349,21 @@ export class DuplicateReviewService {
 			}
 
 			const [keeper] = await db
-				.update(archivedEmails)
-				.set({
-					duplicateOfEmailId: null,
-					duplicateReviewStatus: 'keeper',
-					isDuplicateHidden: false,
-				})
-				.where(inArray(archivedEmails.id, [keeperEmailId]))
-				.returning({ id: archivedEmails.id });
+				.select({ id: archivedEmails.id })
+				.from(archivedEmails)
+				.where(inArray(archivedEmails.id, [keeperEmailId]));
 
-			const duplicates = await db
-				.update(archivedEmails)
-				.set({
-					duplicateOfEmailId: keeperEmailId,
-					duplicateReviewStatus: 'approved_duplicate',
-					isDuplicateHidden: true,
-				})
-				.where(inArray(archivedEmails.id, duplicateEmailIds))
-				.returning({ id: archivedEmails.id });
+			// Permanently delete the duplicate copies; keep the keeper.
+			deletedEmails += await this.deleteDuplicateEmails(duplicateEmailIds, actor, actorIp);
 
 			if (keeper) {
 				keeperEmails += 1;
-				indexUpdates.push({
-					id: keeper.id,
-					duplicateOfEmailId: null,
-					duplicateReviewStatus: 'keeper',
-					isDuplicateHidden: false,
-				});
-			}
-
-			for (const duplicate of duplicates) {
-				hiddenEmails += 1;
-				indexUpdates.push({
-					id: duplicate.id,
-					duplicateOfEmailId: keeperEmailId,
-					duplicateReviewStatus: 'approved_duplicate',
-					isDuplicateHidden: true,
-				});
 			}
 
 			approvedGroups += 1;
 		}
 
-		for (let i = 0; i < indexUpdates.length; i += INDEX_UPDATE_BATCH_SIZE) {
-			await this.searchService.updateDocuments(
-				'emails',
-				indexUpdates.slice(i, i + INDEX_UPDATE_BATCH_SIZE),
-				'id'
-			);
-		}
-
-		if (approvedGroups > 0) {
-			await this.auditService.createAuditLog({
-				actorIdentifier: userId,
-				actionType: 'UPDATE',
-				targetType: 'ArchivedEmail',
-				targetId: 'bulk',
-				actorIp,
-				details: {
-					action: 'APPROVE_EXACT_DUPLICATES',
-					approvedGroups,
-					hiddenEmails,
-					keeperEmails,
-				},
-			});
-		}
-
-		return { approvedGroups, hiddenEmails, keeperEmails };
+		return { approvedGroups, deletedEmails, keeperEmails };
 	}
 
 	public static async enqueueFuzzyDuplicateScan(
@@ -391,8 +419,7 @@ export class DuplicateReviewService {
 							WHERE ae.duplicate_attachment_fingerprint IS NOT NULL
 						) AS attachment_hash_count
 					FROM archived_emails ae
-					WHERE ae.is_duplicate_hidden = false
-						AND ae.duplicate_fuzzy_group_key IS NOT NULL
+					WHERE ae.duplicate_fuzzy_group_key IS NOT NULL
 						AND NOT EXISTS (
 							SELECT 1
 							FROM fuzzy_duplicate_groups fdg
@@ -462,15 +489,13 @@ export class DuplicateReviewService {
 						ae.id = (
 							SELECT keeper.id
 							FROM archived_emails keeper
-							WHERE keeper.is_duplicate_hidden = false
-								AND keeper.duplicate_fuzzy_group_key = ug.group_key
+							WHERE keeper.duplicate_fuzzy_group_key = ug.group_key
 							ORDER BY keeper.sent_at ASC, keeper.archived_at ASC, keeper.id ASC
 							LIMIT 1
 						)
 					FROM upserted_groups ug
 					JOIN archived_emails ae
-						ON ae.is_duplicate_hidden = false
-						AND ae.duplicate_fuzzy_group_key = ug.group_key
+						ON ae.duplicate_fuzzy_group_key = ug.group_key
 					ON CONFLICT DO NOTHING
 					RETURNING group_id, email_id
 				)
@@ -548,14 +573,12 @@ export class DuplicateReviewService {
 		userId: string,
 		actorIp: string
 	): Promise<ApproveFuzzyDuplicatesResult> {
-		const indexUpdates: {
-			id: string;
-			duplicateOfEmailId: string | null;
-			duplicateReviewStatus: string;
-			isDuplicateHidden: boolean;
-		}[] = [];
+		const actor = await new UserService().findById(userId);
+		if (!actor) {
+			throw new Error('Acting user not found');
+		}
 		let approvedGroups = 0;
-		let hiddenEmails = 0;
+		let deletedEmails = 0;
 		let keeperEmails = 0;
 
 		for (const group of groups) {
@@ -572,24 +595,12 @@ export class DuplicateReviewService {
 			}
 
 			const [keeper] = await db
-				.update(archivedEmails)
-				.set({
-					duplicateOfEmailId: null,
-					duplicateReviewStatus: 'keeper',
-					isDuplicateHidden: false,
-				})
-				.where(inArray(archivedEmails.id, [keeperEmailId]))
-				.returning({ id: archivedEmails.id });
+				.select({ id: archivedEmails.id })
+				.from(archivedEmails)
+				.where(inArray(archivedEmails.id, [keeperEmailId]));
 
-			const duplicates = await db
-				.update(archivedEmails)
-				.set({
-					duplicateOfEmailId: keeperEmailId,
-					duplicateReviewStatus: 'approved_duplicate',
-					isDuplicateHidden: true,
-				})
-				.where(inArray(archivedEmails.id, duplicateEmailIds))
-				.returning({ id: archivedEmails.id });
+			// Permanently delete the duplicate copies; keep the keeper.
+			deletedEmails += await this.deleteDuplicateEmails(duplicateEmailIds, actor, actorIp);
 
 			await db
 				.update(fuzzyDuplicateGroups)
@@ -598,52 +609,12 @@ export class DuplicateReviewService {
 
 			if (keeper) {
 				keeperEmails += 1;
-				indexUpdates.push({
-					id: keeper.id,
-					duplicateOfEmailId: null,
-					duplicateReviewStatus: 'keeper',
-					isDuplicateHidden: false,
-				});
-			}
-
-			for (const duplicate of duplicates) {
-				hiddenEmails += 1;
-				indexUpdates.push({
-					id: duplicate.id,
-					duplicateOfEmailId: keeperEmailId,
-					duplicateReviewStatus: 'approved_duplicate',
-					isDuplicateHidden: true,
-				});
 			}
 
 			approvedGroups += 1;
 		}
 
-		for (let i = 0; i < indexUpdates.length; i += INDEX_UPDATE_BATCH_SIZE) {
-			await this.searchService.updateDocuments(
-				'emails',
-				indexUpdates.slice(i, i + INDEX_UPDATE_BATCH_SIZE),
-				'id'
-			);
-		}
-
-		if (approvedGroups > 0) {
-			await this.auditService.createAuditLog({
-				actorIdentifier: userId,
-				actionType: 'UPDATE',
-				targetType: 'ArchivedEmail',
-				targetId: 'bulk',
-				actorIp,
-				details: {
-					action: 'APPROVE_FUZZY_DUPLICATES',
-					approvedGroups,
-					hiddenEmails,
-					keeperEmails,
-				},
-			});
-		}
-
-		return { approvedGroups, hiddenEmails, keeperEmails };
+		return { approvedGroups, deletedEmails, keeperEmails };
 	}
 
 	public static async ignoreFuzzyDuplicateGroups(
@@ -663,89 +634,6 @@ export class DuplicateReviewService {
 		return { ignoredGroups: ignored.length };
 	}
 
-	private static async findEmailsForGroup(
-		reason: ExactDuplicateReason,
-		fingerprint: string
-	): Promise<ExactDuplicateEmail[]> {
-		if (reason === 'attachment_hash_set') {
-			return this.findEmailsByAttachmentSet(fingerprint);
-		}
-
-		const column =
-			reason === 'message_id'
-				? sql`message_id_header = ${fingerprint}`
-				: sql`storage_hash_sha256 = ${fingerprint}`;
-
-		const rows = toRows<RawEmailRow>(
-			await db.execute(sql`
-				SELECT
-					id,
-					subject,
-					sender_name,
-					sender_email,
-					user_email,
-					sent_at,
-					archived_at,
-					has_attachments,
-					source_path,
-					local_folder_path,
-					message_id_header,
-					storage_hash_sha256,
-					duplicate_of_email_id,
-					duplicate_review_status,
-					is_duplicate_hidden
-				FROM archived_emails
-				WHERE is_duplicate_hidden = false AND ${column}
-				ORDER BY sent_at ASC, archived_at ASC, id ASC
-			`)
-		);
-
-		return rows.map(mapEmail);
-	}
-
-	private static async findEmailsByAttachmentSet(
-		fingerprint: string
-	): Promise<ExactDuplicateEmail[]> {
-		const rows = toRows<RawEmailRow>(
-			await db.execute(sql`
-				WITH email_sets AS (
-					SELECT
-						ae.id AS email_id,
-						string_agg(a.content_hash_sha256, ',' ORDER BY a.content_hash_sha256) AS fingerprint
-					FROM archived_emails ae
-					JOIN email_attachments ea ON ea.email_id = ae.id
-					JOIN attachments a ON a.id = ea.attachment_id
-					WHERE ae.is_duplicate_hidden = false
-					GROUP BY ae.id
-					HAVING count(a.id) > 0
-				)
-				SELECT
-					ae.id,
-					ae.subject,
-					ae.sender_name,
-					ae.sender_email,
-					ae.user_email,
-					ae.sent_at,
-					ae.archived_at,
-					ae.has_attachments,
-					ae.source_path,
-					ae.local_folder_path,
-					ae.message_id_header,
-					ae.storage_hash_sha256,
-					ae.duplicate_of_email_id,
-					ae.duplicate_review_status,
-					ae.is_duplicate_hidden
-				FROM email_sets es
-				JOIN archived_emails ae ON ae.id = es.email_id
-				WHERE es.fingerprint = ${fingerprint}
-					AND ae.is_duplicate_hidden = false
-				ORDER BY ae.sent_at ASC, ae.archived_at ASC, ae.id ASC
-			`)
-		);
-
-		return rows.map(mapEmail);
-	}
-
 	private static async findEmailsForFuzzyGroup(groupId: string): Promise<FuzzyDuplicateEmail[]> {
 		const rows = toRows<RawFuzzyEmailRow>(
 			await db.execute(sql`
@@ -759,17 +647,12 @@ export class DuplicateReviewService {
 					ae.archived_at,
 					ae.has_attachments,
 					ae.source_path,
-					ae.local_folder_path,
 					ae.message_id_header,
 					ae.storage_hash_sha256,
-					ae.duplicate_of_email_id,
-					ae.duplicate_review_status,
-					ae.is_duplicate_hidden,
 					fge.suggested_keeper
 				FROM fuzzy_duplicate_group_emails fge
 				JOIN archived_emails ae ON ae.id = fge.email_id
 				WHERE fge.group_id = ${groupId}
-					AND ae.is_duplicate_hidden = false
 				ORDER BY fge.suggested_keeper DESC, ae.sent_at ASC, ae.archived_at ASC, ae.id ASC
 			`)
 		);

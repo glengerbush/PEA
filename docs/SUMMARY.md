@@ -4,10 +4,10 @@
 
 - [Get started](index.md)
 - [Installation](user-guides/installation.md)
-- [email-providers](user-guides/email-providers/index.md)
-    - [Connecting to Google Workspace](user-guides/email-providers/google-workspace.md)
-    - [Connecting to a Generic IMAP Server](user-guides/email-providers/imap.md)
-    - [Connecting to Microsoft 365](user-guides/email-providers/microsoft-365.md)
+- [Importing Email](user-guides/email-providers/index.md)
+    - [Mbox Import](user-guides/email-providers/mbox.md)
+    - [EML Import](user-guides/email-providers/eml.md)
+    - [Merging Imports](user-guides/email-providers/merging-sources.md)
 
 ---
 

@@ -42,43 +42,6 @@ export interface BaseIngestionCredentials {
 	type: IngestionProvider;
 }
 
-export interface GenericImapCredentials extends BaseIngestionCredentials {
-	type: 'generic_imap';
-	host: string;
-	port: number;
-	secure: boolean;
-	allowInsecureCert: boolean;
-	username: string;
-	password?: string;
-}
-
-export interface GoogleWorkspaceCredentials extends BaseIngestionCredentials {
-	type: 'google_workspace';
-	/**
-	 * The full JSON content of the Google Service Account key.
-	 * This should be a stringified JSON object.
-	 */
-	serviceAccountKeyJson: string;
-	/**
-	 * The email of the super-admin user to impersonate for domain-wide operations.
-	 */
-	impersonatedAdminEmail: string;
-}
-
-export interface Microsoft365Credentials extends BaseIngestionCredentials {
-	type: 'microsoft_365';
-	clientId: string;
-	clientSecret: string;
-	tenantId: string;
-}
-
-export interface PSTImportCredentials extends BaseIngestionCredentials {
-	type: 'pst_import';
-	uploadedFileName?: string;
-	uploadedFilePath?: string;
-	localFilePath?: string;
-}
-
 export interface EMLImportCredentials extends BaseIngestionCredentials {
 	type: 'eml_import';
 	uploadedFileName?: string;
@@ -90,6 +53,11 @@ export interface MboxImportCredentials extends BaseIngestionCredentials {
 	type: 'mbox_import';
 	uploadedFileName?: string;
 	uploadedFilePath?: string;
+	uploadedFiles?: Array<{
+		fileName: string;
+		filePath: string;
+		relativePath?: string;
+	}>;
 	localFilePath?: string;
 }
 
@@ -101,10 +69,6 @@ export interface SmtpJournalingCredentials extends BaseIngestionCredentials {
 
 // Discriminated union for all possible credential types
 export type IngestionCredentials =
-	| GenericImapCredentials
-	| GoogleWorkspaceCredentials
-	| Microsoft365Credentials
-	| PSTImportCredentials
 	| EMLImportCredentials
 	| MboxImportCredentials
 	| SmtpJournalingCredentials;
@@ -121,9 +85,6 @@ export interface IngestionSource {
 	lastSyncFinishedAt?: Date | null;
 	lastSyncStatusMessage?: string | null;
 	syncState?: SyncState | null;
-	/** When true, the raw EML file is stored without any modification (no attachment
-	 * stripping). Required for GoBD / SEC 17a-4 compliance. Defaults to false. */
-	preserveOriginalFile: boolean;
 	/** The ID of the root ingestion source this child is merged into.
 	 *  Null or undefined when this source is a standalone root. */
 	mergedIntoId?: string | null;
@@ -140,8 +101,6 @@ export interface CreateIngestionSourceDto {
 	name: string;
 	provider: IngestionProvider;
 	providerConfig: Record<string, any>;
-	/** Store the unmodified raw EML for GoBD compliance. Defaults to false. */
-	preserveOriginalFile?: boolean;
 	/** Merge this new source into an existing root source's group. */
 	mergedIntoId?: string;
 }
@@ -172,12 +131,6 @@ export interface IProcessMailboxJob {
 	userEmail: string;
 	/** ID of the SyncSession tracking this sync cycle's progress */
 	sessionId: string;
-}
-
-export interface IPstProcessingJob {
-	ingestionSourceId: string;
-	filePath: string;
-	originalFilename: string;
 }
 
 export type MailboxUser = {

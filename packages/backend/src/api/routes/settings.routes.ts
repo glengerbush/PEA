@@ -61,5 +61,8 @@ export const createSettingsRouter = (authService: AuthService): Router => {
 	// Protected route to update settings
 	router.put('/system', requireAuth(authService), settingsController.updateSystemSettings);
 
+	// Protected route to check whether a newer build is available on the fork.
+	router.get('/updates/check', requireAuth(authService), settingsController.checkForUpdates);
+
 	return router;
 };

@@ -1,1 +1,0 @@
-ALTER TABLE "archived_emails" ALTER COLUMN "message_id_header" DROP NOT NULL;

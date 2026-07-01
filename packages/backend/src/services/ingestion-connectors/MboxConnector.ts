@@ -5,7 +5,7 @@ import type {
 	SyncState,
 	MailboxUser,
 } from '@open-archiver/types';
-import type { IEmailConnector, ConnectorOptions } from '../EmailProviderFactory';
+import type { IEmailConnector } from '../EmailProviderFactory';
 import { simpleParser, ParsedMail, Attachment, AddressObject } from 'mailparser';
 import { logger } from '../../config/logger';
 import { getThreadId } from './helpers/utils';
@@ -15,27 +15,20 @@ import { Transform } from 'stream';
 import { createHash } from 'crypto';
 import { promises as fs, createReadStream } from 'fs';
 import { basename, join, relative } from 'path';
+import { streamToBuffer } from '../../helpers/streamToBuffer';
 
 type MboxInput = {
 	filePath: string;
 	sourcePath: string;
 	isLocal: boolean;
+	format: 'mbox' | 'emlx';
 };
 
 class MboxSplitter extends Transform {
 	private buffer: Buffer = Buffer.alloc(0);
 	private delimiter: Buffer = Buffer.from('\nFrom ');
-	private firstChunk: boolean = true;
 
 	_transform(chunk: Buffer, encoding: string, callback: Function) {
-		if (this.firstChunk) {
-			// Check if the file starts with "From ". If not, prepend it to the first email.
-			if (chunk.subarray(0, 5).toString() !== 'From ') {
-				this.push(Buffer.from('From '));
-			}
-			this.firstChunk = false;
-		}
-
 		let currentBuffer = Buffer.concat([this.buffer, chunk]);
 		let position;
 
@@ -62,13 +55,8 @@ class MboxSplitter extends Transform {
 
 export class MboxConnector implements IEmailConnector {
 	private storage: StorageService;
-	private options: ConnectorOptions;
 
-	constructor(
-		private credentials: MboxImportCredentials,
-		options?: ConnectorOptions
-	) {
-		this.options = options ?? { preserveOriginalFile: false };
+	constructor(private credentials: MboxImportCredentials) {
 		this.storage = new StorageService();
 	}
 
@@ -90,6 +78,10 @@ export class MboxConnector implements IEmailConnector {
 		return filePath.toLowerCase().endsWith('.mbox');
 	}
 
+	private isEmlxPath(filePath: string): boolean {
+		return filePath.toLowerCase().endsWith('.emlx');
+	}
+
 	private stripMboxExtension(filePath: string): string {
 		return filePath.replace(/\.mbox$/i, '');
 	}
@@ -101,26 +93,60 @@ export class MboxConnector implements IEmailConnector {
 			.join('/');
 	}
 
-	private async findLocalMboxFiles(directoryPath: string): Promise<string[]> {
+	private toAppleMailSourcePath(filePath: string): string {
+		return filePath
+			.split(/[\\/]+/)
+			.filter((segment) => this.isMboxPath(segment))
+			.map((segment) => this.stripMboxExtension(segment))
+			.join('/');
+	}
+
+	private getAppleMailSourcePath(importRoot: string, filePath: string): string {
+		return this.toAppleMailSourcePath(relative(importRoot, filePath));
+	}
+
+	private async findLocalMboxInputs(
+		importRoot: string,
+		directoryPath: string = importRoot
+	): Promise<MboxInput[]> {
 		const entries = await fs.readdir(directoryPath, { withFileTypes: true });
-		const foundFiles: string[] = [];
+		const inputs: MboxInput[] = [];
 
 		for (const entry of entries) {
 			const entryPath = join(directoryPath, entry.name);
 
 			if (entry.isDirectory()) {
-				foundFiles.push(...(await this.findLocalMboxFiles(entryPath)));
+				inputs.push(...(await this.findLocalMboxInputs(importRoot, entryPath)));
 			} else if (entry.isFile() && this.isMboxPath(entry.name)) {
-				foundFiles.push(entryPath);
+				inputs.push({
+					filePath: entryPath,
+					sourcePath: this.toSourcePath(relative(importRoot, entryPath)),
+					isLocal: true,
+					format: 'mbox',
+				});
+			} else if (
+				entry.isFile() &&
+				this.isEmlxPath(entry.name) &&
+				(this.isMboxPath(importRoot) ||
+					relative(importRoot, entryPath)
+						.split(/[\\/]+/)
+						.some((segment) => this.isMboxPath(segment)))
+			) {
+				inputs.push({
+					filePath: entryPath,
+					sourcePath: this.getAppleMailSourcePath(importRoot, entryPath),
+					isLocal: true,
+					format: 'emlx',
+				});
 			}
 		}
 
-		return foundFiles.sort((a, b) => a.localeCompare(b));
+		return inputs.sort((a, b) => a.filePath.localeCompare(b.filePath));
 	}
 
 	private async getMboxInputs(): Promise<MboxInput[]> {
 		const filePath = this.getFilePath();
-		if (!filePath) {
+		if (!filePath && !this.credentials.uploadedFiles?.length) {
 			throw Error('Mbox file or folder path not provided.');
 		}
 
@@ -130,25 +156,19 @@ export class MboxConnector implements IEmailConnector {
 				stats = await fs.stat(this.credentials.localFilePath);
 			} catch {
 				throw Error(
-					`Mbox file or folder not found at path: ${this.credentials.localFilePath}`
+					`Mbox file or folder not found inside the OpenArchiver server at path: ${this.credentials.localFilePath}`
 				);
 			}
 
 			if (stats.isDirectory()) {
-				const mboxFiles = await this.findLocalMboxFiles(this.credentials.localFilePath);
-				if (mboxFiles.length === 0) {
+				const inputs = await this.findLocalMboxInputs(this.credentials.localFilePath);
+				if (inputs.length === 0) {
 					throw Error(
-						`No .mbox files found under directory: ${this.credentials.localFilePath}`
+						`No mbox files or Apple Mail messages found under directory: ${this.credentials.localFilePath}`
 					);
 				}
 
-				return mboxFiles.map((mboxFilePath) => ({
-					filePath: mboxFilePath,
-					sourcePath: this.toSourcePath(
-						relative(this.credentials.localFilePath!, mboxFilePath)
-					),
-					isLocal: true,
-				}));
+				return inputs;
 			}
 
 			if (!stats.isFile()) {
@@ -161,7 +181,49 @@ export class MboxConnector implements IEmailConnector {
 				throw Error('Provided local file is not in the MBOX format.');
 			}
 
-			return [{ filePath: this.credentials.localFilePath, sourcePath: '', isLocal: true }];
+			return [
+				{
+					filePath: this.credentials.localFilePath,
+					sourcePath: '',
+					isLocal: true,
+					format: 'mbox',
+				},
+			];
+		}
+
+		if (this.credentials.uploadedFiles?.length) {
+			const uploadedFiles = this.credentials.uploadedFiles;
+			for (const uploadedFile of uploadedFiles) {
+				if (
+					!this.isMboxPath(uploadedFile.fileName) &&
+					!this.isEmlxPath(uploadedFile.fileName)
+				) {
+					throw Error(
+						`Uploaded file is not an MBOX or Apple Mail EMLX file: ${uploadedFile.fileName}`
+					);
+				}
+				if (!(await this.storage.exists(uploadedFile.filePath))) {
+					throw Error(`Uploaded Mbox file not found: ${uploadedFile.fileName}`);
+				}
+			}
+
+			const useFileNamesAsPaths = uploadedFiles.length > 1;
+			return uploadedFiles.map((uploadedFile) => {
+				const format = this.isEmlxPath(uploadedFile.fileName) ? 'emlx' : 'mbox';
+				return {
+					filePath: uploadedFile.filePath,
+					sourcePath:
+						format === 'emlx'
+							? this.toAppleMailSourcePath(
+									uploadedFile.relativePath || uploadedFile.fileName
+								)
+							: useFileNamesAsPaths
+								? this.toSourcePath(uploadedFile.fileName)
+								: '',
+					isLocal: false,
+					format,
+				};
+			});
 		}
 
 		if (!this.isMboxPath(filePath)) {
@@ -175,7 +237,7 @@ export class MboxConnector implements IEmailConnector {
 			);
 		}
 
-		return [{ filePath, sourcePath: '', isLocal: false }];
+		return [{ filePath, sourcePath: '', isLocal: false, format: 'mbox' }];
 	}
 
 	private async getFileStream(input: MboxInput): Promise<NodeJS.ReadableStream> {
@@ -197,6 +259,11 @@ export class MboxConnector implements IEmailConnector {
 	}
 
 	private getDisplayName(): string {
+		if (this.credentials.uploadedFiles?.length) {
+			return this.credentials.uploadedFiles.length === 1
+				? this.credentials.uploadedFiles[0].fileName
+				: `${this.credentials.uploadedFiles.length}-file-mbox-import`;
+		}
 		if (this.credentials.uploadedFileName) {
 			return this.credentials.uploadedFileName;
 		}
@@ -211,46 +278,100 @@ export class MboxConnector implements IEmailConnector {
 		syncState?: SyncState | null
 	): AsyncGenerator<EmailObject | null> {
 		const inputs = await this.getMboxInputs();
+		const seenAppleMailMessages = new Set<string>();
 
-		for (const input of inputs) {
-			const fileStream = await this.getFileStream(input);
-			const mboxSplitter = new MboxSplitter();
-			const emailStream = fileStream.pipe(mboxSplitter);
-
-			for await (const emailBuffer of emailStream) {
+		try {
+			for (const input of inputs) {
 				try {
-					const emailObject = await this.parseMessage(
-						emailBuffer as Buffer,
-						input.sourcePath
-					);
-					yield emailObject;
+					if (input.format === 'emlx') {
+						const emlxBuffer = await streamToBuffer(await this.getFileStream(input));
+						const emailBuffer = this.extractEmlxMessage(emlxBuffer, input.filePath);
+						const messageHash = createHash('sha256').update(emailBuffer).digest('hex');
+
+						if (seenAppleMailMessages.has(messageHash)) {
+							continue;
+						}
+						seenAppleMailMessages.add(messageHash);
+						yield await this.parseMessage(emailBuffer, input.sourcePath);
+						continue;
+					}
+
+					const fileStream = await this.getFileStream(input);
+					const emailStream = fileStream.pipe(new MboxSplitter());
+					for await (const emailBuffer of emailStream) {
+						try {
+							// mbox-only transport cleanup: strip the "From " envelope
+							// line and reverse ">From " quoting before parsing/hashing.
+							const emlBuffer = this.unescapeMboxQuoting(
+								this.stripMboxEnvelope(emailBuffer as Buffer)
+							);
+							yield await this.parseMessage(emlBuffer, input.sourcePath);
+						} catch (error) {
+							logger.error(
+								{ error, file: input.filePath },
+								'Failed to process a single message from mbox file. Skipping.'
+							);
+						}
+					}
 				} catch (error) {
 					logger.error(
 						{ error, file: input.filePath },
-						'Failed to process a single message from mbox file. Skipping.'
+						'Failed to process an mbox input. Skipping.'
 					);
 				}
 			}
-		}
+		} finally {
+			if (!this.credentials.localFilePath) {
+				const uploadedPaths = this.credentials.uploadedFiles?.length
+					? this.credentials.uploadedFiles.map((file) => file.filePath)
+					: this.credentials.uploadedFilePath
+						? [this.credentials.uploadedFilePath]
+						: [];
 
-		if (this.credentials.uploadedFilePath && !this.credentials.localFilePath) {
-			try {
-				await this.storage.delete(this.credentials.uploadedFilePath);
-			} catch (error) {
-				logger.error(
-					{ error, file: this.credentials.uploadedFilePath },
-					'Failed to delete mbox file after processing.'
-				);
+				for (const uploadedPath of uploadedPaths) {
+					try {
+						await this.storage.delete(uploadedPath);
+					} catch (error) {
+						logger.error(
+							{ error, file: uploadedPath },
+							'Failed to delete mbox file after processing.'
+						);
+					}
+				}
 			}
 		}
+	}
+
+	private extractEmlxMessage(buffer: Buffer, filePath: string): Buffer {
+		const newlineIndex = buffer.indexOf(0x0a);
+		if (newlineIndex === -1) {
+			throw new Error(`Invalid Apple Mail EMLX file (missing length line): ${filePath}`);
+		}
+
+		const lengthLine = buffer.subarray(0, newlineIndex).toString('ascii').trim();
+		if (!/^\d+$/.test(lengthLine)) {
+			throw new Error(`Invalid Apple Mail EMLX file (invalid length): ${filePath}`);
+		}
+
+		const messageLength = Number(lengthLine);
+		const messageStart = newlineIndex + 1;
+		const messageEnd = messageStart + messageLength;
+		if (
+			!Number.isSafeInteger(messageLength) ||
+			messageLength <= 0 ||
+			messageEnd > buffer.length
+		) {
+			throw new Error(`Invalid Apple Mail EMLX file (truncated message): ${filePath}`);
+		}
+
+		return buffer.subarray(messageStart, messageEnd);
 	}
 
 	/**
 	 * Strips the mbox "From " envelope line from the raw buffer.
 	 * The mbox format prepends each message with a "From sender@... timestamp\n"
 	 * line that is NOT part of the RFC 5322 message. Storing this line in the
-	 * .eml would produce an invalid file and corrupt the SHA-256 hash for GoBD
-	 * compliance purposes.
+	 * .eml would produce an invalid file and corrupt the SHA-256 content hash.
 	 */
 	private stripMboxEnvelope(buffer: Buffer): Buffer {
 		// The "From " line ends at the first \n — everything after is the real RFC 5322 message.
@@ -264,23 +385,43 @@ export class MboxConnector implements IEmailConnector {
 		return buffer;
 	}
 
-	private async parseMessage(rawMboxBuffer: Buffer, path: string): Promise<EmailObject> {
-		// Strip the mbox "From " envelope line before writing to temp file.
-		// This line is an mbox transport artifact, not part of the RFC 5322 message.
-		const emlBuffer = this.stripMboxEnvelope(rawMboxBuffer);
+	/**
+	 * Reverses mbox "From " quoting: an escaped ">From " becomes "From " (and a
+	 * ">>From " becomes ">From "), by stripping exactly one leading ">" from every
+	 * line matching /^>+From /. This is the mboxrd rule and the modern default;
+	 * it also restores the common mboxo case. It cannot distinguish a genuinely
+	 * quoted ">From " in an mboxo file (an inherent, undecidable ambiguity), but
+	 * without it the stored .eml and its SHA-256 hash are corrupted for the far
+	 * more common escaped case. Operates on latin1 so byte content is preserved 1:1.
+	 * Only applied to the mbox path — never to verbatim emlx messages.
+	 */
+	private unescapeMboxQuoting(buffer: Buffer): Buffer {
+		const text = buffer.toString('latin1');
+		const unescaped = text.replace(/^>(>*From )/gm, '$1');
+		return Buffer.from(unescaped, 'latin1');
+	}
+
+	// Parses an already-clean RFC 5322 message buffer. Callers must remove any
+	// transport framing first: the mbox path strips the "From " envelope and
+	// reverses ">From " quoting, whereas the emlx path passes Apple Mail's verbatim
+	// message (which is NOT mbox-quoted and must not be de-quoted).
+	private async parseMessage(emlBuffer: Buffer, path: string): Promise<EmailObject> {
+		const parsedEmail: ParsedMail = await simpleParser(emlBuffer);
+		const hasContent =
+			parsedEmail.headers.size > 0 ||
+			Boolean(parsedEmail.text?.trim()) ||
+			(typeof parsedEmail.html === 'string' && parsedEmail.html.trim().length > 0);
+		if (!hasContent) {
+			throw new Error('Mbox message did not contain headers or body content.');
+		}
 
 		const tempFilePath = await writeEmailToTempFile(emlBuffer);
-		const parsedEmail: ParsedMail = await simpleParser(emlBuffer);
 
-		// In preserve-original mode, skip extracting full attachment binary content
-		// to avoid unnecessary memory allocation — the raw EML on disk is the source of truth.
 		const attachments = parsedEmail.attachments.map((attachment: Attachment) => ({
 			filename: attachment.filename || 'untitled',
 			contentType: attachment.contentType,
 			size: attachment.size,
-			content: this.options.preserveOriginalFile
-				? Buffer.alloc(0)
-				: (attachment.content as Buffer),
+			content: attachment.content as Buffer,
 		}));
 
 		const mapAddresses = (

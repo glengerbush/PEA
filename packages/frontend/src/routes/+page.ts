@@ -1,11 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
 
-export const load: PageLoad = async ({ parent }) => {
-	const { user } = await parent();
-	if (user) {
-		throw redirect(307, '/dashboard');
-	} else {
-		throw redirect(307, '/signin');
-	}
+export const load: PageLoad = async () => {
+	// LOCAL MODE: auth disabled and the Mailbox is the home page.
+	throw redirect(307, '/mailbox');
 };

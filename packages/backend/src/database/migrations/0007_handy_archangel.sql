@@ -1,1 +1,0 @@
-ALTER TABLE "ingestion_sources" ALTER COLUMN "credentials" SET DATA TYPE text;

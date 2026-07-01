@@ -4,13 +4,18 @@
 	import { theme } from '$lib/stores/theme.store';
 	import { browser } from '$app/environment';
 	import Footer from '$lib/components/custom/Footer.svelte';
-	import { getAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import Alerts from '$lib/components/custom/alert/Alerts.svelte';
+	import { setDateTimePrefs } from '$lib/stores/datetime.svelte';
 
 	let { data, children } = $props();
 
 	$effect(() => {
 		authStore.syncWithServer(data.user, data.accessToken);
+	});
+
+	// Apply the configured time zone / clock format to all date formatting helpers.
+	$effect(() => {
+		setDateTimePrefs(data.systemSettings);
 	});
 
 	$effect(() => {
@@ -30,7 +35,7 @@
 	});
 </script>
 
-<Alerts {...getAlert()}></Alerts>
+<Alerts />
 <div class="flex min-h-screen flex-col">
 	<main class="flex-1">
 		{@render children()}

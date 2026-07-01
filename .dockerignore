@@ -6,6 +6,14 @@
 node_modules
 .pnpm-store
 
+# Build artifacts — must NOT be copied into the image build context.
+# The image compiles its own dist/build; copying stale host artifacts (and the
+# incremental tsc cache) makes `pnpm build:oss` skip re-emitting and ships old code.
+**/dist
+**/build
+**/*.tsbuildinfo
+packages/frontend/.svelte-kit
+
 # Env
 .env
 .env.*

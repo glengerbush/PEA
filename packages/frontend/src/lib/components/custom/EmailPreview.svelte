@@ -3,9 +3,9 @@
 	import { t } from '$lib/translations';
 	import type { RemoteContentPreview } from '@open-archiver/types';
 
-	let { emailId }: { emailId: string } = $props();
+	let { emailId, refreshKey = 0 }: { emailId: string; refreshKey?: number } = $props();
 
-	async function loadPreview(id: string): Promise<RemoteContentPreview> {
+	async function loadPreview(id: string, _refreshKey: number): Promise<RemoteContentPreview> {
 		const response = await api(`/archived-emails/${id}/preview`);
 		const body = await response.json();
 		if (!response.ok) {
@@ -14,7 +14,7 @@
 		return body as RemoteContentPreview;
 	}
 
-	let previewPromise = $derived(loadPreview(emailId));
+	let previewPromise = $derived(loadPreview(emailId, refreshKey));
 </script>
 
 <div class="mt-2 rounded-md border bg-white p-4">

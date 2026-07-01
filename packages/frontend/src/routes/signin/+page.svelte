@@ -59,14 +59,10 @@
 	class="flex min-h-screen flex-col items-center justify-center space-y-16 bg-gray-100 dark:bg-gray-900"
 >
 	<div>
-		<a
-			href="https://openarchiver.com/"
-			target="_blank"
-			class="flex flex-row items-center gap-2 font-bold"
-		>
+		<div class="flex flex-row items-center gap-2 font-bold">
 			<img src="/logos/logo-sq.svg" alt="OpenArchiver Logo" class="h-16 w-16" />
 			<span class="text-2xl">Open Archiver</span>
-		</a>
+		</div>
 	</div>
 	<Card.Root class="w-full max-w-md">
 		<Card.Header class="space-y-1">

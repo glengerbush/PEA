@@ -1,1 +1,0 @@
-ALTER TABLE "ingestion_sources" ADD COLUMN "preserve_original_file" boolean DEFAULT false NOT NULL;

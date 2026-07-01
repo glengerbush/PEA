@@ -7,6 +7,7 @@ import { StorageService } from '../../services/StorageService';
 import { config } from '../../config';
 import { indexingQueue, ingestionQueue } from '../queues';
 import { SyncSessionService } from '../../services/SyncSessionService';
+import { RemoteContentService } from '../../services/RemoteContentService';
 
 /**
  * Handles ingestion of emails for a single user's mailbox.
@@ -24,6 +25,21 @@ export const processMailboxProcessor = async (job: Job<IProcessMailboxJob>) => {
 	logger.info({ ingestionSourceId, userEmail, sessionId }, `Processing mailbox for user`);
 
 	const storageService = new StorageService();
+
+	// Flush the buffered batch: index the emails and automatically archive their
+	// remote content (images, etc.) so it is captured at import time rather than
+	// requiring a manual per-email "Archive remote content" action later.
+	const flushEmailBatch = async (): Promise<void> => {
+		if (emailBatch.length === 0) {
+			return;
+		}
+		const batch = emailBatch;
+		emailBatch = [];
+		await indexingQueue.add('index-email-batch', { emails: batch });
+		await RemoteContentService.enqueueRemoteContentArchive(
+			batch.map((email) => email.archivedEmailId)
+		);
+	};
 
 	try {
 		const source = await IngestionService.findById(ingestionSourceId);
@@ -54,8 +70,7 @@ export const processMailboxProcessor = async (job: Job<IProcessMailboxJob>) => {
 				if (processedEmail) {
 					emailBatch.push(processedEmail);
 					if (emailBatch.length >= BATCH_SIZE) {
-						await indexingQueue.add('index-email-batch', { emails: emailBatch });
-						emailBatch = [];
+						await flushEmailBatch();
 						// Heartbeat: a single large mailbox can take hours to process.
 						// Without this, cleanStaleSessions() would see no activity on the
 						// session and incorrectly mark it as stale after 30 minutes.
@@ -67,10 +82,7 @@ export const processMailboxProcessor = async (job: Job<IProcessMailboxJob>) => {
 			}
 		}
 
-		if (emailBatch.length > 0) {
-			await indexingQueue.add('index-email-batch', { emails: emailBatch });
-			emailBatch = [];
-		}
+		await flushEmailBatch();
 
 		const newSyncState = connector.getUpdatedSyncState(userEmail);
 		logger.info({ ingestionSourceId, userEmail }, `Finished processing mailbox for user`);
@@ -94,10 +106,7 @@ export const processMailboxProcessor = async (job: Job<IProcessMailboxJob>) => {
 		}
 	} catch (error) {
 		// Flush any buffered emails before reporting failure
-		if (emailBatch.length > 0) {
-			await indexingQueue.add('index-email-batch', { emails: emailBatch });
-			emailBatch = [];
-		}
+		await flushEmailBatch();
 
 		logger.error({ err: error, ingestionSourceId, userEmail }, 'Error processing mailbox');
 		const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';

@@ -1,6 +1,11 @@
 services:
     open-archiver:
-        image: glengerbush/open-archiver:latest
+        build:
+            context: .
+            dockerfile: apps/open-archiver/Dockerfile
+            args:
+                GIT_SHA: ${GIT_SHA:-unknown}
+        image: open-archiver:local
         container_name: open-archiver
         restart: unless-stopped
         ports:

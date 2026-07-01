@@ -2,7 +2,7 @@ import * as http from 'http';
 import * as https from 'https';
 import type { IncomingHttpHeaders } from 'http';
 import { createHash } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { simpleParser, type ParsedMail } from 'mailparser';
 import { db } from '../database';
 import { archivedEmails, remoteContentAssets } from '../database/schema';
@@ -19,7 +19,10 @@ import type {
 import {
 	assertSafeRemoteUrl,
 	BlockedRemoteContentError,
+	createPinnedLookup,
 	getHeaderValue,
+	isLikelyTrackingPixel,
+	isLikelyTrackingUrl,
 	isSafePreviewContentType,
 	normalizeContentType,
 	type SafeResolvedAddress,
@@ -116,6 +119,12 @@ export class RemoteContentService {
 		emailIds: string[]
 	): Promise<ArchiveRemoteContentResult> {
 		const uniqueEmailIds = Array.from(new Set(emailIds.filter(Boolean)));
+		if (uniqueEmailIds.length > 0) {
+			await db
+				.update(archivedEmails)
+				.set({ remoteContentStatus: 'pending' })
+				.where(inArray(archivedEmails.id, uniqueEmailIds));
+		}
 		const job = await remoteContentQueue.add('archive-remote-content-batch', {
 			emailIds: uniqueEmailIds,
 		});
@@ -204,6 +213,11 @@ export class RemoteContentService {
 			await this.archiveRemoteAsset(email, url);
 		}
 
+		// Second pass: archive images referenced from within archived stylesheets,
+		// so the inlined CSS can render its background images with no view-time
+		// network access.
+		await this.archiveStylesheetSubresources(email);
+
 		const assets = await db.query.remoteContentAssets.findMany({
 			where: eq(remoteContentAssets.emailId, emailId),
 		});
@@ -211,7 +225,6 @@ export class RemoteContentService {
 		const failedAssets = assets.filter((asset) => asset.status === 'failed').length;
 		const blockedAssets = assets.filter((asset) => asset.status === 'blocked').length;
 		const remoteContentStatus = this.summarizeEmailStatus(
-			remoteUrls.length,
 			archivedAssets,
 			failedAssets,
 			blockedAssets
@@ -250,7 +263,7 @@ export class RemoteContentService {
 			typeof parsedEmail.html === 'string' && parsedEmail.html.trim()
 				? parsedEmail.html
 				: this.renderTextPreview(parsedEmail.text || '');
-		const safeHtml = this.sanitizePreviewHtml(emailId, html, parsedEmail, assets);
+		const safeHtml = await this.sanitizePreviewHtml(emailId, html, parsedEmail, assets);
 		const remoteUrls = this.extractRemoteUrls(
 			typeof parsedEmail.html === 'string' ? parsedEmail.html : ''
 		);
@@ -264,6 +277,54 @@ export class RemoteContentService {
 			blockedAssetCount: assets.filter((asset) => asset.status === 'blocked').length,
 			failedAssetCount: assets.filter((asset) => asset.status === 'failed').length,
 		};
+	}
+
+	/** Lists this email's remote-content assets (archived, failed, and blocked —
+	 *  not pending) for the detail-page list: source URL, type, size, status, and
+	 *  the failure reason when it didn't archive. */
+	public static async listRemoteAssets(emailId: string): Promise<
+		{
+			id: string;
+			originalUrl: string;
+			contentType: string | null;
+			sizeBytes: number | null;
+			status: RemoteContentAssetRecord['status'];
+			failureReason: string | null;
+			previewable: boolean;
+		}[]
+	> {
+		await this.getEmailForPreview(emailId);
+		const assets = await db.query.remoteContentAssets.findMany({
+			where: eq(remoteContentAssets.emailId, emailId),
+		});
+		const rank: Record<string, number> = { archived: 0, failed: 1, blocked: 2, pending: 3 };
+		return assets
+			.filter((asset) => asset.status !== 'pending')
+			// Archived stylesheets are inlined into the preview, not standalone
+			// downloadable assets (and the asset endpoint won't serve CSS raw).
+			.filter(
+				(asset) =>
+					!(
+						asset.status === 'archived' &&
+						normalizeContentType(asset.contentType) === 'text/css'
+					)
+			)
+			.sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9))
+			.map((asset) => {
+				const contentType = normalizeContentType(asset.contentType);
+				return {
+					id: asset.id,
+					originalUrl: asset.originalUrl,
+					contentType,
+					sizeBytes: asset.sizeBytes,
+					status: asset.status,
+					failureReason: asset.failureReason,
+					previewable:
+						asset.status === 'archived' &&
+						!!asset.storagePath &&
+						isSafePreviewContentType(contentType),
+				};
+			});
 	}
 
 	public static async getRemoteAssetStream(
@@ -317,45 +378,109 @@ export class RemoteContentService {
 
 	private static extractRemoteUrls(html: string): string[] {
 		const urls = new Set<string>();
+		// Never archive (and therefore never fetch) open-tracking beacons, which would
+		// notify the sender that the email was opened.
+		const addUrl = (url: string | null): void => {
+			if (url && !isLikelyTrackingUrl(url)) {
+				urls.add(url);
+			}
+		};
 		const tagPattern = /<([a-zA-Z][\w:-]*)([^>]*)>/g;
 		let match: RegExpExecArray | null;
 
 		while ((match = tagPattern.exec(html)) !== null) {
 			const tag = match[1].toLowerCase();
 			const attrs = getAttributeMap(match[2]);
+			// A tiny/hidden image is a tracking pixel — skip all of its URLs entirely.
+			const isTrackingPixel = isLikelyTrackingPixel(attrs);
 
-			for (const attrName of ['src', 'background', 'poster']) {
-				const value = attrs.get(attrName);
-				const url = value ? toRemoteUrl(value) : null;
-				if (url) urls.add(url);
-			}
+			if (!isTrackingPixel) {
+				for (const attrName of ['src', 'background', 'poster']) {
+					const value = attrs.get(attrName);
+					addUrl(value ? toRemoteUrl(value) : null);
+				}
 
-			const srcSet = attrs.get('srcset');
-			if (srcSet) {
-				for (const url of extractSrcSetUrls(srcSet)) {
-					urls.add(url);
+				const srcSet = attrs.get('srcset');
+				if (srcSet) {
+					for (const url of extractSrcSetUrls(srcSet)) {
+						addUrl(url);
+					}
 				}
 			}
 
 			const style = attrs.get('style');
 			if (style) {
 				for (const url of extractCssUrls(style)) {
-					urls.add(url);
+					addUrl(url);
 				}
 			}
 
 			if (tag === 'link') {
 				const href = attrs.get('href');
-				const url = href ? toRemoteUrl(href) : null;
-				if (url) urls.add(url);
+				addUrl(href ? toRemoteUrl(href) : null);
 			}
 		}
 
 		for (const url of extractCssUrls(html)) {
-			urls.add(url);
+			addUrl(url);
 		}
 
 		return Array.from(urls);
+	}
+
+	/**
+	 * Archives images referenced by `url(...)` inside this email's already-archived
+	 * stylesheets. Relative URLs are resolved against the stylesheet's own URL.
+	 * `@import` is intentionally NOT followed (no stylesheet recursion / SSRF
+	 * amplification). Bounded by the same per-email asset cap.
+	 */
+	private static async archiveStylesheetSubresources(email: ArchivedEmailRecord): Promise<void> {
+		const assets = await db.query.remoteContentAssets.findMany({
+			where: eq(remoteContentAssets.emailId, email.id),
+		});
+		const stylesheets = assets.filter(
+			(asset) =>
+				asset.status === 'archived' &&
+				asset.storagePath &&
+				normalizeContentType(asset.contentType) === 'text/css'
+		);
+		if (stylesheets.length === 0) return;
+
+		const known = new Set(assets.map((asset) => asset.urlHash));
+		const subUrls = new Set<string>();
+		const urlPattern = /url\(\s*(?:"([^"]+)"|'([^']+)'|([^)]+))\s*\)/gi;
+
+		for (const sheet of stylesheets) {
+			let cssText: string;
+			try {
+				cssText = (
+					await streamToBuffer(await this.storageService.get(sheet.storagePath as string))
+				).toString('utf8');
+			} catch {
+				continue;
+			}
+			const base = sheet.finalUrl || sheet.originalUrl;
+			let match: RegExpExecArray | null;
+			while ((match = urlPattern.exec(cssText)) !== null) {
+				const raw = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+				if (!raw || raw.startsWith('data:') || raw.startsWith('#')) continue;
+				let resolved: string | null = null;
+				try {
+					const url = new URL(raw, base);
+					resolved =
+						url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+				} catch {
+					resolved = null;
+				}
+				if (!resolved || isLikelyTrackingUrl(resolved)) continue;
+				if (known.has(hashValue(resolved))) continue;
+				subUrls.add(resolved);
+			}
+		}
+
+		for (const url of Array.from(subUrls).slice(0, MAX_REMOTE_URLS_PER_EMAIL)) {
+			await this.archiveRemoteAsset(email, url);
+		}
 	}
 
 	private static async archiveRemoteAsset(
@@ -374,19 +499,33 @@ export class RemoteContentService {
 			return;
 		}
 
-		const asset =
-			existing ||
-			(
-				await db
-					.insert(remoteContentAssets)
-					.values({
-						emailId: email.id,
-						originalUrl,
-						urlHash,
-						status: 'pending',
-					})
-					.returning()
-			)[0];
+		let asset = existing;
+		if (!asset) {
+			const inserted = await db
+				.insert(remoteContentAssets)
+				.values({
+					emailId: email.id,
+					originalUrl,
+					urlHash,
+					status: 'pending',
+				})
+				.onConflictDoNothing()
+				.returning();
+			asset = inserted[0];
+			// Lost a race with a concurrent worker (or the manual per-email
+			// archive route) that inserted the same (emailId, urlHash) between our
+			// findFirst and insert. onConflictDoNothing returns no row in that
+			// case — re-read the existing row instead of throwing a unique
+			// violation that would mislabel the whole email as failed.
+			if (!asset) {
+				asset = await db.query.remoteContentAssets.findFirst({
+					where: and(
+						eq(remoteContentAssets.emailId, email.id),
+						eq(remoteContentAssets.urlHash, urlHash)
+					),
+				});
+			}
+		}
 		if (!asset) {
 			throw new Error('Failed to create remote content asset record');
 		}
@@ -473,15 +612,21 @@ export class RemoteContentService {
 		url: URL,
 		resolvedAddress: SafeResolvedAddress
 	): Promise<RemoteHttpResponse> {
-		const requestOptions: http.RequestOptions & { servername?: string } = {
+		const requestOptions: http.RequestOptions & {
+			servername?: string;
+			autoSelectFamily?: boolean;
+		} = {
 			method: 'GET',
 			headers: {
 				'User-Agent': USER_AGENT,
 				Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif,*/*;q=0.1',
 			},
-			lookup: (_hostname, _options, callback) => {
-				callback(null, resolvedAddress.address, resolvedAddress.family);
-			},
+			lookup: createPinnedLookup(resolvedAddress),
+			// We've already resolved one SSRF-safe address; connect straight to it
+			// rather than letting Node's Happy-Eyeballs path re-run the lookup
+			// (which produced cryptic "Invalid IP address: undefined" under load).
+			family: resolvedAddress.family,
+			autoSelectFamily: false,
 		};
 
 		if (url.protocol === 'https:') {
@@ -563,34 +708,73 @@ export class RemoteContentService {
 	}
 
 	private static summarizeEmailStatus(
-		remoteUrlCount: number,
 		archivedAssets: number,
 		failedAssets: number,
 		blockedAssets: number
 	): RemoteContentStatus {
-		if (remoteUrlCount === 0) return 'skipped';
-		if (archivedAssets === remoteUrlCount) return 'archived';
+		// Derive status from the actual asset outcomes — which include image
+		// subresources discovered inside archived stylesheets — not from the count
+		// of remote URLs in the HTML. Those two diverge once
+		// archiveStylesheetSubresources() adds CSS-referenced assets, which would
+		// otherwise mislabel a fully-archived email as 'partial' or mask a failed
+		// subresource as 'archived'. Callers handle the no-remote-content ('skipped')
+		// case before reaching here.
+		const resolved = archivedAssets + failedAssets + blockedAssets;
+		if (resolved === 0) return 'skipped';
+		if (failedAssets === 0 && blockedAssets === 0) return 'archived';
 		if (archivedAssets > 0) return 'partial';
-		return failedAssets > 0 || blockedAssets > 0 ? 'failed' : 'pending';
+		return 'failed';
 	}
 
 	private static renderTextPreview(text: string): string {
 		return `<div>${escapeHtml(text || '').replace(/\r?\n/g, '<br>')}</div>`;
 	}
 
-	private static sanitizePreviewHtml(
+	private static async sanitizePreviewHtml(
 		emailId: string,
 		html: string,
 		parsedEmail: ParsedMail,
 		assets: RemoteContentAssetRecord[]
-	): string {
+	): Promise<string> {
 		const cidMap = this.buildCidMap(parsedEmail);
+		const cssByUrl = await this.loadArchivedStylesheets(assets);
 		return sanitizeEmailPreviewHtml({
 			emailId,
 			html,
 			cidMap,
 			assets: assets as RemoteContentPreviewAsset[],
+			cssByUrl,
 		});
+	}
+
+	/** Reads the bytes of archived `text/css` assets so they can be inlined into
+	 *  the preview. Keyed by both original and final URL for matching. */
+	private static async loadArchivedStylesheets(
+		assets: RemoteContentAssetRecord[]
+	): Promise<Map<string, string>> {
+		const cssByUrl = new Map<string, string>();
+		const cssAssets = assets.filter(
+			(asset) =>
+				asset.status === 'archived' &&
+				asset.storagePath &&
+				normalizeContentType(asset.contentType) === 'text/css'
+		);
+		for (const asset of cssAssets) {
+			try {
+				const buffer = await streamToBuffer(
+					await this.storageService.get(asset.storagePath as string)
+				);
+				const text = buffer.toString('utf8');
+				cssByUrl.set(asset.originalUrl, text);
+				if (asset.finalUrl) cssByUrl.set(asset.finalUrl, text);
+			} catch (error) {
+				logger.warn(
+					{ assetId: asset.id, error: error instanceof Error ? error.message : String(error) },
+					'Failed to read archived stylesheet for preview'
+				);
+			}
+		}
+		return cssByUrl;
 	}
 
 	private static buildCidMap(parsedEmail: ParsedMail): Map<string, string> {

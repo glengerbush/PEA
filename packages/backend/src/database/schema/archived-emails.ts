@@ -8,10 +8,8 @@ import {
 	uuid,
 	bigint,
 	index,
-	type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { ingestionSources } from './ingestion-sources';
-import { archiveFolders } from './archive-folders';
 
 export const archivedEmails = pgTable(
 	'archived_emails',
@@ -36,23 +34,9 @@ export const archivedEmails = pgTable(
 		sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
 		isIndexed: boolean('is_indexed').notNull().default(false),
 		hasAttachments: boolean('has_attachments').notNull().default(false),
-		isOnLegalHold: boolean('is_on_legal_hold').notNull().default(false),
-		isJournaled: boolean('is_journaled').default(false),
 		archivedAt: timestamp('archived_at', { withTimezone: true }).notNull().defaultNow(),
 		sourcePath: text('source_path'),
 		sourceLabels: jsonb('source_labels'),
-		localFolderId: uuid('local_folder_id').references(() => archiveFolders.id, {
-			onDelete: 'set null',
-		}),
-		localFolderPath: text('local_folder_path'),
-		duplicateOfEmailId: uuid('duplicate_of_email_id').references(
-			(): AnyPgColumn => archivedEmails.id,
-			{
-				onDelete: 'set null',
-			}
-		),
-		duplicateReviewStatus: text('duplicate_review_status').notNull().default('unique'),
-		isDuplicateHidden: boolean('is_duplicate_hidden').notNull().default(false),
 		duplicateSubjectHash: text('duplicate_subject_hash'),
 		duplicateFuzzyGroupKey: text('duplicate_fuzzy_group_key'),
 		duplicateBodyHash: text('duplicate_body_hash'),
@@ -74,17 +58,11 @@ export const archivedEmails = pgTable(
 		index('archived_emails_storage_hash_idx').on(table.storageHashSha256),
 		index('provider_msg_source_idx').on(table.providerMessageId, table.ingestionSourceId),
 		index('archived_emails_source_path_idx').on(table.sourcePath),
-		index('archived_emails_local_folder_idx').on(table.localFolderId),
-		index('archived_emails_duplicate_of_idx').on(table.duplicateOfEmailId),
-		index('archived_emails_duplicate_hidden_idx').on(table.isDuplicateHidden),
 		index('archived_emails_fuzzy_subject_sender_idx').on(
 			table.duplicateSubjectHash,
 			table.senderEmail
 		),
-		index('archived_emails_fuzzy_group_key_idx').on(
-			table.isDuplicateHidden,
-			table.duplicateFuzzyGroupKey
-		),
+		index('archived_emails_fuzzy_group_key_idx').on(table.duplicateFuzzyGroupKey),
 		index('archived_emails_fuzzy_body_idx').on(table.duplicateBodyHash),
 		index('archived_emails_fuzzy_recipients_idx').on(table.duplicateRecipientFingerprint),
 		index('archived_emails_fuzzy_attachments_idx').on(table.duplicateAttachmentFingerprint),
@@ -96,14 +74,5 @@ export const archivedEmailsRelations = relations(archivedEmails, ({ one }) => ({
 	ingestionSource: one(ingestionSources, {
 		fields: [archivedEmails.ingestionSourceId],
 		references: [ingestionSources.id],
-	}),
-	localFolder: one(archiveFolders, {
-		fields: [archivedEmails.localFolderId],
-		references: [archiveFolders.id],
-	}),
-	duplicateOfEmail: one(archivedEmails, {
-		fields: [archivedEmails.duplicateOfEmailId],
-		references: [archivedEmails.id],
-		relationName: 'duplicateReview',
 	}),
 }));

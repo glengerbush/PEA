@@ -20,6 +20,12 @@ export interface SystemSettings {
 	/** The default color theme for the application. */
 	theme: Theme;
 
-	/** A public-facing email address for user support inquiries. */
-	supportEmail: string | null;
+	/**
+	 * IANA time zone used to display dates and times (e.g. "America/New_York").
+	 * Null means use the viewer's local time zone.
+	 */
+	timeZone: string | null;
+
+	/** Whether to display times in 12-hour (AM/PM) or 24-hour format. */
+	clockFormat: '12h' | '24h';
 }

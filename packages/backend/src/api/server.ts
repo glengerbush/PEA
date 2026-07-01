@@ -1,5 +1,4 @@
-import express, { Express } from 'express';
-import cors from 'cors';
+import express, { Express, type Request, type Response, type NextFunction } from 'express';
 import dotenv from 'dotenv';
 import { AuthController } from './controllers/auth.controller';
 import { IngestionController } from './controllers/ingestion.controller';
@@ -16,10 +15,9 @@ import { createUploadRouter } from './routes/upload.routes';
 import { createUserRouter } from './routes/user.routes';
 import { createSettingsRouter } from './routes/settings.routes';
 import { apiKeyRoutes } from './routes/api-key.routes';
-import { integrityRoutes } from './routes/integrity.routes';
 import { createJobsRouter } from './routes/jobs.routes';
+import { createContactsRouter } from './routes/contacts.routes';
 import { AuthService } from '../services/AuthService';
-import { AuditService } from '../services/AuditService';
 import { UserService } from '../services/UserService';
 import { StorageService } from '../services/StorageService';
 import { SearchService } from '../services/SearchService';
@@ -54,9 +52,8 @@ export async function createServer(modules: ArchiverModule[] = []): Promise<Expr
 	}
 
 	// --- Dependency Injection Setup ---
-	const auditService = new AuditService();
 	const userService = new UserService();
-	authService = new AuthService(userService, auditService, JWT_SECRET, JWT_EXPIRES_IN);
+	authService = new AuthService(userService, JWT_SECRET, JWT_EXPIRES_IN);
 	const authController = new AuthController(authService, userService);
 	const ingestionController = new IngestionController();
 	const archivedEmailController = new ArchivedEmailController();
@@ -92,13 +89,20 @@ export async function createServer(modules: ArchiverModule[] = []): Promise<Expr
 
 	const app = express();
 
-	// --- CORS ---
-	app.use(
-		cors({
-			origin: process.env.APP_URL || 'http://localhost:3000',
-			credentials: true,
-		})
-	);
+	// --- CORS (inlined: single static allowed origin + credentials) ---
+	const corsOrigin = process.env.APP_URL || 'http://localhost:3000';
+	app.use((req: Request, res: Response, next: NextFunction) => {
+		res.header('Access-Control-Allow-Origin', corsOrigin);
+		res.header('Access-Control-Allow-Credentials', 'true');
+		res.vary('Origin');
+		if (req.method === 'OPTIONS') {
+			res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE');
+			const requested = req.header('Access-Control-Request-Headers');
+			if (requested) res.header('Access-Control-Allow-Headers', requested);
+			return res.sendStatus(204);
+		}
+		next();
+	});
 
 	// Trust the proxy to get the real IP address of the client.
 	// This is important for audit logging and security.
@@ -111,11 +115,11 @@ export async function createServer(modules: ArchiverModule[] = []): Promise<Expr
 	const storageRouter = createStorageRouter(storageController, authService);
 	const searchRouter = createSearchRouter(searchController, authService);
 	const dashboardRouter = createDashboardRouter(authService);
+	const contactsRouter = createContactsRouter(authService);
 	const uploadRouter = createUploadRouter(authService);
 	const userRouter = createUserRouter(authService);
 	const settingsRouter = createSettingsRouter(authService);
 	const apiKeyRouter = apiKeyRoutes(authService);
-	const integrityRouter = integrityRoutes(authService);
 	const jobsRouter = createJobsRouter(authService);
 
 	// Middleware for all other routes
@@ -129,8 +133,8 @@ export async function createServer(modules: ArchiverModule[] = []): Promise<Expr
 		}
 		rateLimiter(req, res, next);
 	});
-	app.use(express.json());
-	app.use(express.urlencoded({ extended: true }));
+	app.use(express.json({ limit: '25mb' }));
+	app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 	// i18n middleware
 	app.use(i18nextMiddleware.handle(i18next));
@@ -142,10 +146,10 @@ export async function createServer(modules: ArchiverModule[] = []): Promise<Expr
 	app.use(`/${config.api.version}/storage`, storageRouter);
 	app.use(`/${config.api.version}/search`, searchRouter);
 	app.use(`/${config.api.version}/dashboard`, dashboardRouter);
+	app.use(`/${config.api.version}/contacts`, contactsRouter);
 	app.use(`/${config.api.version}/users`, userRouter);
 	app.use(`/${config.api.version}/settings`, settingsRouter);
 	app.use(`/${config.api.version}/api-keys`, apiKeyRouter);
-	app.use(`/${config.api.version}/integrity`, integrityRouter);
 	app.use(`/${config.api.version}/jobs`, jobsRouter);
 
 	// Load all provided extension modules

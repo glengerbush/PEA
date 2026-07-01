@@ -1,1 +1,0 @@
-ALTER TYPE "public"."ingestion_provider" ADD VALUE 'mbox_import';

@@ -4,10 +4,8 @@ import { apiKeys } from '../database/schema/api-keys';
 import { CryptoService } from './CryptoService';
 import { and, eq } from 'drizzle-orm';
 import { ApiKey, User } from '@open-archiver/types';
-import { AuditService } from './AuditService';
 
 export class ApiKeyService {
-	private static auditService = new AuditService();
 	public static async generate(
 		userId: string,
 		name: string,
@@ -29,16 +27,6 @@ export class ApiKeyService {
 				expiresAt,
 			});
 
-			await this.auditService.createAuditLog({
-				actorIdentifier: actor.id,
-				actionType: 'GENERATE',
-				targetType: 'ApiKey',
-				targetId: name,
-				actorIp,
-				details: {
-					keyName: name,
-				},
-			});
 
 			return key;
 		} catch (error) {
@@ -68,16 +56,6 @@ export class ApiKeyService {
 	public static async deleteKey(id: string, userId: string, actor: User, actorIp: string) {
 		const [key] = await db.select().from(apiKeys).where(eq(apiKeys.id, id));
 		await db.delete(apiKeys).where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)));
-		await this.auditService.createAuditLog({
-			actorIdentifier: actor.id,
-			actionType: 'DELETE',
-			targetType: 'ApiKey',
-			targetId: id,
-			actorIp,
-			details: {
-				keyName: key?.name,
-			},
-		});
 	}
 	/**
 	 *

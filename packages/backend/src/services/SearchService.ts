@@ -11,7 +11,6 @@ import type {
 	TopSender,
 	SortDirection,
 } from '@open-archiver/types';
-import { AuditService } from './AuditService';
 import { IngestionService } from './IngestionService';
 
 type EmailSearchParams = SearchParams & {
@@ -31,7 +30,6 @@ const DEFAULT_SEARCH_FIELDS: ArchiveSearchField[] = [
 	'userEmail',
 	'sourcePath',
 	'sourceLabels',
-	'localFolderPath',
 	'tags',
 ];
 
@@ -56,14 +54,9 @@ const FILTERABLE_FALLBACK_FIELDS = new Set([
 	'hasAttachments',
 	'sourcePath',
 	'sourceLabels',
-	'localFolderId',
-	'localFolderPath',
 	'tags',
 	'threadId',
 	'messageIdHeader',
-	'duplicateOfEmailId',
-	'duplicateReviewStatus',
-	'isDuplicateHidden',
 	'sizeBytes',
 ]);
 
@@ -107,14 +100,12 @@ function normalizeDirection(direction: SortDirection | undefined): SortDirection
 
 export class SearchService {
 	private client: MeiliSearch;
-	private auditService: AuditService;
 
 	constructor() {
 		this.client = new MeiliSearch({
 			host: config.search.host,
 			apiKey: config.search.apiKey,
 		});
-		this.auditService = new AuditService();
 	}
 
 	public async getIndex<T extends Record<string, any>>(name: string): Promise<Index<T>> {
@@ -213,12 +204,6 @@ export class SearchService {
 		}
 
 		const filterParts = await this.buildArchiveFilterParts(dto.filters);
-		if (
-			!dto.filters?.includeHiddenDuplicates &&
-			typeof dto.filters?.isDuplicateHidden !== 'boolean'
-		) {
-			filterParts.push('isDuplicateHidden = false');
-		}
 		if (filterParts.length > 0) {
 			searchParams.filter = filterParts.join(' AND ');
 		}
@@ -227,23 +212,6 @@ export class SearchService {
 		const searchResults = await index.search(query, searchParams);
 
 		if (query) {
-			await this.auditService.createAuditLog({
-				actorIdentifier: userId,
-				actionType: 'SEARCH',
-				targetType: 'ArchivedEmail',
-				targetId: '',
-				actorIp,
-				details: {
-					query,
-					filters: dto.filters,
-					fields,
-					sort: dto.sort,
-					direction,
-					page,
-					limit,
-					matchingStrategy,
-				},
-			});
 		}
 
 		return {
@@ -286,11 +254,6 @@ export class SearchService {
 			'cc',
 			'bcc',
 			'sourcePath',
-			'localFolderId',
-			'localFolderPath',
-			'duplicateOfEmailId',
-			'duplicateReviewStatus',
-			'isDuplicateHidden',
 		] as const) {
 			const value = filters[key];
 			if (typeof value === 'string' && value.length > 0) {
@@ -303,13 +266,6 @@ export class SearchService {
 			filterParts.push(`hasAttachments = ${filters.hasAttachments}`);
 			handled.add('hasAttachments');
 		}
-
-		if (typeof filters.isDuplicateHidden === 'boolean') {
-			filterParts.push(`isDuplicateHidden = ${filters.isDuplicateHidden}`);
-			handled.add('isDuplicateHidden');
-		}
-
-		handled.add('includeHiddenDuplicates');
 
 		if (Array.isArray(filters.sourceLabels)) {
 			for (const label of filters.sourceLabels) {
@@ -390,6 +346,28 @@ export class SearchService {
 		return sortedSenders;
 	}
 
+	/**
+	 * Returns the distinct values present in the archive for the filterable
+	 * facets used by the mailbox filter dropdowns (imported folder = sourcePath,
+	 * and tags). Values are sorted alphabetically. Note: Meilisearch caps facet
+	 * values at `faceting.maxValuesPerFacet` (default 100).
+	 */
+	public async getFilterFacets(): Promise<{ tags: string[] }> {
+		const index = await this.getIndex<EmailDocument>('emails');
+		const searchResults = await index.search('', {
+			facets: ['tags'],
+			limit: 0,
+		});
+		const distribution = searchResults.facetDistribution || {};
+		const distinctSorted = (values?: Record<string, number>): string[] =>
+			Object.keys(values || {})
+				.filter((value) => value.trim().length > 0)
+				.sort((a, b) => a.localeCompare(b));
+		return {
+			tags: distinctSorted(distribution.tags),
+		};
+	}
+
 	public async configureEmailIndex() {
 		const index = await this.getIndex('emails');
 		await index.updateSettings({
@@ -406,7 +384,6 @@ export class SearchService {
 				'userEmail',
 				'sourcePath',
 				'sourceLabels',
-				'localFolderPath',
 				'tags',
 			],
 			filterableAttributes: [
@@ -422,14 +399,9 @@ export class SearchService {
 				'hasAttachments',
 				'sourcePath',
 				'sourceLabels',
-				'localFolderId',
-				'localFolderPath',
 				'tags',
 				'threadId',
 				'messageIdHeader',
-				'duplicateOfEmailId',
-				'duplicateReviewStatus',
-				'isDuplicateHidden',
 				'sizeBytes',
 			],
 			sortableAttributes: ['timestamp', 'archivedAt', 'from', 'subject', 'sizeBytes'],

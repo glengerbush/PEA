@@ -6,11 +6,11 @@
 		"description": "REST API for Open Archiver — an open-source email archiving platform. All authenticated endpoints require a Bearer JWT token obtained from `POST /v1/auth/login`, or an API key passed as a Bearer token.",
 		"license": {
 			"name": "SEE LICENSE IN LICENSE",
-			"url": "https://github.com/LogicLabs-OU/OpenArchiver/blob/main/LICENSE"
+			"url": "https://github.com/glengerbush/OpenArchiver/blob/main/LICENSE"
 		},
 		"contact": {
 			"name": "Open Archiver",
-			"url": "https://openarchiver.com"
+			"url": "https://github.com/glengerbush/OpenArchiver"
 		}
 	},
 	"servers": [
@@ -886,13 +886,6 @@
 						"enum": ["light", "dark", "system"],
 						"example": "system",
 						"description": "Default color theme."
-					},
-					"supportEmail": {
-						"type": "string",
-						"format": "email",
-						"nullable": true,
-						"example": "support@example.com",
-						"description": "Public-facing support email address."
 					}
 				}
 			}

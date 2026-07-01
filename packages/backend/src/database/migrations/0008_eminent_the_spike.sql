@@ -1,1 +1,0 @@
-ALTER TABLE "archived_emails" ADD COLUMN "user_email" text NOT NULL;

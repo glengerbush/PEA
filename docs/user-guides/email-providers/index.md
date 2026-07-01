@@ -1,13 +1,12 @@
-# Connecting Email Providers
+# Importing Email
 
-Open Archiver can connect to a variety of email sources to ingest and archive your emails. This section provides guides for connecting to popular email providers.
+This fork imports your existing email once from static files. It does not connect to live mailboxes or run continuous ingestion.
 
-Choose your provider from the list below to get started:
+Two import formats are supported:
 
-- [Google Workspace](./google-workspace.md)
-- [Microsoft 365](./microsoft-365.md)
-- [Generic IMAP Server](./imap.md)
-- [EML Import](./eml.md)
-- [PST Import](./pst.md)
 - [Mbox Import](./mbox.md)
-- [Merging Ingestion Sources](./merging-sources.md)
+- [EML Import](./eml.md)
+
+You can also combine several imports into one unified mailbox:
+
+- [Merging Imports](./merging-sources.md)

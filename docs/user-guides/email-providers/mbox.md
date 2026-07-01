@@ -1,6 +1,6 @@
-# Mbox Ingestion
+# Mbox Import
 
-Mbox is a common format for storing email messages. This guide will walk you through the process of ingesting mbox files into OpenArchiver.
+Mbox is a common format for storing email messages. This guide walks you through importing mbox files into OpenArchiver.
 
 ## 1. Exporting from Your Email Client
 
@@ -14,14 +14,14 @@ Most email clients that support mbox exports will allow you to export a folder o
 
 Once you have your `.mbox` file or a folder of `.mbox` files, you can import it through the web interface.
 
-1.  Navigate to the **Ingestion** page.
-2.  Click on the **New Ingestion** button.
-3.  Select **Mbox** as the source type.
+1.  Go to the **Imports** page.
+2.  Click **Import Archive**.
+3.  Select **Mbox** as the provider.
 4.  **Choose Import Method:**
-    - **Upload File:** Upload one `.mbox` file.
-    - **Local Path:** Enter the path to one `.mbox` file or a folder containing `.mbox` files **inside the container**. Folder imports are scanned recursively, so subfolders are included.
+    - **Upload File:** Select one or more flat `.mbox` files, or use the Apple Mail folder picker for a `.mbox` package. Select a parent folder to add several packages at once, or use the picker repeatedly to append folders.
+    - **Local Path:** Enter the path to one `.mbox` file, an Apple Mail `.mbox` package, or a folder containing multiple archives **inside the container**. Folder imports are scanned recursively, so subfolders are included.
 
-    > **Note on Local Path:** When using Docker, the "Local Path" is relative to the container's filesystem.
+    > **Note on Local Path:** When using Docker, the path must exist inside the OpenArchiver container. A host path such as `/home/you/mail` is not visible unless it is mounted into the container. The upload option does not require a mount.
     >
     > - **Recommended:** Place your mbox file or mbox folder in a `temp` folder inside your configured storage directory (`STORAGE_LOCAL_ROOT_PATH`). This path is already mounted. For example, if your storage path is `/data`, put files under `/data/temp/mbox-import/` and enter `/data/temp/mbox-import` as the path.
     > - **Alternative:** Mount a separate volume in `docker-compose.yml` (e.g., `- /host/path:/container/path`) and use the container path.

@@ -14,12 +14,10 @@ export const createArchivedEmailRouter = (
 
 	router.get('/', archivedEmailController.queryArchivedEmails);
 
-	router.get('/folders', archivedEmailController.listFolders);
+	router.get('/facets', archivedEmailController.listFilterFacets);
 
-	router.post('/folders', archivedEmailController.createFolder);
-
-	router.post('/bulk/move', archivedEmailController.moveArchivedEmails);
 	router.post('/bulk/tags', archivedEmailController.updateArchivedEmailTags);
+	router.post('/bulk/delete', archivedEmailController.bulkDeleteArchivedEmails);
 
 	router.get('/duplicates/exact', archivedEmailController.listExactDuplicateGroups);
 
@@ -34,6 +32,8 @@ export const createArchivedEmailRouter = (
 	router.post('/duplicates/fuzzy/ignore', archivedEmailController.ignoreFuzzyDuplicateGroups);
 
 	router.get('/:id/preview', archivedEmailController.getRemoteContentPreview);
+
+	router.get('/:id/remote-assets', archivedEmailController.listRemoteContentAssets);
 
 	router.post('/:id/remote-content/archive', archivedEmailController.enqueueRemoteContentArchive);
 

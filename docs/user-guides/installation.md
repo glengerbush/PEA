@@ -184,11 +184,10 @@ If you are not redirected to the `/setup` page but instead see the login page, t
 
 ## 5. Next Steps
 
-After successfully deploying and logging into Open Archiver, the next step is to configure your ingestion sources to start archiving emails.
+After successfully deploying and logging into Open Archiver, the next step is to import your existing email from static files.
 
-- [Connecting to Google Workspace](./email-providers/google-workspace.md)
-- [Connecting to Microsoft 365](./email-providers/microsoft-365.md)
-- [Connecting to a Generic IMAP Server](./email-providers/imap.md)
+- [Mbox Import](./email-providers/mbox.md)
+- [EML Import](./email-providers/eml.md)
 
 ## Updating Your Installation
 

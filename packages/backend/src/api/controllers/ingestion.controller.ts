@@ -8,7 +8,6 @@ import {
 } from '@open-archiver/types';
 import { logger } from '../../config/logger';
 import { UserService } from '../../services/UserService';
-import { checkDeletionEnabled } from '../../helpers/deletionGuard';
 
 export class IngestionController {
 	private userService = new UserService();
@@ -112,7 +111,6 @@ export class IngestionController {
 
 	public delete = async (req: Request, res: Response): Promise<Response> => {
 		try {
-			checkDeletionEnabled();
 			const { id } = req.params;
 			const userId = req.user?.sub;
 			if (!userId) {

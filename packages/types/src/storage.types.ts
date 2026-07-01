@@ -48,26 +48,4 @@ export interface LocalStorageConfig {
 	encryptionKey?: string;
 }
 
-/**
- * Configuration for any S3-compatible provider (AWS S3, MinIO, etc.).
- */
-export interface S3StorageConfig {
-	type: 's3';
-	// The API endpoint. For AWS S3, this is region-specific (e.g., 'https://s3.us-east-1.amazonaws.com').
-	// For MinIO, this is the address of your MinIO server (e.g., 'http://localhost:9000').
-	endpoint: string;
-	// The name of the bucket to use.
-	bucket: string;
-	// The access key ID for authentication.
-	accessKeyId: string;
-	// The secret access key for authentication.
-	secretAccessKey: string;
-	// The AWS region (optional but recommended for AWS S3).
-	region?: string;
-	// Force path-style addressing, required for MinIO.
-	forcePathStyle?: boolean;
-	openArchiverFolderName: string;
-	encryptionKey?: string;
-}
-
-export type StorageConfig = LocalStorageConfig | S3StorageConfig;
+export type StorageConfig = LocalStorageConfig;

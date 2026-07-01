@@ -1,1 +1,0 @@
-ALTER TABLE "sync_sessions" ADD COLUMN "last_activity_at" timestamp with time zone DEFAULT now() NOT NULL;

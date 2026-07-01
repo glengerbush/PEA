@@ -6,6 +6,7 @@
 	import { t } from '$lib/translations';
 
 	export let data: TopSender[];
+	export let onSelect: (sender: string) => void = () => {};
 
 	const chartConfig = {
 		count: {
@@ -20,6 +21,7 @@
 		x="count"
 		y="sender"
 		orientation="horizontal"
+		onBarClick={(_e, detail) => onSelect((detail.data as TopSender).sender)}
 		xDomain={[0, Math.max(...data.map((d) => d.count)) * 1.1]}
 		axis={'x'}
 		legend={false}

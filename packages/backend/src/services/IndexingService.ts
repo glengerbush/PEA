@@ -1,11 +1,4 @@
-import {
-	Attachment,
-	DuplicateReviewStatus,
-	EmailAddress,
-	EmailDocument,
-	EmailObject,
-	PendingEmail,
-} from '@open-archiver/types';
+import { Attachment, EmailDocument, PendingEmail } from '@open-archiver/types';
 import { SearchService } from './SearchService';
 import { StorageService } from './StorageService';
 import { extractText } from '../helpers/textExtractor';
@@ -13,34 +6,13 @@ import { DatabaseService } from './DatabaseService';
 import { archivedEmails, attachments, emailAttachments } from '../database/schema';
 import { eq } from 'drizzle-orm';
 import { streamToBuffer } from '../helpers/streamToBuffer';
-import { simpleParser, type Attachment as ParsedAttachment } from 'mailparser';
+import { simpleParser } from 'mailparser';
 import { logger } from '../config/logger';
-import { remoteContentQueue } from '../jobs/queues';
 
 interface DbRecipients {
 	to: { name: string; address: string }[];
 	cc: { name: string; address: string }[];
 	bcc: { name: string; address: string }[];
-}
-
-type AttachmentsType = {
-	filename: string;
-	buffer: Buffer;
-	mimeType: string;
-}[];
-
-const DUPLICATE_REVIEW_STATUSES = new Set<DuplicateReviewStatus>([
-	'unique',
-	'keeper',
-	'approved_duplicate',
-	'ignored',
-]);
-
-function normalizeDuplicateReviewStatus(status: unknown): DuplicateReviewStatus {
-	return typeof status === 'string' &&
-		DUPLICATE_REVIEW_STATUSES.has(status as DuplicateReviewStatus)
-		? (status as DuplicateReviewStatus)
-		: 'unique';
 }
 
 /**
@@ -192,9 +164,11 @@ export class IndexingService {
 			logger.debug({ documentCount: validDocuments.length }, 'Sending batch to Meilisearch');
 
 			await this.searchService.addDocuments('emails', validDocuments, 'id');
-			await remoteContentQueue.add('archive-remote-content-batch', {
-				emailIds: validDocuments.map((doc) => doc.id),
-			});
+			// Note: remote-content archiving is enqueued once per batch by
+			// process-mailbox.processor (the only enqueuer of index-email-batch).
+			// Enqueuing again here double-processed every email and raced on the
+			// (emailId, urlHash) unique constraint — so it is intentionally not
+			// done here. Indexing and remote-content capture are separate concerns.
 
 			logger.info(
 				{
@@ -250,166 +224,6 @@ export class IndexingService {
 		return document;
 	}
 
-	/**
-	 * @deprecated
-	 */
-	/* 	private async indexByEmail(pendingEmail: PendingEmail): Promise<void> {
-		const attachments: AttachmentsType = [];
-		if (pendingEmail.email.attachments && pendingEmail.email.attachments.length > 0) {
-			for (const attachment of pendingEmail.email.attachments) {
-				attachments.push({
-					buffer: attachment.content,
-					filename: attachment.filename,
-					mimeType: attachment.contentType,
-				});
-			}
-		}
-		const document = await this.createEmailDocumentFromRaw(
-			pendingEmail.email,
-			attachments,
-			pendingEmail.sourceId,
-			pendingEmail.archivedId,
-			pendingEmail.email.userEmail || ''
-		);
-		// console.log(document);
-		await this.searchService.addDocuments('emails', [document], 'id');
-	} */
-
-	/**
-	 * Creates a search document from a raw email object and its attachments.
-	 */
-	/* private async createEmailDocumentFromRawForBatch(
-		email: EmailObject,
-		ingestionSourceId: string,
-		archivedEmailId: string,
-		userEmail: string
-	): Promise<EmailDocument> {
-		const extractedAttachments: { filename: string; content: string }[] = [];
-
-		if (email.attachments && email.attachments.length > 0) {
-			const ATTACHMENT_CONCURRENCY = 3;
-
-			for (let i = 0; i < email.attachments.length; i += ATTACHMENT_CONCURRENCY) {
-				const attachmentBatch = email.attachments.slice(i, i + ATTACHMENT_CONCURRENCY);
-
-				const attachmentResults = await Promise.allSettled(
-					attachmentBatch.map(async (attachment) => {
-						try {
-							if (!this.shouldExtractText(attachment.contentType)) {
-								return null;
-							}
-
-							const textContent = await extractText(
-								attachment.content,
-								attachment.contentType || ''
-							);
-
-							return {
-								filename: attachment.filename,
-								content: textContent || '',
-							};
-						} catch (error) {
-							logger.warn(
-								{
-									filename: attachment.filename,
-									mimeType: attachment.contentType,
-									emailId: archivedEmailId,
-									error: error instanceof Error ? error.message : String(error),
-								},
-								'Failed to extract text from attachment'
-							);
-							return null;
-						}
-					})
-				);
-
-				for (const result of attachmentResults) {
-					if (result.status === 'fulfilled' && result.value) {
-						extractedAttachments.push(result.value);
-					}
-				}
-			}
-		}
-
-		const allAttachmentText = extractedAttachments
-			.map((att) => sanitizeText(att.content))
-			.join(' ');
-
-		const enhancedBody = [sanitizeText(email.body || email.html || ''), allAttachmentText]
-			.filter(Boolean)
-			.join('\n\n--- Attachments ---\n\n');
-
-		return {
-			id: archivedEmailId,
-			userEmail: userEmail,
-			from: email.from[0]?.address || '',
-			to: email.to?.map((addr: EmailAddress) => addr.address) || [],
-			cc: email.cc?.map((addr: EmailAddress) => addr.address) || [],
-			bcc: email.bcc?.map((addr: EmailAddress) => addr.address) || [],
-			subject: email.subject || '',
-			body: enhancedBody,
-			attachments: extractedAttachments,
-			timestamp: new Date(email.receivedAt).getTime(),
-			ingestionSourceId: ingestionSourceId,
-		};
-	} */
-
-	private async createEmailDocumentFromRaw(
-		email: EmailObject,
-		attachments: AttachmentsType,
-		ingestionSourceId: string,
-		archivedEmailId: string,
-		userEmail: string //the owner of the email inbox
-	): Promise<EmailDocument> {
-		const extractedAttachments = [];
-		for (const attachment of attachments) {
-			try {
-				const textContent = await extractText(attachment.buffer, attachment.mimeType || '');
-				extractedAttachments.push({
-					filename: attachment.filename,
-					content: textContent,
-				});
-			} catch (error) {
-				logger.error(
-					{
-						filename: attachment.filename,
-						mimeType: attachment.mimeType,
-						error: error instanceof Error ? error.message : String(error),
-					},
-					'Failed to extract text from attachment'
-				);
-			}
-		}
-		// console.log('email.userEmail', userEmail);
-		return {
-			id: archivedEmailId,
-			userEmail: userEmail,
-			from: email.from[0]?.address || '',
-			senderName: email.from[0]?.name || '',
-			to: email.to.map((i: EmailAddress) => i.address) || [],
-			cc: email.cc?.map((i: EmailAddress) => i.address) || [],
-			bcc: email.bcc?.map((i: EmailAddress) => i.address) || [],
-			subject: email.subject || '',
-			body: email.body || email.html || '',
-			attachments: extractedAttachments,
-			timestamp: new Date(email.receivedAt).getTime(),
-			archivedAt: Date.now(),
-			ingestionSourceId: ingestionSourceId,
-			threadId: email.threadId || null,
-			messageIdHeader: null,
-			hasAttachments: attachments.length > 0,
-			sourcePath: email.path || null,
-			sourceLabels: email.tags || [],
-			localFolderId: null,
-			localFolderPath: null,
-			tags: email.tags || [],
-			duplicateOfEmailId: null,
-			duplicateReviewStatus: 'unique',
-			isDuplicateHidden: false,
-			sizeBytes: 0,
-		};
-	}
-
 	private async createEmailDocument(
 		email: typeof archivedEmails.$inferSelect,
 		attachments: Attachment[],
@@ -424,19 +238,9 @@ export class IndexingService {
 			(await extractText(emailBodyBuffer, 'text/plain')) ||
 			'';
 
-		// If there are linked attachment records, extract text from storage (default mode).
-		// Otherwise, if the email has attachments but no records (preserve original file mode),
-		// extract attachment text directly from the parsed EML body.
-		let attachmentContents: { filename: string; content: string }[];
-		if (attachments.length > 0) {
-			attachmentContents = await this.extractAttachmentContents(attachments);
-		} else if (email.hasAttachments && parsedEmail.attachments.length > 0) {
-			attachmentContents = await this.extractInlineAttachmentContents(
-				parsedEmail.attachments
-			);
-		} else {
-			attachmentContents = [];
-		}
+		// Attachments are stored separately with linked records; extract their text from storage.
+		const attachmentContents =
+			attachments.length > 0 ? await this.extractAttachmentContents(attachments) : [];
 
 		const recipients = email.recipients as DbRecipients;
 		// console.log('email.userEmail', email.userEmail);
@@ -459,48 +263,9 @@ export class IndexingService {
 			hasAttachments: email.hasAttachments,
 			sourcePath: email.sourcePath || email.path,
 			sourceLabels: (email.sourceLabels as string[] | null) || [],
-			localFolderId: email.localFolderId,
-			localFolderPath: email.localFolderPath,
 			tags: (email.tags as string[] | null) || [],
-			duplicateOfEmailId: email.duplicateOfEmailId,
-			duplicateReviewStatus: normalizeDuplicateReviewStatus(email.duplicateReviewStatus),
-			isDuplicateHidden: email.isDuplicateHidden,
 			sizeBytes: email.sizeBytes,
 		};
-	}
-
-	/**
-	 * Extracts text content from attachments embedded in the parsed EML.
-	 * Used in preserve-original-file (GoBD) mode where no separate attachment
-	 * records exist — the full MIME body is stored unmodified, so we parse
-	 * attachments directly from the in-memory parsed email.
-	 */
-	private async extractInlineAttachmentContents(
-		parsedAttachments: ParsedAttachment[]
-	): Promise<{ filename: string; content: string }[]> {
-		const extracted: { filename: string; content: string }[] = [];
-		for (const attachment of parsedAttachments) {
-			try {
-				const textContent = await extractText(
-					attachment.content,
-					attachment.contentType || ''
-				);
-				extracted.push({
-					filename: attachment.filename || 'untitled',
-					content: textContent,
-				});
-			} catch (error) {
-				logger.warn(
-					{
-						filename: attachment.filename,
-						mimeType: attachment.contentType,
-						error: error instanceof Error ? error.message : String(error),
-					},
-					'Failed to extract text from inline attachment in preserve-original mode'
-				);
-			}
-		}
-		return extracted;
 	}
 
 	private async extractAttachmentContents(
@@ -597,12 +362,7 @@ export class IndexingService {
 			hasAttachments: doc.hasAttachments || false,
 			sourcePath: doc.sourcePath || null,
 			sourceLabels: Array.isArray(doc.sourceLabels) ? doc.sourceLabels : [],
-			localFolderId: doc.localFolderId || null,
-			localFolderPath: doc.localFolderPath || null,
 			tags: Array.isArray(doc.tags) ? doc.tags : [],
-			duplicateOfEmailId: doc.duplicateOfEmailId || null,
-			duplicateReviewStatus: normalizeDuplicateReviewStatus(doc.duplicateReviewStatus),
-			isDuplicateHidden: doc.isDuplicateHidden || false,
 			sizeBytes: typeof doc.sizeBytes === 'number' ? doc.sizeBytes : 0,
 		};
 	}

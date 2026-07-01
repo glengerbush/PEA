@@ -11,8 +11,23 @@ export class LocalFileSystemProvider implements IStorageProvider {
 		this.rootPath = config.rootPath;
 	}
 
+	/**
+	 * Resolve a storage key to an absolute path and guarantee it stays inside
+	 * the storage root. Rejects any key that escapes via `..` or an absolute
+	 * path, so untrusted key segments (attachment/upload filenames, mailbox
+	 * folder names) can never traverse the filesystem.
+	 */
+	private resolveWithinRoot(filePath: string): string {
+		const root = path.resolve(this.rootPath);
+		const fullPath = path.resolve(root, filePath);
+		if (fullPath !== root && !fullPath.startsWith(root + path.sep)) {
+			throw new Error('Invalid storage path: resolved path escapes storage root');
+		}
+		return fullPath;
+	}
+
 	async put(filePath: string, content: Buffer | NodeJS.ReadableStream): Promise<void> {
-		const fullPath = path.join(this.rootPath, filePath);
+		const fullPath = this.resolveWithinRoot(filePath);
 		const dir = path.dirname(fullPath);
 		await fs.mkdir(dir, { recursive: true });
 
@@ -25,7 +40,7 @@ export class LocalFileSystemProvider implements IStorageProvider {
 	}
 
 	async get(filePath: string): Promise<NodeJS.ReadableStream> {
-		const fullPath = path.join(this.rootPath, filePath);
+		const fullPath = this.resolveWithinRoot(filePath);
 		try {
 			await fs.access(fullPath);
 			return createReadStream(fullPath);
@@ -35,7 +50,7 @@ export class LocalFileSystemProvider implements IStorageProvider {
 	}
 
 	async delete(filePath: string): Promise<void> {
-		const fullPath = path.join(this.rootPath, filePath);
+		const fullPath = this.resolveWithinRoot(filePath);
 		try {
 			await fs.rm(fullPath, { recursive: true, force: true });
 		} catch (error: any) {
@@ -47,7 +62,7 @@ export class LocalFileSystemProvider implements IStorageProvider {
 	}
 
 	async exists(filePath: string): Promise<boolean> {
-		const fullPath = path.join(this.rootPath, filePath);
+		const fullPath = this.resolveWithinRoot(filePath);
 		try {
 			await fs.access(fullPath);
 			return true;

@@ -1,7 +1,6 @@
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../database';
 import { archivedEmails } from '../database/schema';
-import { AuditService } from './AuditService';
 import { SearchService } from './SearchService';
 import type {
 	UpdateArchivedEmailTagsDto,
@@ -70,7 +69,6 @@ function applyTagChanges(currentTags: unknown, addTags: string[], removeTags: st
 }
 
 export class ArchiveTagService {
-	private static auditService = new AuditService();
 	private static searchService = new SearchService();
 
 	public static async updateEmailTags(
@@ -131,20 +129,6 @@ export class ArchiveTagService {
 			);
 		}
 
-		await this.auditService.createAuditLog({
-			actorIdentifier: userId,
-			actionType: 'UPDATE',
-			targetType: 'ArchivedEmail',
-			targetId: 'bulk',
-			actorIp,
-			details: {
-				action: 'UPDATE_TAGS',
-				requestedCount: emailIds.length,
-				updatedCount: updates.length,
-				addedTags,
-				removedTags,
-			},
-		});
 
 		return {
 			requestedCount: emailIds.length,

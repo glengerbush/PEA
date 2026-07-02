@@ -1,0 +1,80 @@
+name: Release desktop builds
+
+# Push a tag like v0.7.0 and this builds + publishes:
+#   Linux:  .AppImage (self-updating), .deb, .rpm
+#   macOS:  .dmg for Apple Silicon + Intel (unsigned — see release notes)
+# plus signed updater artifacts and latest.json for the in-app updater.
+#
+# Required repo secret: TAURI_SIGNING_PRIVATE_KEY (contents of the minisign
+# key generated with `pnpm tauri signer generate`; password empty).
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04 # oldest glibc for AppImage compatibility
+            bundles: deb,rpm,appimage
+          - platform: macos-latest # Apple Silicon
+            bundles: dmg,app
+          - platform: macos-13 # Intel
+            bundles: dmg,app
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web app + backend
+        run: pnpm build:oss
+
+      - name: Assemble desktop bundle (backend, node, postgres, meilisearch)
+        run: node scripts/build-desktop-bundle.mjs
+
+      - name: Build and publish with Tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          # lets linuxdeploy run without FUSE (also required on FUSE-less hosts)
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Open Archiver ${{ github.ref_name }}'
+          releaseBody: |
+            ### Install
+            - **Linux (any distro):** download the `.AppImage`, `chmod +x`, run — or use `scripts/install-desktop.sh` for menu integration. `.deb`/`.rpm` also available.
+            - **Arch:** `git clone` the repo and `makepkg -si` in `packaging/arch/` (or use the AppImage).
+            - **macOS:** open the `.dmg`. The app is unsigned: on first launch use System Settings → Privacy & Security → "Open Anyway" (or run `xattr -cr /Applications/OpenArchiver.app`).
+
+            Updates after install are one click: the app checks this repo's releases at launch.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: --bundles ${{ matrix.bundles }}

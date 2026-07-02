@@ -6,11 +6,9 @@ const isEnabled = (value: unknown) =>
 	value === true || (typeof value === 'string' && ['true', '1'].includes(value.toLowerCase()));
 const isDisabled = (value: unknown) => typeof value === 'string' && value.toLowerCase() === 'false';
 
-// LOCAL MODE: authentication is disabled. Every request is treated as the local
-// user so route guards pass and no login/setup screens are shown. The backend
-// resolves the real user identity independently for all API calls, so this
-// placeholder is only used for the SvelteKit guards. Restore JWT verification
-// here to re-enable auth.
+// Single-user desktop app: every request is the local user. The backend
+// resolves the real user identity independently for all API calls; this
+// placeholder only feeds the UI (e.g. the account label).
 const LOCAL_USER = {
 	id: 'local',
 	email: 'local@localhost',
@@ -21,7 +19,6 @@ const LOCAL_USER = {
 
 export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.user = LOCAL_USER;
-	event.locals.accessToken = null;
 
 	const enterpriseMode =
 		isEnabled(import.meta.env.VITE_ENTERPRISE_MODE) ||

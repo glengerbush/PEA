@@ -1,41 +1,78 @@
-# Get Started 👋
+# Open Archiver 👋
 
-Welcome to Open Archiver! This guide will help you get started with setting up and using the platform.
+A local-only desktop app for getting your email out of bad clients and off of
+servers, into an archive you can search and organize — completely offline.
 
-## What is Open Archiver?
+One desktop app, one process, zero services. Import your mail once from
+`.mbox` or `.eml` files; everything lives on your machine in a single data
+directory (`~/.local/share/open-archiver`, macOS:
+`~/Library/Application Support/OpenArchiver`) — the archive index and
+full-text search in one SQLite file, next to your encrypted email storage.
+**Backing up = copying that folder.**
 
-**A secure, sovereign, and affordable open-source platform for email archiving and eDiscovery.**
+## Installing
 
-Open Archiver provides a robust, self-hosted solution for archiving, storing, indexing, and searching emails from major platforms, including Google Workspace (Gmail), Microsoft 365, as well as generic IMAP-enabled email inboxes. Use Open Archiver to keep a permanent, tamper-proof record of your communication history, free from vendor lock-in.
+**Linux** (any distro, one command, no root):
 
-## Key Features
+```bash
+curl -fsSL https://raw.githubusercontent.com/glengerbush/OpenArchiver/main/scripts/install-desktop.sh | bash
+```
 
-- **Universal Ingestion**: Connect to Google Workspace, Microsoft 365, and standard IMAP servers to perform initial bulk imports and maintain continuous, real-time synchronization.
-- **Secure & Efficient Storage**: Emails are stored in the standard `.eml` format. The system uses deduplication and compression to minimize storage costs. All data is encrypted at rest.
-- **Pluggable Storage Backends**: Support both local filesystem storage and S3-compatible object storage (like AWS S3 or MinIO).
-- **Powerful Search & eDiscovery**: A high-performance search engine indexes the full text of emails and attachments (PDF, DOCX, etc.).
-- **Compliance & Retention**: Define granular retention policies to automatically manage the lifecycle of your data. Place legal holds on communications to prevent deletion during litigation (TBD).
-- **Comprehensive Auditing**: An immutable audit trail logs all system activities, ensuring you have a clear record of who accessed what and when (TBD).
+This installs the AppImage into `~/.local/bin` with a launcher entry; it
+self-updates in place from then on. Alternatives from the
+[releases page](https://github.com/glengerbush/OpenArchiver/releases):
+`.deb` (`sudo apt install ./OpenArchiver_*.deb`), `.rpm`
+(`sudo dnf install ./OpenArchiver-*.rpm`), or on Arch clone the repo and
+`cd packaging/arch && makepkg -si`. The only runtime dependency is
+WebKitGTK 4.1; if you ever see a blank window on NVIDIA proprietary drivers,
+launch with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
-## Installation
+**macOS:** download the `.dmg` and drag to Applications. The build is
+unsigned, so the **first** launch needs System Settings → Privacy & Security →
+**Open Anyway** (or `xattr -cr /Applications/OpenArchiver.app`). Updates never
+re-trigger the prompt.
 
-To get your own instance of Open Archiver running, follow our detailed installation guide:
+**From source:**
 
-- [Installation Guide](./user-guides/installation.md)
+```bash
+pnpm install && pnpm build:oss
+OA_EMBEDDED=1 node apps/open-archiver/dist/index.js   # engine + web UI
+# or: cd apps/desktop && pnpm tauri dev               # full desktop window
+```
 
-## Importing Your Email 🔌
+## Importing your email
 
-After deploying the application, import your existing email once from static files (`.mbox` or `.eml`). Follow our detailed guides:
+Import once from static files via **Import Archive** in the app. Two formats:
 
-- [Mbox Import](./user-guides/email-providers/mbox.md)
-- [EML Import](./user-guides/email-providers/eml.md)
+- **Mbox** — one or more `.mbox` files, an Apple Mail `.mbox` package, or a
+  folder of them (scanned recursively). Upload the files, or give a **Local
+  Path** on your machine (best for large archives — files are read in place,
+  nothing is uploaded).
+- **EML** — a zip archive of `.eml` files; the folder structure inside the
+  zip is preserved.
 
-## Contributing
+Folder structure is preserved from the mailbox layout and email headers where
+possible, and imports of the same mailbox can be merged into one source.
 
-We welcome contributions from the community!
+## Searching
 
-- **Reporting Bugs**: If you find a bug, please open an issue on our GitHub repository.
-- **Suggesting Enhancements**: Have an idea for a new feature? We'd love to hear it. Open an issue to start the discussion.
-- **Code Contributions**: If you'd like to contribute code, please fork the repository and submit a pull request.
+Search applies as you type — full-text over subjects, bodies, senders,
+recipients, and attachment text (PDF, DOCX, XLSX). Scope the search by field,
+filter by source, tag, or attachments, sort by any column; every view is a
+URL you can bookmark. Exact duplicates get one-click cleanup and
+near-duplicates are surfaced for review under Duplicates.
 
-Please read our `CONTRIBUTING.md` file for more details on our code of conduct and the process for submitting pull requests.
+## Upgrading
+
+The app updates itself: at launch it checks GitHub Releases, and **Update
+now** downloads the signed update, verifies it, installs, and restarts. Your
+archive is never touched by updates; schema migrations run automatically.
+AppImage and macOS installs are fully hands-off; `.deb`/`.rpm` may show a
+package-install prompt; `makepkg` installs update by re-running `makepkg -si`.
+Downgrading past a schema migration isn't supported — restore the data folder
+from a backup instead.
+
+## API Reference
+
+The engine serves a local HTTP API (prefixed `/api/v1`) — see the
+[API overview](./api/index.md).

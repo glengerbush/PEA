@@ -219,10 +219,30 @@
 		return `/mailbox${query ? `?${query}` : ''}`;
 	}
 
+	// Search-as-you-type / instant filtering. Navigation re-derives all inputs
+	// from the URL, so an apply after each change round-trips cleanly (no loops).
+	let searchDebounce: ReturnType<typeof setTimeout> | undefined;
+	function applyNow() {
+		if (searchDebounce) clearTimeout(searchDebounce);
+		selectedIds = [];
+		goto(buildArchiveUrl(1), { keepFocus: true, replaceState: true });
+	}
+	// Keystrokes: FTS5 prefix search answers in ~10-30ms; a short debounce just
+	// avoids piling a navigation on every character.
+	function applyDebounced() {
+		if (searchDebounce) clearTimeout(searchDebounce);
+		searchDebounce = setTimeout(applyNow, 250);
+	}
+	// Select bindings update after their change callbacks fire — defer one tick
+	// so buildArchiveUrl() sees the new value.
+	function applyAfterUpdate() {
+		setTimeout(applyNow, 0);
+	}
+
+	// Enter in the search box applies immediately (skips the debounce).
 	function handleApplyFilters(event: SubmitEvent) {
 		event.preventDefault();
-		selectedIds = [];
-		goto(buildArchiveUrl(1), { keepFocus: true });
+		applyNow();
 	}
 
 	function formatTimestamp(timestamp: SearchHit['timestamp']): string {
@@ -394,10 +414,16 @@
 				name="q"
 				placeholder={$t('app.search.placeholder')}
 				bind:value={q}
+				oninput={applyDebounced}
 				class="pl-9"
 			/>
 		</div>
-		<Select.Root type="single" name="fields" bind:value={fields}>
+		<Select.Root
+			type="single"
+			name="fields"
+			bind:value={fields}
+			onValueChange={applyAfterUpdate}
+		>
 			<Select.Trigger class="w-[10.5rem]" title="Search scope">{fieldLabel}</Select.Trigger>
 			<Select.Content>
 				{#each fieldOptions as option (option.value)}
@@ -407,7 +433,12 @@
 				{/each}
 			</Select.Content>
 		</Select.Root>
-		<Select.Root type="single" name="matchingStrategy" bind:value={matchingStrategy}>
+		<Select.Root
+			type="single"
+			name="matchingStrategy"
+			bind:value={matchingStrategy}
+			onValueChange={applyAfterUpdate}
+		>
 			<Select.Trigger class="w-[8rem]" title="Match mode">{matchingLabel}</Select.Trigger>
 			<Select.Content>
 				{#each matchingOptions as option (option.value)}
@@ -417,10 +448,6 @@
 				{/each}
 			</Select.Content>
 		</Select.Root>
-		<Button type="submit" class="gap-2">
-			<Search class="h-4 w-4" />
-			{$t('app.search.search_button')}
-		</Button>
 		<Button
 			type="button"
 			variant="outline"
@@ -452,7 +479,12 @@
 		<div class="flex flex-wrap items-end gap-4 rounded-md border p-3">
 			<label class="flex min-w-[12rem] flex-col gap-1 text-sm font-medium">
 				<span>Source</span>
-				<Select.Root type="single" name="ingestionSourceId" bind:value={ingestionSourceId}>
+				<Select.Root
+					type="single"
+					name="ingestionSourceId"
+					bind:value={ingestionSourceId}
+					onValueChange={applyAfterUpdate}
+				>
 					<Select.Trigger class="w-full">{sourceLabel}</Select.Trigger>
 					<Select.Content>
 						{#each sourceOptions as option (option.value)}
@@ -471,6 +503,7 @@
 					bind:value={tags}
 					options={tagFilterOptions}
 					placeholder="Any tag"
+					onValueChange={applyAfterUpdate}
 				/>
 			</label>
 
@@ -478,7 +511,10 @@
 				<Checkbox
 					id="hasAttachments"
 					checked={hasAttachments === 'true'}
-					onCheckedChange={(checked) => (hasAttachments = checked ? 'true' : 'any')}
+					onCheckedChange={(checked) => {
+						hasAttachments = checked ? 'true' : 'any';
+						applyNow();
+					}}
 				/>
 				<label for="hasAttachments" class="text-sm font-medium">Only with attachments</label
 				>

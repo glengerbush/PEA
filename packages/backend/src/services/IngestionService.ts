@@ -11,8 +11,7 @@ import type {
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import { CryptoService } from './CryptoService';
 import { EmailProviderFactory } from './EmailProviderFactory';
-import { ingestionQueue, masterJobOptions } from '../jobs/queues';
-import type { JobType } from 'bullmq';
+import { sendJob, masterJobOptions, removeJobsBySourceId } from '../jobs/queue';
 import { StorageService } from './StorageService';
 import type { EmailObject } from '@open-archiver/types';
 import { stripAttachmentsFromEml } from '../helpers/emlUtils';
@@ -370,9 +369,10 @@ export class IngestionService {
 		// NOTE: This is done by database CASADE, change when CASADE relation no longer exists.
 		// await db.delete(archivedEmails).where(eq(archivedEmails.ingestionSourceId, id));
 
-		// Delete all documents from Meilisearch
+		// Remove the source's emails from the search index (must run while the
+		// rows still exist — the index maps ids via archived_emails.rowid).
 		const searchService = new SearchService();
-		await searchService.deleteDocumentsByFilter('emails', `ingestionSourceId = ${id}`);
+		await searchService.deleteDocumentsBySource(id);
 
 		const [deletedSource] = await db
 			.delete(ingestionSources)
@@ -397,7 +397,14 @@ export class IngestionService {
 	public static async triggerInitialImport(id: string): Promise<void> {
 		const source = await this.findById(id);
 
-		await ingestionQueue.add('initial-import', { ingestionSourceId: source.id }, masterJobOptions);
+		// singletonKey: a second trigger while one is still queued is dropped
+		// (masters are non-idempotent; duplicates would archive emails twice).
+		await sendJob(
+			'ingestion',
+			'initial-import',
+			{ ingestionSourceId: source.id },
+			{ ...masterJobOptions, singletonKey: `initial-import:${source.id}` }
+		);
 	}
 
 	public static async triggerForceSync(id: string, actor: User, actorIp: string): Promise<void> {
@@ -407,22 +414,8 @@ export class IngestionService {
 			throw new Error('Ingestion source not found');
 		}
 
-		// Clean up existing jobs for this source to break any stuck flows
-		const jobTypes: JobType[] = ['active', 'waiting', 'failed', 'delayed', 'paused'];
-		const jobs = await ingestionQueue.getJobs(jobTypes);
-		for (const job of jobs) {
-			if (job.data.ingestionSourceId === id) {
-				try {
-					await job.remove();
-					logger.info(
-						{ jobId: job.id, ingestionSourceId: id },
-						'Removed stale job during force sync.'
-					);
-				} catch (error) {
-					logger.error({ err: error, jobId: job.id }, 'Failed to remove stale job.');
-				}
-			}
-		}
+		// Clean up queued jobs for this source to break any stuck flows
+		await removeJobsBySourceId(id);
 
 		// Reset status to 'active'
 		await this.update(
@@ -436,7 +429,12 @@ export class IngestionService {
 		);
 
 
-		await ingestionQueue.add('continuous-sync', { ingestionSourceId: source.id }, masterJobOptions);
+		await sendJob(
+			'ingestion',
+			'continuous-sync',
+			{ ingestionSourceId: source.id },
+			{ ...masterJobOptions, singletonKey: `continuous-sync:${source.id}` }
+		);
 
 		// If this is a root source, also trigger sync for all non-file-based active/error children
 		if (!source.mergedIntoId) {
@@ -459,7 +457,12 @@ export class IngestionService {
 						{ childId: child.id, parentId: id },
 						'Cascading force sync to child source.'
 					);
-					await ingestionQueue.add('continuous-sync', { ingestionSourceId: child.id }, masterJobOptions);
+					await sendJob(
+						'ingestion',
+						'continuous-sync',
+						{ ingestionSourceId: child.id },
+						{ ...masterJobOptions, singletonKey: `continuous-sync:${child.id}` }
+					);
 				}
 			}
 		}

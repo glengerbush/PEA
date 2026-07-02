@@ -1,12 +1,11 @@
 import { Router } from 'express';
 import * as userController from '../controllers/user.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { AuthService } from '../../services/AuthService';
 
-export const createUserRouter = (authService: AuthService): Router => {
+export const createUserRouter = (): Router => {
 	const router = Router();
 
-	router.use(requireAuth(authService));
+	router.use(requireAuth());
 
 	/**
 	 * @openapi

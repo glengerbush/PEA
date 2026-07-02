@@ -1,9 +1,8 @@
 import { Router } from 'express';
 import * as settingsController from '../controllers/settings.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { AuthService } from '../../services/AuthService';
 
-export const createSettingsRouter = (authService: AuthService): Router => {
+export const createSettingsRouter = (): Router => {
 	const router = Router();
 
 	/**
@@ -59,10 +58,13 @@ export const createSettingsRouter = (authService: AuthService): Router => {
 	router.get('/system', settingsController.getSystemSettings);
 
 	// Protected route to update settings
-	router.put('/system', requireAuth(authService), settingsController.updateSystemSettings);
+	router.put('/system', requireAuth(), settingsController.updateSystemSettings);
 
 	// Protected route to check whether a newer build is available on the fork.
-	router.get('/updates/check', requireAuth(authService), settingsController.checkForUpdates);
+	router.get('/updates/check', requireAuth(), settingsController.checkForUpdates);
+
+	// Protected route to wipe + rebuild the full-text search index from the archive.
+	router.post('/search/rebuild', requireAuth(), settingsController.rebuildSearchIndex);
 
 	return router;
 };

@@ -39,10 +39,6 @@
 					label: $t('app.layout.system'),
 				},
 				{
-					href: '/dashboard/settings/api-keys',
-					label: $t('app.layout.api_keys'),
-				},
-				{
 					href: '/dashboard/settings/account',
 					label: $t('app.layout.account'),
 				},
@@ -94,26 +90,9 @@
 		return mergedItems.sort((a, b) => a.position - b.position);
 	}
 
-	const personalModeHiddenHrefs = new Set(['/dashboard/settings/api-keys']);
-
-	function filterPersonalModeNavItems(items: NavItem[]): NavItem[] {
-		return items
-			.map((item) => ({
-				...item,
-				subMenu: item.subMenu?.filter(
-					(subItem) => !personalModeHiddenHrefs.has(subItem.href)
-				),
-			}))
-			.filter((item) => item.href || (item.subMenu && item.subMenu.length > 0));
-	}
-
-	let navItems: NavItem[] = $derived.by(() => {
-		const items = data.enterpriseMode
-			? mergeNavItems(baseNavItems, enterpriseNavItems)
-			: baseNavItems;
-
-		return data.personalMode ? filterPersonalModeNavItems(items) : items;
-	});
+	let navItems: NavItem[] = $derived(
+		data.enterpriseMode ? mergeNavItems(baseNavItems, enterpriseNavItems) : baseNavItems
+	);
 </script>
 
 <header class="bg-background sticky top-0 z-40 border-b px-4 md:px-0">

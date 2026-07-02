@@ -4,7 +4,7 @@ aside: false
 
 # Archived Email API
 
-Endpoints for retrieving and deleting archived emails. All endpoints require authentication.
+Endpoints for retrieving and deleting archived emails.
 
 ## List Emails for an Ingestion Source
 

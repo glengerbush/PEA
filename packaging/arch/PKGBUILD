@@ -1,0 +1,28 @@
+# Maintainer: Glen Gerbush
+#
+# Native pacman package for the Open Archiver desktop app, repacking the
+# released .deb. Not published to the AUR — build it straight from this repo:
+#
+#   cd packaging/arch && makepkg -si
+#
+# Updates: bump pkgver (or re-run after a new release) and makepkg -si again,
+# or just use the AppImage which self-updates in-app.
+
+pkgname=open-archiver-bin
+_pkgname=OpenArchiver
+pkgver=0.7.0
+pkgrel=1
+pkgdesc="Personal email archiving — self-contained desktop app"
+arch=('x86_64')
+url="https://github.com/glengerbush/OpenArchiver"
+license=('custom')
+depends=('webkit2gtk-4.1' 'gtk3')
+options=('!strip' '!debug')
+source=("${url}/releases/download/v${pkgver}/${_pkgname}_${pkgver}_amd64.deb")
+sha256sums=('SKIP') # personal fork; pin a checksum if you want reproducibility
+
+package() {
+	bsdtar -xf data.tar.gz -C "$pkgdir"
+	# deb layout already matches / (usr/bin, usr/lib, usr/share)
+	chmod -R u+rwX,go+rX "$pkgdir/usr"
+}

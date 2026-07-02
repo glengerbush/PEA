@@ -1,27 +1,24 @@
-import { relations } from 'drizzle-orm';
-import {
-	boolean,
-	index,
-	integer,
-	jsonb,
-	pgTable,
-	primaryKey,
-	text,
-	timestamp,
-	uuid,
-} from 'drizzle-orm/pg-core';
+import { relations, sql } from 'drizzle-orm';
+import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
+import { randomUUID } from 'crypto';
 import { archivedEmails } from './archived-emails';
 
-export const fuzzyDuplicateGroups = pgTable(
+export const fuzzyDuplicateGroups = sqliteTable(
 	'fuzzy_duplicate_groups',
 	{
-		id: uuid('id').primaryKey().defaultRandom(),
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => randomUUID()),
 		groupKey: text('group_key').notNull().unique(),
 		status: text('status').notNull().default('pending'),
 		score: integer('score').notNull(),
-		signals: jsonb('signals'),
-		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+		signals: text('signals', { mode: 'json' }),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.notNull()
+			.default(sql`(unixepoch() * 1000)`),
+		updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+			.notNull()
+			.default(sql`(unixepoch() * 1000)`),
 	},
 	(table) => [
 		index('fuzzy_duplicate_groups_status_idx').on(table.status),
@@ -29,16 +26,16 @@ export const fuzzyDuplicateGroups = pgTable(
 	]
 );
 
-export const fuzzyDuplicateGroupEmails = pgTable(
+export const fuzzyDuplicateGroupEmails = sqliteTable(
 	'fuzzy_duplicate_group_emails',
 	{
-		groupId: uuid('group_id')
+		groupId: text('group_id')
 			.notNull()
 			.references(() => fuzzyDuplicateGroups.id, { onDelete: 'cascade' }),
-		emailId: uuid('email_id')
+		emailId: text('email_id')
 			.notNull()
 			.references(() => archivedEmails.id, { onDelete: 'cascade' }),
-		suggestedKeeper: boolean('suggested_keeper').notNull().default(false),
+		suggestedKeeper: integer('suggested_keeper', { mode: 'boolean' }).notNull().default(false),
 	},
 	(table) => [
 		primaryKey({ columns: [table.groupId, table.emailId] }),

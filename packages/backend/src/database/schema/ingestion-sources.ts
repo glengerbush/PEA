@@ -1,17 +1,9 @@
-import {
-	index,
-	jsonb,
-	pgEnum,
-	pgTable,
-	text,
-	timestamp,
-	uuid,
-	type AnyPgColumn,
-} from 'drizzle-orm/pg-core';
+import { sqliteTable, text, integer, index, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
+import { relations, sql } from 'drizzle-orm';
+import { randomUUID } from 'crypto';
 import { users } from './users';
-import { relations } from 'drizzle-orm';
 
-export const ingestionProviderEnum = pgEnum('ingestion_provider', [
+export const ingestionProviderValues = [
 	'google_workspace',
 	'microsoft_365',
 	'generic_imap',
@@ -19,9 +11,9 @@ export const ingestionProviderEnum = pgEnum('ingestion_provider', [
 	'eml_import',
 	'mbox_import',
 	'smtp_journaling',
-]);
+] as const;
 
-export const ingestionStatusEnum = pgEnum('ingestion_status', [
+export const ingestionStatusValues = [
 	'active',
 	'paused',
 	'error',
@@ -31,28 +23,37 @@ export const ingestionStatusEnum = pgEnum('ingestion_status', [
 	'auth_success',
 	'imported',
 	'partially_active',
-]);
+] as const;
 
-export const ingestionSources = pgTable(
+export const ingestionSources = sqliteTable(
 	'ingestion_sources',
 	{
-		id: uuid('id').primaryKey().defaultRandom(),
-		userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => randomUUID()),
+		userId: text('user_id').references(() => users.id, { onDelete: 'cascade' }),
 		name: text('name').notNull(),
-		provider: ingestionProviderEnum('provider').notNull(),
+		provider: text('provider', { enum: ingestionProviderValues }).notNull(),
 		credentials: text('credentials'),
-		status: ingestionStatusEnum('status').notNull().default('pending_auth'),
-		lastSyncStartedAt: timestamp('last_sync_started_at', { withTimezone: true }),
-		lastSyncFinishedAt: timestamp('last_sync_finished_at', { withTimezone: true }),
+		status: text('status', { enum: ingestionStatusValues })
+			.notNull()
+			.default('pending_auth'),
+		lastSyncStartedAt: integer('last_sync_started_at', { mode: 'timestamp_ms' }),
+		lastSyncFinishedAt: integer('last_sync_finished_at', { mode: 'timestamp_ms' }),
 		lastSyncStatusMessage: text('last_sync_status_message'),
-		syncState: jsonb('sync_state'),
+		syncState: text('sync_state', { mode: 'json' }),
 		/** Self-referencing FK for merge groups. When set, this source is a child
 		 *  whose emails are logically grouped with the root source. Flat hierarchy only. */
-		mergedIntoId: uuid('merged_into_id').references((): AnyPgColumn => ingestionSources.id, {
-			onDelete: 'set null',
-		}),
-		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+		mergedIntoId: text('merged_into_id').references(
+			(): AnySQLiteColumn => ingestionSources.id,
+			{ onDelete: 'set null' }
+		),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.notNull()
+			.default(sql`(unixepoch() * 1000)`),
+		updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+			.notNull()
+			.default(sql`(unixepoch() * 1000)`),
 	},
 	(table) => [index('idx_merged_into').on(table.mergedIntoId)]
 );

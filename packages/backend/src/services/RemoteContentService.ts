@@ -9,7 +9,7 @@ import { archivedEmails, remoteContentAssets } from '../database/schema';
 import { config } from '../config';
 import { logger } from '../config/logger';
 import { StorageService } from './StorageService';
-import { remoteContentQueue } from '../jobs/queues';
+import { sendJob } from '../jobs/queue';
 import { streamToBuffer } from '../helpers/streamToBuffer';
 import type {
 	ArchiveRemoteContentResult,
@@ -125,11 +125,11 @@ export class RemoteContentService {
 				.set({ remoteContentStatus: 'pending' })
 				.where(inArray(archivedEmails.id, uniqueEmailIds));
 		}
-		const job = await remoteContentQueue.add('archive-remote-content-batch', {
+		const jobId = await sendJob('remote-content', 'archive-remote-content-batch', {
 			emailIds: uniqueEmailIds,
 		});
 		return {
-			jobId: job.id || '',
+			jobId: jobId || '',
 			emailIds: uniqueEmailIds,
 		};
 	}

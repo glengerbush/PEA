@@ -1,8 +1,8 @@
-import { Job } from 'bullmq';
+import type { QueueJob as Job } from '../queue';
 import { db } from '../../database';
 import { ingestionSources } from '../../database/schema';
 import { or, eq } from 'drizzle-orm';
-import { ingestionQueue, masterJobOptions } from '../queues';
+import { sendJob, masterJobOptions } from '../queue';
 import { SyncSessionService } from '../../services/SyncSessionService';
 import { logger } from '../../config/logger';
 
@@ -33,6 +33,11 @@ export default async (job: Job) => {
 
 	for (const source of sourcesToSync) {
 		// The status field on the ingestion source prevents duplicate concurrent syncs.
-		await ingestionQueue.add('continuous-sync', { ingestionSourceId: source.id }, masterJobOptions);
+		await sendJob(
+			'ingestion',
+			'continuous-sync',
+			{ ingestionSourceId: source.id },
+			{ ...masterJobOptions, singletonKey: `continuous-sync:${source.id}` }
+		);
 	}
 };

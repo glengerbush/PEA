@@ -1,31 +1,24 @@
-import { pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { randomUUID } from 'crypto';
 
 /**
  * The `users` table stores the core user information for authentication and identification.
  */
-export const users = pgTable('users', {
-	id: uuid('id').primaryKey().defaultRandom(),
+export const users = sqliteTable('users', {
+	id: text('id')
+		.primaryKey()
+		.$defaultFn(() => randomUUID()),
 	email: text('email').notNull().unique(),
 	first_name: text('first_name'),
 	last_name: text('last_name'),
 	password: text('password'),
 	provider: text('provider').default('local'),
 	providerId: text('provider_id'),
-	createdAt: timestamp('created_at').defaultNow().notNull(),
-	updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
-
-/**
- * The `sessions` table stores user session information for managing login state.
- * It links a session to a user and records its expiration time.
- */
-export const sessions = pgTable('sessions', {
-	id: text('id').primaryKey(),
-	userId: uuid('user_id')
-		.notNull()
-		.references(() => users.id, { onDelete: 'cascade' }),
-	expiresAt: timestamp('expires_at', {
-		withTimezone: true,
-		mode: 'date',
-	}).notNull(),
+	createdAt: integer('created_at', { mode: 'timestamp_ms' })
+		.default(sql`(unixepoch() * 1000)`)
+		.notNull(),
+	updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+		.default(sql`(unixepoch() * 1000)`)
+		.notNull(),
 });

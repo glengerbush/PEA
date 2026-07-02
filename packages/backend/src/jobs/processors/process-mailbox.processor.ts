@@ -1,11 +1,11 @@
-import { Job } from 'bullmq';
+import type { QueueJob as Job } from '../queue';
 import { IProcessMailboxJob, ProcessMailboxError, PendingEmail } from '@open-archiver/types';
 import { IngestionService } from '../../services/IngestionService';
 import { logger } from '../../config/logger';
 import { EmailProviderFactory } from '../../services/EmailProviderFactory';
 import { StorageService } from '../../services/StorageService';
 import { config } from '../../config';
-import { indexingQueue, ingestionQueue } from '../queues';
+import { sendJob } from '../queue';
 import { SyncSessionService } from '../../services/SyncSessionService';
 import { RemoteContentService } from '../../services/RemoteContentService';
 
@@ -19,7 +19,7 @@ import { RemoteContentService } from '../../services/RemoteContentService';
  */
 export const processMailboxProcessor = async (job: Job<IProcessMailboxJob>) => {
 	const { ingestionSourceId, userEmail, sessionId } = job.data;
-	const BATCH_SIZE: number = config.meili.indexingBatchSize;
+	const BATCH_SIZE: number = config.app.indexingBatchSize;
 	let emailBatch: PendingEmail[] = [];
 
 	logger.info({ ingestionSourceId, userEmail, sessionId }, `Processing mailbox for user`);
@@ -35,7 +35,7 @@ export const processMailboxProcessor = async (job: Job<IProcessMailboxJob>) => {
 		}
 		const batch = emailBatch;
 		emailBatch = [];
-		await indexingQueue.add('index-email-batch', { emails: batch });
+		await sendJob('indexing', 'index-email-batch', { emails: batch });
 		await RemoteContentService.enqueueRemoteContentArchive(
 			batch.map((email) => email.archivedEmailId)
 		);
@@ -98,7 +98,7 @@ export const processMailboxProcessor = async (job: Job<IProcessMailboxJob>) => {
 				{ ingestionSourceId, sessionId },
 				'Last mailbox job completed, dispatching sync-cycle-finished'
 			);
-			await ingestionQueue.add('sync-cycle-finished', {
+			await sendJob('ingestion', 'sync-cycle-finished', {
 				ingestionSourceId,
 				sessionId,
 				isInitialImport: false,
@@ -127,7 +127,7 @@ export const processMailboxProcessor = async (job: Job<IProcessMailboxJob>) => {
 					{ ingestionSourceId, sessionId },
 					'Last mailbox job (with error) completed, dispatching sync-cycle-finished'
 				);
-				await ingestionQueue.add('sync-cycle-finished', {
+				await sendJob('ingestion', 'sync-cycle-finished', {
 					ingestionSourceId,
 					sessionId,
 					isInitialImport: false,

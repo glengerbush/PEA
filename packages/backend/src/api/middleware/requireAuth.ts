@@ -1,5 +1,4 @@
 import type { Request, Response, NextFunction } from 'express';
-import type { AuthService } from '../../services/AuthService';
 import type { AuthTokenPayload } from '@open-archiver/types';
 import 'dotenv/config';
 import { UserService } from '../../services/UserService';
@@ -15,16 +14,12 @@ declare global {
 }
 
 // -----------------------------------------------------------------------------
-// LOCAL MODE: authentication is disabled.
+// Authentication is removed in this fork (single-user desktop app).
 //
-// The login requirement has been removed for local use. Rather than verifying a
-// JWT or API key, every request is treated as the single local user (the first
-// user in the database, which owns all archived content). The user identity is
-// still populated on `req.user` so ownership filters, audit logging, and
-// foreign-key constraints continue to work unchanged.
-//
-// To restore real authentication later, revert this file to its token-verifying
-// implementation — no other backend files need to change.
+// Every request is attributed to the single local user (the first user in the
+// database, which owns all archived content). The identity is populated on
+// `req.user` so ownership filters, audit logging, and foreign-key constraints
+// continue to work unchanged.
 // -----------------------------------------------------------------------------
 
 let cachedLocalUser: AuthTokenPayload | null = null;
@@ -36,7 +31,8 @@ async function resolveLocalUser(): Promise<AuthTokenPayload> {
 	return cachedLocalUser;
 }
 
-export const requireAuth = (_authService: AuthService) => {
+/** Attaches the local user to the request (name kept to minimize churn). */
+export const requireAuth = () => {
 	return async (req: Request, res: Response, next: NextFunction) => {
 		try {
 			req.user = await resolveLocalUser();

@@ -3,7 +3,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 const BASE_URL = '/api/v1'; // Using a relative URL for proxying
 
 /**
- * A custom fetch wrapper for the server-side to automatically handle authentication headers.
+ * A custom fetch wrapper for the server-side API (single local user — no auth).
  * @param url The URL to fetch, relative to the API base.
  * @param event The SvelteKit request event.
  * @param options The standard Fetch API options.
@@ -14,15 +14,9 @@ export const api = async (
 	event: RequestEvent,
 	options: RequestInit = {}
 ): Promise<Response> => {
-	const accessToken = event.cookies.get('accessToken');
-
 	const defaultHeaders: HeadersInit = {
 		'Content-Type': 'application/json',
 	};
-
-	if (accessToken) {
-		defaultHeaders['Authorization'] = `Bearer ${accessToken}`;
-	}
 
 	const mergedOptions: RequestInit = {
 		...options,

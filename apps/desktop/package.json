@@ -1,0 +1,13 @@
+{
+	"name": "open-archiver-desktop",
+	"version": "0.7.0",
+	"private": true,
+	"scripts": {
+		"dev": "tauri dev",
+		"build": "echo 'desktop shell is built via tauri, not the workspace build'",
+		"tauri": "tauri"
+	},
+	"devDependencies": {
+		"@tauri-apps/cli": "^2"
+	}
+}

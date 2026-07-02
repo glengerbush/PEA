@@ -1,4 +1,4 @@
-import { Job } from 'bullmq';
+import type { QueueJob as Job } from '../queue';
 import { DuplicateReviewService } from '../../services/DuplicateReviewService';
 import { logger } from '../../config/logger';
 

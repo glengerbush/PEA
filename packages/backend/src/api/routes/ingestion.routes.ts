@@ -1,16 +1,13 @@
 import { Router } from 'express';
 import { IngestionController } from '../controllers/ingestion.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { AuthService } from '../../services/AuthService';
 
 export const createIngestionRouter = (
-	ingestionController: IngestionController,
-	authService: AuthService
-): Router => {
+	ingestionController: IngestionController): Router => {
 	const router = Router();
 
 	// Secure all routes in this module
-	router.use(requireAuth(authService));
+	router.use(requireAuth());
 
 	/**
 	 * @openapi

@@ -1,10 +1,10 @@
-import { asc, inArray, sql } from 'drizzle-orm';
-import { db } from '../database';
+import { asc, eq, inArray, sql } from 'drizzle-orm';
+import { db, sqlite } from '../database';
 import { archivedEmails, fuzzyDuplicateGroups } from '../database/schema';
 import { ArchivedEmailService } from './ArchivedEmailService';
 import { UserService } from './UserService';
 import { logger } from '../config/logger';
-import { indexingQueue } from '../jobs/queues';
+import { sendJob } from '../jobs/queue';
 import type {
 	ApproveExactDuplicateGroupDto,
 	ApproveExactDuplicatesResult,
@@ -92,7 +92,8 @@ function mapEmail(row: RawEmailRow): ExactDuplicateEmail {
 		userEmail: row.user_email,
 		sentAt: new Date(row.sent_at),
 		archivedAt: new Date(row.archived_at),
-		hasAttachments: row.has_attachments,
+		// SQLite booleans surface as 0/1 in raw queries
+		hasAttachments: Boolean(row.has_attachments),
 		sourcePath: row.source_path,
 		messageIdHeader: row.message_id_header,
 		storageHashSha256: row.storage_hash_sha256,
@@ -102,16 +103,17 @@ function mapEmail(row: RawEmailRow): ExactDuplicateEmail {
 function mapFuzzyEmail(row: RawFuzzyEmailRow): FuzzyDuplicateEmail {
 	return {
 		...mapEmail(row),
-		suggestedKeeper: row.suggested_keeper,
+		suggestedKeeper: Boolean(row.suggested_keeper),
 	};
 }
 
 // From + recipients + exact send time. Catches duplicates whose body/subject or
 // styling differ (e.g. broken HTML) but whose headers are identical — if the
 // sender, the full recipient set, and the send timestamp all match, it's almost
-// certainly the same message.
+// certainly the same message. (A grouping key only needs determinism, not
+// hashing — SQLite has no md5(), so the raw concatenation is the key.)
 function headersFingerprintSql() {
-	return sql`md5(lower(coalesce(sender_email, '')) || '|' || coalesce(duplicate_recipient_fingerprint, '') || '|' || extract(epoch from sent_at)::text)`;
+	return sql`lower(coalesce(sender_email, '')) || '|' || coalesce(duplicate_recipient_fingerprint, '') || '|' || CAST(sent_at AS TEXT)`;
 }
 
 export class DuplicateReviewService {
@@ -137,17 +139,17 @@ export class DuplicateReviewService {
 			attachment_fp: string | null;
 			headers_fp: string | null;
 		}>(
-			await db.execute(sql`
+			db.all(sql`
 				WITH attachment_sets AS (
 					SELECT ae.id AS email_id,
-						string_agg(a.content_hash_sha256, ',' ORDER BY a.content_hash_sha256) AS att_fp
+						group_concat(a.content_hash_sha256, ',' ORDER BY a.content_hash_sha256) AS att_fp
 					FROM archived_emails ae
 					JOIN email_attachments ea ON ea.email_id = ae.id
 					JOIN attachments a ON a.id = ea.attachment_id
 					GROUP BY ae.id
 					HAVING count(a.id) > 0
 				)
-				SELECT ae.id::text AS id,
+				SELECT ae.id AS id,
 					nullif(ae.message_id_header, '') AS message_id,
 					nullif(ae.storage_hash_sha256, '') AS storage_hash,
 					s.att_fp AS attachment_fp,
@@ -374,11 +376,11 @@ export class DuplicateReviewService {
 			DEFAULT_FUZZY_SCAN_BATCH_SIZE,
 			MAX_FUZZY_SCAN_BATCH_SIZE
 		);
-		const job = await indexingQueue.add('scan-fuzzy-duplicates', {
+		const jobId = await sendJob('indexing', 'scan-fuzzy-duplicates', {
 			batchSize: normalizedBatchSize,
 		});
 		return {
-			jobId: job.id || '',
+			jobId: jobId || '',
 			batchSize: normalizedBatchSize,
 		};
 	}
@@ -392,12 +394,25 @@ export class DuplicateReviewService {
 			MAX_FUZZY_SCAN_BATCH_SIZE
 		);
 
-		const resultRows = toRows<{
-			scanned_groups: number | string | bigint;
-			inserted_groups: number | string | bigint;
-			linked_emails: number | string | bigint;
+		// Phase 1 (read-only): score candidate groups. sent_at is epoch-ms, so the
+		// old `interval '48 hours'` becomes plain millisecond arithmetic. Note
+		// count(DISTINCT x) already ignores NULLs, so no FILTER is needed.
+		const candidates = toRows<{
+			group_key: string;
+			sender_email: string | null;
+			duplicate_subject_hash: string | null;
+			email_count: number;
+			min_sent_at: number;
+			max_sent_at: number;
+			body_hash_present_count: number;
+			body_hash_count: number;
+			recipient_hash_present_count: number;
+			recipient_hash_count: number;
+			attachment_hash_present_count: number;
+			attachment_hash_count: number;
+			score: number;
 		}>(
-			await db.execute(sql`
+			db.all(sql`
 				WITH candidate_base AS (
 					SELECT
 						ae.duplicate_fuzzy_group_key AS group_key,
@@ -407,17 +422,11 @@ export class DuplicateReviewService {
 						min(ae.sent_at) AS min_sent_at,
 						max(ae.sent_at) AS max_sent_at,
 						count(ae.duplicate_body_hash) AS body_hash_present_count,
-						count(DISTINCT ae.duplicate_body_hash) FILTER (
-							WHERE ae.duplicate_body_hash IS NOT NULL
-						) AS body_hash_count,
+						count(DISTINCT ae.duplicate_body_hash) AS body_hash_count,
 						count(ae.duplicate_recipient_fingerprint) AS recipient_hash_present_count,
-						count(DISTINCT ae.duplicate_recipient_fingerprint) FILTER (
-							WHERE ae.duplicate_recipient_fingerprint IS NOT NULL
-						) AS recipient_hash_count,
+						count(DISTINCT ae.duplicate_recipient_fingerprint) AS recipient_hash_count,
 						count(ae.duplicate_attachment_fingerprint) AS attachment_hash_present_count,
-						count(DISTINCT ae.duplicate_attachment_fingerprint) FILTER (
-							WHERE ae.duplicate_attachment_fingerprint IS NOT NULL
-						) AS attachment_hash_count
+						count(DISTINCT ae.duplicate_attachment_fingerprint) AS attachment_hash_count
 					FROM archived_emails ae
 					WHERE ae.duplicate_fuzzy_group_key IS NOT NULL
 						AND NOT EXISTS (
@@ -428,89 +437,106 @@ export class DuplicateReviewService {
 						)
 					GROUP BY ae.duplicate_fuzzy_group_key
 					HAVING count(*) > 1
-				),
-				scored_candidates AS (
+				)
+				SELECT *,
+					(
+						45
+						+ CASE WHEN body_hash_present_count = email_count AND body_hash_count = 1 THEN 20 ELSE 0 END
+						+ CASE WHEN recipient_hash_present_count = email_count AND recipient_hash_count = 1 THEN 15 ELSE 0 END
+						+ CASE WHEN attachment_hash_present_count = email_count AND attachment_hash_count = 1 THEN 10 ELSE 0 END
+						+ CASE WHEN max_sent_at - min_sent_at <= ${48 * 3600 * 1000} THEN 10 ELSE 0 END
+					) AS score
+				FROM candidate_base
+				WHERE (
+						45
+						+ CASE WHEN body_hash_present_count = email_count AND body_hash_count = 1 THEN 20 ELSE 0 END
+						+ CASE WHEN recipient_hash_present_count = email_count AND recipient_hash_count = 1 THEN 15 ELSE 0 END
+						+ CASE WHEN attachment_hash_present_count = email_count AND attachment_hash_count = 1 THEN 10 ELSE 0 END
+						+ CASE WHEN max_sent_at - min_sent_at <= ${48 * 3600 * 1000} THEN 10 ELSE 0 END
+					) >= 55
+				ORDER BY score DESC, email_count DESC, group_key ASC
+				LIMIT ${normalizedBatchSize}
+			`)
+		);
+
+		// Phase 2 (write): upsert groups + link emails. SQLite has no
+		// data-modifying CTEs, so this is a synchronous transaction instead —
+		// with better-sqlite3 the whole batch is a single atomic, race-free unit.
+		let upsertedCount = 0;
+		let linkedCount = 0;
+		sqlite.transaction(() => {
+			for (const candidate of candidates) {
+				const existing = db
+					.select({ id: fuzzyDuplicateGroups.id, status: fuzzyDuplicateGroups.status })
+					.from(fuzzyDuplicateGroups)
+					.where(eq(fuzzyDuplicateGroups.groupKey, candidate.group_key))
+					.all();
+				// Mirrors the old ON CONFLICT ... WHERE status = 'pending' guard:
+				// approved/ignored groups are excluded upstream, but never overwrite
+				// a non-pending group that appeared mid-scan.
+				if (existing.length > 0 && existing[0].status !== 'pending') {
+					continue;
+				}
+				const signals = {
+					senderEmail: candidate.sender_email,
+					subjectHash: candidate.duplicate_subject_hash,
+					matchingBodyHash:
+						candidate.body_hash_present_count === candidate.email_count &&
+						candidate.body_hash_count === 1,
+					matchingRecipients:
+						candidate.recipient_hash_present_count === candidate.email_count &&
+						candidate.recipient_hash_count === 1,
+					matchingAttachments:
+						candidate.attachment_hash_present_count === candidate.email_count &&
+						candidate.attachment_hash_count === 1,
+					sentSpreadHours:
+						(candidate.max_sent_at - candidate.min_sent_at) / 3_600_000,
+				};
+				let groupId: string;
+				if (existing.length > 0) {
+					groupId = existing[0].id;
+					db.update(fuzzyDuplicateGroups)
+						.set({ score: candidate.score, signals, updatedAt: new Date() })
+						.where(eq(fuzzyDuplicateGroups.id, groupId))
+						.run();
+				} else {
+					const [inserted] = db
+						.insert(fuzzyDuplicateGroups)
+						.values({
+							groupKey: candidate.group_key,
+							status: 'pending',
+							score: candidate.score,
+							signals,
+						})
+						.returning({ id: fuzzyDuplicateGroups.id })
+						.all();
+					groupId = inserted.id;
+				}
+				upsertedCount++;
+
+				const linked = db.run(sql`
+					INSERT OR IGNORE INTO fuzzy_duplicate_group_emails (group_id, email_id, suggested_keeper)
 					SELECT
-						group_key,
-						sender_email,
-						duplicate_subject_hash,
-						email_count,
-						min_sent_at,
-						max_sent_at,
-						body_hash_present_count,
-						body_hash_count,
-						recipient_hash_present_count,
-						recipient_hash_count,
-						attachment_hash_present_count,
-						attachment_hash_count,
-						(
-							45
-							+ CASE WHEN body_hash_present_count = email_count AND body_hash_count = 1 THEN 20 ELSE 0 END
-							+ CASE WHEN recipient_hash_present_count = email_count AND recipient_hash_count = 1 THEN 15 ELSE 0 END
-							+ CASE WHEN attachment_hash_present_count = email_count AND attachment_hash_count = 1 THEN 10 ELSE 0 END
-							+ CASE WHEN max_sent_at - min_sent_at <= interval '48 hours' THEN 10 ELSE 0 END
-						)::integer AS score
-					FROM candidate_base
-				),
-				candidate_groups AS (
-					SELECT *
-					FROM scored_candidates
-					WHERE score >= 55
-					ORDER BY score DESC, email_count DESC, group_key ASC
-					LIMIT ${normalizedBatchSize}
-				),
-				upserted_groups AS (
-					INSERT INTO fuzzy_duplicate_groups (group_key, status, score, signals)
-					SELECT
-						group_key,
-						'pending',
-						score,
-						jsonb_build_object(
-							'senderEmail', sender_email,
-							'subjectHash', duplicate_subject_hash,
-							'matchingBodyHash', body_hash_present_count = email_count AND body_hash_count = 1,
-							'matchingRecipients', recipient_hash_present_count = email_count AND recipient_hash_count = 1,
-							'matchingAttachments', attachment_hash_present_count = email_count AND attachment_hash_count = 1,
-							'sentSpreadHours', extract(epoch from (max_sent_at - min_sent_at)) / 3600
-						)
-					FROM candidate_groups
-					ON CONFLICT (group_key) DO UPDATE SET
-						score = EXCLUDED.score,
-						signals = EXCLUDED.signals,
-						updated_at = now()
-					WHERE fuzzy_duplicate_groups.status = 'pending'
-					RETURNING id, group_key
-				),
-				linked_emails AS (
-					INSERT INTO fuzzy_duplicate_group_emails (group_id, email_id, suggested_keeper)
-					SELECT
-						ug.id,
+						${groupId},
 						ae.id,
 						ae.id = (
 							SELECT keeper.id
 							FROM archived_emails keeper
-							WHERE keeper.duplicate_fuzzy_group_key = ug.group_key
+							WHERE keeper.duplicate_fuzzy_group_key = ${candidate.group_key}
 							ORDER BY keeper.sent_at ASC, keeper.archived_at ASC, keeper.id ASC
 							LIMIT 1
 						)
-					FROM upserted_groups ug
-					JOIN archived_emails ae
-						ON ae.duplicate_fuzzy_group_key = ug.group_key
-					ON CONFLICT DO NOTHING
-					RETURNING group_id, email_id
-				)
-				SELECT
-					(SELECT count(*) FROM candidate_groups) AS scanned_groups,
-					(SELECT count(*) FROM upserted_groups) AS inserted_groups,
-					(SELECT count(*) FROM linked_emails) AS linked_emails
-			`)
-		);
+					FROM archived_emails ae
+					WHERE ae.duplicate_fuzzy_group_key = ${candidate.group_key}
+				`);
+				linkedCount += Number(linked.changes ?? 0);
+			}
+		})();
 
-		const result = resultRows[0];
 		return {
-			scannedGroups: result ? toNumber(result.scanned_groups) : 0,
-			insertedGroups: result ? toNumber(result.inserted_groups) : 0,
-			linkedEmails: result ? toNumber(result.linked_emails) : 0,
+			scannedGroups: candidates.length,
+			insertedGroups: upsertedCount,
+			linkedEmails: linkedCount,
 		};
 	}
 
@@ -523,7 +549,7 @@ export class DuplicateReviewService {
 		const offset = (normalizedPage - 1) * normalizedLimit;
 
 		const totalRows = toRows<{ total_groups: number | string | bigint }>(
-			await db.execute(sql`
+			db.all(sql`
 				SELECT count(*) AS total_groups
 				FROM fuzzy_duplicate_groups
 				WHERE status = 'pending'
@@ -531,7 +557,7 @@ export class DuplicateReviewService {
 		);
 
 		const groupRows = toRows<RawFuzzyGroupRow>(
-			await db.execute(sql`
+			db.all(sql`
 				SELECT id, group_key, status, score, signals, created_at, updated_at
 				FROM fuzzy_duplicate_groups
 				WHERE status = 'pending'
@@ -636,7 +662,7 @@ export class DuplicateReviewService {
 
 	private static async findEmailsForFuzzyGroup(groupId: string): Promise<FuzzyDuplicateEmail[]> {
 		const rows = toRows<RawFuzzyEmailRow>(
-			await db.execute(sql`
+			db.all(sql`
 				SELECT
 					ae.id,
 					ae.subject,

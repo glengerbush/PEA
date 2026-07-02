@@ -1,6 +1,5 @@
 <script lang="ts">
 	import '../app.css';
-	import { authStore } from '$lib/stores/auth.store';
 	import { theme } from '$lib/stores/theme.store';
 	import { browser } from '$app/environment';
 	import Footer from '$lib/components/custom/Footer.svelte';
@@ -8,10 +7,6 @@
 	import { setDateTimePrefs } from '$lib/stores/datetime.svelte';
 
 	let { data, children } = $props();
-
-	$effect(() => {
-		authStore.syncWithServer(data.user, data.accessToken);
-	});
 
 	// Apply the configured time zone / clock format to all date formatting helpers.
 	$effect(() => {

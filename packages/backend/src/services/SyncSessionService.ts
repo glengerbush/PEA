@@ -80,7 +80,8 @@ export class SyncSessionService {
 					? sql`${syncSessions.failedMailboxes} + 1`
 					: syncSessions.failedMailboxes,
 				errorMessages: isError
-					? sql`array_append(${syncSessions.errorMessages}, ${(result as ProcessMailboxError).message})`
+					? // JSON-array append (the column is a JSON text array in SQLite)
+						sql`json_insert(${syncSessions.errorMessages}, '$[#]', ${(result as ProcessMailboxError).message})`
 					: syncSessions.errorMessages,
 				// Touch lastActivityAt on every result so the stale-session detector
 				// knows this session is still alive, regardless of how long it has been running.
@@ -99,8 +100,9 @@ export class SyncSessionService {
 			throw new Error(`Sync session ${sessionId} not found when recording mailbox result.`);
 		}
 
-		// If the result is a successful SyncState with actual content, merge it into the
-		// ingestion source's syncState column using PostgreSQL's || jsonb merge operator.
+		// If the result is a successful SyncState with actual content, merge it into
+		// the ingestion source's syncState column with SQLite's json_patch() (the
+		// equivalent of Postgres' shallow || jsonb merge for flat objects).
 		// This is done incrementally per mailbox to avoid the large deepmerge at the end.
 		if (!isError) {
 			const syncState = result as SyncState;
@@ -108,7 +110,7 @@ export class SyncSessionService {
 				await db
 					.update(ingestionSources)
 					.set({
-						syncState: sql`COALESCE(${ingestionSources.syncState}, '{}'::jsonb) || ${JSON.stringify(syncState)}::jsonb`,
+						syncState: sql`json_patch(COALESCE(${ingestionSources.syncState}, '{}'), ${JSON.stringify(syncState)})`,
 					})
 					.where(eq(ingestionSources.id, updated.ingestionSourceId));
 			}

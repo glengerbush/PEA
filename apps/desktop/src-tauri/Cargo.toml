@@ -1,0 +1,21 @@
+[package]
+name = "open-archiver-desktop"
+version = "0.7.0"
+description = "Open Archiver desktop shell"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
+serde_json = "1"
+libc = "0.2"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

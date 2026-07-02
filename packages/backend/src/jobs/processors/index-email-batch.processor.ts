@@ -1,4 +1,4 @@
-import { Job } from 'bullmq';
+import type { QueueJob as Job } from '../queue';
 import { IndexingService } from '../../services/IndexingService';
 import { SearchService } from '../../services/SearchService';
 import { StorageService } from '../../services/StorageService';

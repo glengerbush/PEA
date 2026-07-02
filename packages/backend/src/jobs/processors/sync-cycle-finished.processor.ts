@@ -1,4 +1,4 @@
-import { Job } from 'bullmq';
+import type { QueueJob as Job } from '../queue';
 import { IngestionService } from '../../services/IngestionService';
 import { SyncSessionService } from '../../services/SyncSessionService';
 import { logger } from '../../config/logger';

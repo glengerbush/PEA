@@ -1,11 +1,10 @@
-import type { JWTPayload } from 'jose';
-import type { User } from './user.types';
-
 /**
- * Defines the payload structure for the JWT, extending the standard JWTPayload.
- * This is the data that will be encoded into the token.
+ * The request identity attached to every API request. Authentication is
+ * removed in this fork — every request resolves to the single local user —
+ * but ownership filters, audit attribution, and FK integrity still key off
+ * this shape.
  */
-export interface AuthTokenPayload extends JWTPayload {
+export interface AuthTokenPayload {
 	[claim: string]: unknown;
 	/**
 	 * The user's unique identifier.
@@ -15,18 +14,4 @@ export interface AuthTokenPayload extends JWTPayload {
 	 * The user's email address.
 	 */
 	email: string;
-}
-
-/**
- * Defines the structure of the response from a successful login request.
- */
-export interface LoginResponse {
-	/**
-	 * The JSON Web Token for authenticating subsequent requests.
-	 */
-	accessToken: string;
-	/**
-	 * The authenticated user's information.
-	 */
-	user: Omit<User, 'password'>;
 }

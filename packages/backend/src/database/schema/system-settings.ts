@@ -1,7 +1,7 @@
-import { pgTable, serial, jsonb } from 'drizzle-orm/pg-core';
+import { sqliteTable, integer, text } from 'drizzle-orm/sqlite-core';
 import type { SystemSettings } from '@open-archiver/types';
 
-export const systemSettings = pgTable('system_settings', {
-	id: serial('id').primaryKey(),
-	config: jsonb('config').$type<SystemSettings>().notNull(),
+export const systemSettings = sqliteTable('system_settings', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	config: text('config', { mode: 'json' }).$type<SystemSettings>().notNull(),
 });

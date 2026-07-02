@@ -5,7 +5,7 @@ export * from './schema/remote-content';
 export * from './schema/ingestion-sources';
 export * from './schema/users';
 export * from './schema/system-settings';
-export * from './schema/api-keys';
 export * from './schema/sync-sessions';
 export * from './schema/journaling-sources';
 export * from './schema/contacts';
+export * from './schema/jobs';

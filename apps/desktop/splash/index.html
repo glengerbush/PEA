@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Open Archiver</title>
+		<style>
+			/* Everforest-flavored splash to match the app theme */
+			html,
+			body {
+				height: 100%;
+				margin: 0;
+				display: grid;
+				place-items: center;
+				background: #2d353b;
+				color: #d3c6aa;
+				font-family: system-ui, sans-serif;
+			}
+			.wrap {
+				text-align: center;
+			}
+			.spinner {
+				width: 42px;
+				height: 42px;
+				margin: 0 auto 18px;
+				border: 4px solid #475258;
+				border-top-color: #a7c080;
+				border-radius: 50%;
+				animation: spin 0.9s linear infinite;
+			}
+			@keyframes spin {
+				to {
+					transform: rotate(360deg);
+				}
+			}
+			p {
+				opacity: 0.8;
+				font-size: 14px;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="wrap">
+			<div class="spinner"></div>
+			<h2>Open Archiver</h2>
+			<p id="status">Starting the archive engine…</p>
+		</div>
+	</body>
+</html>

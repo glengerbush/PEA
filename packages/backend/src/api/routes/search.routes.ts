@@ -1,15 +1,12 @@
 import { Router } from 'express';
 import { SearchController } from '../controllers/search.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { AuthService } from '../../services/AuthService';
 
 export const createSearchRouter = (
-	searchController: SearchController,
-	authService: AuthService
-): Router => {
+	searchController: SearchController): Router => {
 	const router = Router();
 
-	router.use(requireAuth(authService));
+	router.use(requireAuth());
 
 	/**
 	 * @openapi

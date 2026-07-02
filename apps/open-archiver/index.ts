@@ -1,24 +1,26 @@
-import { createServer, logger } from '@open-archiver/backend';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
 
-async function start() {
-	// --- Environment Variable Validation ---
-	const { PORT_BACKEND } = process.env;
-
-	if (!PORT_BACKEND) {
-		throw new Error('Missing required environment variables for the backend: PORT_BACKEND.');
+/**
+ * Entrypoint for both deployment modes:
+ *  - Server/Docker: DATABASE_URL etc. come from the environment.
+ *  - Embedded (OA_EMBEDDED=1): a supervised local Postgres + app-data dir are
+ *    provisioned first, THEN the app is loaded — the app's config modules
+ *    capture env at import time, so the import below must stay lazy.
+ */
+async function main() {
+	const embedded = process.env.OA_EMBEDDED === '1' || process.env.OA_EMBEDDED === 'true';
+	if (embedded) {
+		// Only pulls node builtins — safe to import before env is complete.
+		const { prepareEmbeddedEnvironment } = await import('@open-archiver/backend/embedded');
+		await prepareEmbeddedEnvironment();
 	}
-	// Create the server instance (passing no modules for the default OSS version)
-	const app = await createServer([]);
-
-	app.listen(PORT_BACKEND, () => {
-		logger.info({}, `✅ Open Archiver (OSS) running on port ${PORT_BACKEND}`);
-	});
+	const { startApp } = await import('@open-archiver/backend');
+	await startApp();
 }
 
-start().catch((error) => {
-	logger.error({ error }, 'Failed to start the server:', error);
+main().catch((error) => {
+	console.error('Failed to start Open Archiver:', error);
 	process.exit(1);
 });

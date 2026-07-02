@@ -1,36 +1,41 @@
 import { relations } from 'drizzle-orm';
-import { pgTable, text, uuid, bigint, index } from 'drizzle-orm/pg-core';
+import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { randomUUID } from 'crypto';
 import { archivedEmails } from './archived-emails';
 import { ingestionSources } from './ingestion-sources';
 
-export const attachments = pgTable(
+export const attachments = sqliteTable(
 	'attachments',
 	{
-		id: uuid('id').primaryKey().defaultRandom(),
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => randomUUID()),
 		filename: text('filename').notNull(),
 		mimeType: text('mime_type'),
-		sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+		sizeBytes: integer('size_bytes', { mode: 'number' }).notNull(),
 		contentHashSha256: text('content_hash_sha256').notNull(),
 		storagePath: text('storage_path').notNull(),
-		ingestionSourceId: uuid('ingestion_source_id').references(() => ingestionSources.id, {
+		ingestionSourceId: text('ingestion_source_id').references(() => ingestionSources.id, {
 			onDelete: 'cascade',
 		}),
 	},
 	(table) => [index('source_hash_idx').on(table.ingestionSourceId, table.contentHashSha256)]
 );
 
-export const emailAttachments = pgTable(
+export const emailAttachments = sqliteTable(
 	'email_attachments',
 	{
 		// Surrogate PK (was a composite PK on email_id+attachment_id). The composite
 		// key silently collapsed two byte-identical attachments in the same email to
 		// one link — a fidelity loss on reconstruction. A surrogate id lets an email
 		// hold multiple links to the same deduplicated attachment record.
-		id: uuid('id').primaryKey().defaultRandom(),
-		emailId: uuid('email_id')
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => randomUUID()),
+		emailId: text('email_id')
 			.notNull()
 			.references(() => archivedEmails.id, { onDelete: 'cascade' }),
-		attachmentId: uuid('attachment_id')
+		attachmentId: text('attachment_id')
 			.notNull()
 			.references(() => attachments.id, { onDelete: 'restrict' }),
 	},

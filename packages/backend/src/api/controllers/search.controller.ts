@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { SearchService } from '../../services/SearchService';
-import { MatchingStrategies } from 'meilisearch';
+
 
 export class SearchController {
 	private searchService: SearchService;
@@ -29,7 +29,7 @@ export class SearchController {
 					query: keywords as string,
 					page: page ? parseInt(page as string) : 1,
 					limit: limit ? parseInt(limit as string) : 10,
-					matchingStrategy: matchingStrategy as MatchingStrategies,
+					matchingStrategy: matchingStrategy as 'last' | 'all' | 'frequency',
 				},
 				userId,
 				req.ip || 'unknown'

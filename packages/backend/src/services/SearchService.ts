@@ -1,5 +1,4 @@
-import { Index, MeiliSearch, SearchParams } from 'meilisearch';
-import { config } from '../config';
+import { sqlite } from '../database';
 import type {
 	ArchiveQuery,
 	ArchiveQueryFilters,
@@ -12,63 +11,59 @@ import type {
 	SortDirection,
 } from '@open-archiver/types';
 import { IngestionService } from './IngestionService';
+import { sendJob } from '../jobs/queue';
+import { logger } from '../config/logger';
 
-type EmailSearchParams = SearchParams & {
-	attributesToSearchOn?: string[];
-};
+/**
+ * Full-text search over SQLite FTS5 (successor to Meilisearch — one process,
+ * no search daemon, the index lives inside archive.db).
+ *
+ * Layout: a content-full FTS5 table whose rowid mirrors archived_emails.rowid,
+ * so upserts/deletes are O(log n) via the id → rowid subquery instead of
+ * scanning the UNINDEXED email_id column.
+ */
 
-const DEFAULT_SEARCH_FIELDS: ArchiveSearchField[] = [
-	'subject',
-	'body',
-	'from',
-	'senderName',
-	'to',
-	'cc',
-	'bcc',
-	'attachments.filename',
-	'attachments.content',
-	'userEmail',
-	'sourcePath',
-	'sourceLabels',
-	'tags',
-];
+const FTS_TABLE = 'email_fts';
 
-const SORT_FIELD_MAP: Record<ArchiveSortField, string> = {
-	sentAt: 'timestamp',
-	archivedAt: 'archivedAt',
-	sender: 'from',
+// Search-field presets (Meili attribute names, kept for API/UI compatibility)
+// mapped onto FTS columns.
+const FIELD_TO_COLUMN: Record<ArchiveSearchField, string> = {
 	subject: 'subject',
-	sizeBytes: 'sizeBytes',
+	body: 'body',
+	from: 'sender',
+	senderName: 'sender',
+	to: 'recipients',
+	cc: 'recipients',
+	bcc: 'recipients',
+	'attachments.filename': 'attachments',
+	'attachments.content': 'attachments',
+	userEmail: 'meta',
+	sourcePath: 'meta',
+	sourceLabels: 'meta',
+	tags: 'meta',
+};
+const ALL_COLUMNS = ['subject', 'body', 'sender', 'recipients', 'attachments', 'meta'];
+
+const DEFAULT_SEARCH_FIELDS = Object.keys(FIELD_TO_COLUMN) as ArchiveSearchField[];
+
+// Maps sort keys to archived_emails columns (identifiers, never user input).
+const SORT_COLUMN_MAP: Record<ArchiveSortField, string> = {
+	sentAt: 'ae.sent_at',
+	archivedAt: 'ae.archived_at',
+	sender: 'ae.sender_email',
+	subject: 'ae.subject',
+	sizeBytes: 'ae.size_bytes',
 };
 
-const FILTERABLE_FALLBACK_FIELDS = new Set([
-	'from',
-	'senderName',
-	'to',
-	'cc',
-	'bcc',
-	'timestamp',
-	'archivedAt',
-	'ingestionSourceId',
-	'userEmail',
-	'hasAttachments',
-	'sourcePath',
-	'sourceLabels',
-	'tags',
-	'threadId',
-	'messageIdHeader',
-	'sizeBytes',
-]);
+// bm25() takes one weight per column in table order:
+// (email_id, subject, body, sender, recipients, attachments, meta)
+const BM25_WEIGHTS = '0.0, 10.0, 2.0, 6.0, 3.0, 1.0, 2.0';
 
 function clampPositiveInteger(value: number | undefined, fallback: number, max: number): number {
 	if (!value || !Number.isFinite(value) || value < 1) {
 		return fallback;
 	}
 	return Math.min(Math.floor(value), max);
-}
-
-function quoteFilterValue(value: string): string {
-	return JSON.stringify(value);
 }
 
 function toTimestamp(value: string | number | Date | undefined): number | null {
@@ -84,75 +79,229 @@ function normalizeSearchFields(fields: ArchiveSearchField[] | undefined): Archiv
 	if (!fields || fields.length === 0) {
 		return DEFAULT_SEARCH_FIELDS;
 	}
-
 	const allowed = new Set(DEFAULT_SEARCH_FIELDS);
 	const normalized = fields.filter((field) => allowed.has(field));
 	return normalized.length > 0 ? normalized : DEFAULT_SEARCH_FIELDS;
 }
 
-function normalizeSort(sort: ArchiveSortField | undefined): string {
-	return SORT_FIELD_MAP[sort || 'sentAt'];
+/**
+ * Builds a safe FTS5 MATCH expression from raw user input. Every term is
+ * double-quoted (FTS5 operators and email-address punctuation would otherwise
+ * be query syntax); the final term is a prefix so search-as-you-type works.
+ */
+function buildMatchExpression(
+	query: string,
+	fields: ArchiveSearchField[],
+	mode: 'and' | 'or'
+): string | null {
+	const terms = query
+		.split(/\s+/)
+		.map((term) => term.replace(/"/g, '').trim())
+		.filter((term) => term.length > 0)
+		.slice(0, 12);
+	if (terms.length === 0) {
+		return null;
+	}
+	const quoted = terms.map((term, index) =>
+		index === terms.length - 1 ? `"${term}"*` : `"${term}"`
+	);
+	const body = quoted.join(mode === 'or' ? ' OR ' : ' ');
+
+	const columns = [...new Set(fields.map((field) => FIELD_TO_COLUMN[field]))];
+	if (columns.length >= ALL_COLUMNS.length) {
+		return body;
+	}
+	return `{${columns.join(' ')}} : (${body})`;
 }
 
-function normalizeDirection(direction: SortDirection | undefined): SortDirection {
-	return direction === 'asc' ? 'asc' : 'desc';
+interface EmailRow {
+	id: string;
+	user_email: string;
+	sender_email: string;
+	sender_name: string | null;
+	recipients: string | null;
+	subject: string | null;
+	sent_at: number;
+	archived_at: number;
+	ingestion_source_id: string;
+	thread_id: string | null;
+	message_id_header: string | null;
+	has_attachments: number;
+	source_path: string | null;
+	source_labels: string | null;
+	tags: string | null;
+	size_bytes: number;
+	snippet?: string;
 }
+
+function rowToDocument(row: EmailRow): EmailDocument {
+	const recipients = row.recipients ? JSON.parse(row.recipients) : {};
+	const addresses = (list: Array<{ address?: string }> | undefined): string[] =>
+		(list ?? []).map((entry) => entry.address ?? '').filter(Boolean);
+	return {
+		id: row.id,
+		userEmail: row.user_email,
+		from: row.sender_email,
+		senderName: row.sender_name ?? '',
+		to: addresses(recipients.to),
+		cc: addresses(recipients.cc),
+		bcc: addresses(recipients.bcc),
+		subject: row.subject ?? '',
+		body: row.snippet ?? '',
+		attachments: [],
+		timestamp: row.sent_at,
+		archivedAt: row.archived_at,
+		ingestionSourceId: row.ingestion_source_id,
+		threadId: row.thread_id,
+		messageIdHeader: row.message_id_header,
+		hasAttachments: Boolean(row.has_attachments),
+		sourcePath: row.source_path,
+		sourceLabels: row.source_labels ? JSON.parse(row.source_labels) : [],
+		tags: row.tags ? JSON.parse(row.tags) : [],
+		sizeBytes: row.size_bytes,
+	};
+}
+
+let ftsReady = false;
 
 export class SearchService {
-	private client: MeiliSearch;
-
-	constructor() {
-		this.client = new MeiliSearch({
-			host: config.search.host,
-			apiKey: config.search.apiKey,
-		});
-	}
-
-	public async getIndex<T extends Record<string, any>>(name: string): Promise<Index<T>> {
-		return this.client.index<T>(name);
-	}
-
-	public async addDocuments<T extends Record<string, any>>(
-		indexName: string,
-		documents: T[],
-		primaryKey?: string
-	) {
-		const index = await this.getIndex<T>(indexName);
-		if (primaryKey) {
-			index.update({ primaryKey });
+	/** Creates the FTS table if missing. Replaces Meilisearch index configuration. */
+	public async configureEmailIndex(): Promise<void> {
+		if (ftsReady) {
+			return;
 		}
-		return index.addDocuments(documents);
+		sqlite.exec(`
+			CREATE VIRTUAL TABLE IF NOT EXISTS ${FTS_TABLE} USING fts5(
+				email_id UNINDEXED,
+				subject, body, sender, recipients, attachments, meta,
+				tokenize = 'unicode61 remove_diacritics 2',
+				prefix = '2 3'
+			);
+		`);
+		// Drift safety: drop index rows whose email no longer exists (e.g. a
+		// crash between source deletion and index cleanup).
+		sqlite.exec(
+			`DELETE FROM ${FTS_TABLE} WHERE email_id NOT IN (SELECT id FROM archived_emails)`
+		);
+		ftsReady = true;
 	}
 
-	public async updateDocuments<T extends Record<string, any>>(
-		indexName: string,
-		documents: T[],
-		primaryKey?: string
-	) {
-		const index = await this.getIndex<T>(indexName);
-		if (primaryKey) {
-			index.update({ primaryKey });
+	private ensureReady(): void {
+		if (!ftsReady) {
+			// Sync path of configureEmailIndex (it only awaits nothing).
+			void this.configureEmailIndex();
 		}
-		return index.updateDocuments(documents);
 	}
 
-	public async search<T extends Record<string, any>>(
-		indexName: string,
-		query: string,
-		options?: any
+	/** Indexes (or re-indexes) full email documents. indexName kept for API compat. */
+	public async addDocuments(_indexName: string, documents: EmailDocument[], _primaryKey?: string) {
+		this.ensureReady();
+		const del = sqlite.prepare(
+			`DELETE FROM ${FTS_TABLE} WHERE rowid = (SELECT rowid FROM archived_emails WHERE id = ?)`
+		);
+		const ins = sqlite.prepare(`
+			INSERT INTO ${FTS_TABLE} (rowid, email_id, subject, body, sender, recipients, attachments, meta)
+			SELECT rowid, ?, ?, ?, ?, ?, ?, ? FROM archived_emails WHERE id = ?
+		`);
+		sqlite.transaction(() => {
+			for (const doc of documents) {
+				del.run(doc.id);
+				ins.run(
+					doc.id,
+					doc.subject ?? '',
+					doc.body ?? '',
+					`${doc.from ?? ''} ${doc.senderName ?? ''}`.trim(),
+					[...doc.to, ...doc.cc, ...doc.bcc].join(' '),
+					doc.attachments
+						.map((attachment) => `${attachment.filename}\n${attachment.content}`)
+						.join('\n'),
+					[doc.userEmail, doc.sourcePath ?? '', ...doc.sourceLabels, ...doc.tags].join(' '),
+					doc.id
+				);
+			}
+		})();
+	}
+
+	/**
+	 * Partial updates. The only caller updates {id, tags} after tag edits — the
+	 * meta column is recomputed from the database row.
+	 */
+	public async updateDocuments(
+		_indexName: string,
+		documents: Array<{ id: string } & Partial<EmailDocument>>,
+		_primaryKey?: string
 	) {
-		const index = await this.getIndex<T>(indexName);
-		return index.search(query, options);
+		this.ensureReady();
+		const fetch = sqlite.prepare(
+			`SELECT user_email, source_path, source_labels, tags FROM archived_emails WHERE id = ?`
+		);
+		const update = sqlite.prepare(`
+			UPDATE ${FTS_TABLE} SET meta = ?
+			WHERE rowid = (SELECT rowid FROM archived_emails WHERE id = ?)
+		`);
+		sqlite.transaction(() => {
+			for (const doc of documents) {
+				const row = fetch.get(doc.id) as
+					| {
+							user_email: string;
+							source_path: string | null;
+							source_labels: string | null;
+							tags: string | null;
+					  }
+					| undefined;
+				if (!row) {
+					continue;
+				}
+				const labels: string[] = row.source_labels ? JSON.parse(row.source_labels) : [];
+				const tags: string[] = row.tags ? JSON.parse(row.tags) : [];
+				update.run(
+					[row.user_email, row.source_path ?? '', ...labels, ...tags].join(' '),
+					doc.id
+				);
+			}
+		})();
 	}
 
-	public async deleteDocuments(indexName: string, ids: string[]) {
-		const index = await this.getIndex(indexName);
-		return index.deleteDocuments(ids);
+	/** Removes emails from the index by id. Call BEFORE deleting the rows. */
+	public async deleteDocuments(_indexName: string, ids: string[]) {
+		this.ensureReady();
+		const del = sqlite.prepare(
+			`DELETE FROM ${FTS_TABLE} WHERE rowid = (SELECT rowid FROM archived_emails WHERE id = ?)`
+		);
+		sqlite.transaction(() => {
+			for (const id of ids) {
+				del.run(id);
+			}
+		})();
 	}
 
-	public async deleteDocumentsByFilter(indexName: string, filter: string | string[]) {
-		const index = await this.getIndex(indexName);
-		return index.deleteDocuments({ filter });
+	/** Removes a whole source's emails from the index. Call BEFORE deleting the rows. */
+	public async deleteDocumentsBySource(ingestionSourceId: string) {
+		this.ensureReady();
+		sqlite
+			.prepare(
+				`DELETE FROM ${FTS_TABLE} WHERE rowid IN (SELECT rowid FROM archived_emails WHERE ingestion_source_id = ?)`
+			)
+			.run(ingestionSourceId);
+	}
+
+	/** Escape hatch: wipes the index and re-enqueues indexing for every email. */
+	public async rebuildIndex(): Promise<{ enqueuedBatches: number; totalEmails: number }> {
+		this.ensureReady();
+		sqlite.exec(`DELETE FROM ${FTS_TABLE}`);
+		const ids = sqlite
+			.prepare(`SELECT id FROM archived_emails ORDER BY archived_at ASC`)
+			.all() as Array<{ id: string }>;
+		const BATCH = 500;
+		let batches = 0;
+		for (let i = 0; i < ids.length; i += BATCH) {
+			await sendJob('indexing', 'index-email-batch', {
+				emails: ids.slice(i, i + BATCH).map((row) => ({ archivedEmailId: row.id })),
+			});
+			batches++;
+		}
+		logger.info({ totalEmails: ids.length, batches }, 'Search index rebuild enqueued');
+		return { enqueuedBatches: batches, totalEmails: ids.length };
 	}
 
 	public async searchEmails(
@@ -178,236 +327,167 @@ export class SearchService {
 
 	public async queryArchivedEmails(
 		dto: ArchiveQuery,
-		userId: string,
-		actorIp: string
+		_userId: string,
+		_actorIp: string
 	): Promise<SearchResult> {
-		const query = dto.query || '';
+		this.ensureReady();
+		const startedAt = Date.now();
+		const query = (dto.query || '').trim();
 		const page = clampPositiveInteger(dto.page, 1, Number.MAX_SAFE_INTEGER);
 		const limit = clampPositiveInteger(dto.limit, 10, 100);
-		const matchingStrategy = dto.matchingStrategy || 'last';
 		const fields = normalizeSearchFields(dto.fields);
-		const sortField = normalizeSort(dto.sort);
-		const direction = normalizeDirection(dto.direction);
-		const index = await this.getIndex<EmailDocument>('emails');
+		const sortColumn = SORT_COLUMN_MAP[dto.sort || 'sentAt'];
+		const direction = dto.direction === 'asc' ? 'ASC' : 'DESC';
+		// 'all' = every word must match; 'last'/'frequency' (Meili word-dropping
+		// strategies) are approximated with an any-word fallback pass.
+		const strict = dto.matchingStrategy === 'all';
 
-		const searchParams: EmailSearchParams = {
-			limit,
-			offset: (page - 1) * limit,
-			attributesToHighlight: fields,
-			showMatchesPosition: true,
-			sort: [`${sortField}:${direction}`],
-			matchingStrategy,
+		const filterSql = await this.buildFilterSql(dto.filters);
+
+		const run = (match: string | null) => {
+			if (match) {
+				const base = `
+					FROM ${FTS_TABLE} f
+					JOIN archived_emails ae ON ae.rowid = f.rowid
+					WHERE ${FTS_TABLE} MATCH ?${filterSql.clause}`;
+				const hits = sqlite
+					.prepare(
+						`SELECT ae.*, snippet(${FTS_TABLE}, 2, '', '', '…', 24) AS snippet ${base}
+						ORDER BY ${sortColumn} ${direction}, bm25(${FTS_TABLE}, ${BM25_WEIGHTS}) ASC
+						LIMIT ? OFFSET ?`
+					)
+					.all(match, ...filterSql.params, limit, (page - 1) * limit) as EmailRow[];
+				const [{ total }] = sqlite
+					.prepare(`SELECT count(*) AS total ${base}`)
+					.all(match, ...filterSql.params) as Array<{ total: number }>;
+				return { hits, total };
+			}
+			const base = `FROM archived_emails ae WHERE 1=1${filterSql.clause}`;
+			const hits = sqlite
+				.prepare(
+					`SELECT ae.* ${base} ORDER BY ${sortColumn} ${direction} LIMIT ? OFFSET ?`
+				)
+				.all(...filterSql.params, limit, (page - 1) * limit) as EmailRow[];
+			const [{ total }] = sqlite
+				.prepare(`SELECT count(*) AS total ${base}`)
+				.all(...filterSql.params) as Array<{ total: number }>;
+			return { hits, total };
 		};
 
-		if (query) {
-			searchParams.attributesToSearchOn = fields;
-		}
-
-		const filterParts = await this.buildArchiveFilterParts(dto.filters);
-		if (filterParts.length > 0) {
-			searchParams.filter = filterParts.join(' AND ');
-		}
-
-		// console.log('searchParams', searchParams);
-		const searchResults = await index.search(query, searchParams);
-
-		if (query) {
+		let result = run(query ? buildMatchExpression(query, fields, 'and') : null);
+		if (query && result.total === 0 && !strict) {
+			const orMatch = buildMatchExpression(query, fields, 'or');
+			// Multi-word queries only — a single word has nothing to relax.
+			if (orMatch && / OR /.test(orMatch)) {
+				result = run(orMatch);
+			}
 		}
 
 		return {
-			hits: searchResults.hits,
-			total: searchResults.estimatedTotalHits ?? searchResults.hits.length,
+			hits: result.hits.map(rowToDocument),
+			total: result.total,
 			page,
 			limit,
-			totalPages: Math.ceil(
-				(searchResults.estimatedTotalHits ?? searchResults.hits.length) / limit
-			),
-			processingTimeMs: searchResults.processingTimeMs,
+			totalPages: Math.ceil(result.total / limit),
+			processingTimeMs: Date.now() - startedAt,
 		};
 	}
 
-	private async buildArchiveFilterParts(
+	/** Translates the (Meili-era) filter object into SQL over archived_emails. */
+	private async buildFilterSql(
 		filters: ArchiveQueryFilters | undefined
-	): Promise<string[]> {
+	): Promise<{ clause: string; params: unknown[] }> {
+		const parts: string[] = [];
+		const params: unknown[] = [];
 		if (!filters) {
-			return [];
+			return { clause: '', params };
 		}
-
-		const filterParts: string[] = [];
-		const handled = new Set<string>();
 
 		if (filters.ingestionSourceId) {
 			const groupIds = await IngestionService.findGroupSourceIds(filters.ingestionSourceId);
-			if (groupIds.length === 1) {
-				filterParts.push(`ingestionSourceId = ${quoteFilterValue(groupIds[0])}`);
-			} else {
-				const inList = groupIds.map(quoteFilterValue).join(', ');
-				filterParts.push(`ingestionSourceId IN [${inList}]`);
-			}
-			handled.add('ingestionSourceId');
+			parts.push(
+				`ae.ingestion_source_id IN (${groupIds.map(() => '?').join(', ')})`
+			);
+			params.push(...groupIds);
 		}
-
-		for (const key of [
-			'userEmail',
-			'from',
-			'to',
-			'cc',
-			'bcc',
-			'sourcePath',
-		] as const) {
+		const equals: Array<[key: 'userEmail' | 'from' | 'sourcePath', column: string]> = [
+			['userEmail', 'ae.user_email'],
+			['from', 'ae.sender_email'],
+			['sourcePath', 'ae.source_path'],
+		];
+		for (const [key, column] of equals) {
 			const value = filters[key];
 			if (typeof value === 'string' && value.length > 0) {
-				filterParts.push(`${key} = ${quoteFilterValue(value)}`);
-				handled.add(key);
+				parts.push(`${column} = ?`);
+				params.push(value);
 			}
 		}
-
-		if (typeof filters.hasAttachments === 'boolean') {
-			filterParts.push(`hasAttachments = ${filters.hasAttachments}`);
-			handled.add('hasAttachments');
-		}
-
-		if (Array.isArray(filters.sourceLabels)) {
-			for (const label of filters.sourceLabels) {
-				if (typeof label === 'string' && label.length > 0) {
-					filterParts.push(`sourceLabels = ${quoteFilterValue(label)}`);
-				}
-			}
-			handled.add('sourceLabels');
-		}
-
-		if (Array.isArray(filters.tags)) {
-			for (const tag of filters.tags) {
-				if (typeof tag === 'string' && tag.length > 0) {
-					filterParts.push(`tags = ${quoteFilterValue(tag)}`);
-				}
-			}
-			handled.add('tags');
-		}
-
-		const sentAfter = toTimestamp(filters.sentAfter);
-		if (sentAfter !== null) {
-			filterParts.push(`timestamp >= ${sentAfter}`);
-			handled.add('sentAfter');
-		}
-
-		const sentBefore = toTimestamp(filters.sentBefore);
-		if (sentBefore !== null) {
-			filterParts.push(`timestamp <= ${sentBefore}`);
-			handled.add('sentBefore');
-		}
-
-		const archivedAfter = toTimestamp(filters.archivedAfter);
-		if (archivedAfter !== null) {
-			filterParts.push(`archivedAt >= ${archivedAfter}`);
-			handled.add('archivedAfter');
-		}
-
-		const archivedBefore = toTimestamp(filters.archivedBefore);
-		if (archivedBefore !== null) {
-			filterParts.push(`archivedAt <= ${archivedBefore}`);
-			handled.add('archivedBefore');
-		}
-
-		for (const [key, value] of Object.entries(filters)) {
-			if (handled.has(key) || !FILTERABLE_FALLBACK_FIELDS.has(key)) {
-				continue;
-			}
-
+		// Recipient filters match the address anywhere in the recipients JSON.
+		for (const key of ['to', 'cc', 'bcc'] as const) {
+			const value = filters[key];
 			if (typeof value === 'string' && value.length > 0) {
-				filterParts.push(`${key} = ${quoteFilterValue(value)}`);
-			} else if (typeof value === 'number' && Number.isFinite(value)) {
-				filterParts.push(`${key} = ${value}`);
-			} else if (typeof value === 'boolean') {
-				filterParts.push(`${key} = ${value}`);
+				parts.push(
+					`EXISTS (SELECT 1 FROM json_each(ae.recipients, '$.' || ?) r WHERE json_extract(r.value, '$.address') = ?)`
+				);
+				params.push(key, value);
 			}
 		}
-
-		return filterParts;
-	}
-
-	public async getTopSenders(limit = 10): Promise<TopSender[]> {
-		const index = await this.getIndex<EmailDocument>('emails');
-		const searchResults = await index.search('', {
-			facets: ['from'],
-			limit: 0,
-		});
-
-		if (!searchResults.facetDistribution?.from) {
-			return [];
+		if (typeof filters.hasAttachments === 'boolean') {
+			parts.push(`ae.has_attachments = ?`);
+			params.push(filters.hasAttachments ? 1 : 0);
 		}
-
-		// Sort and take top N
-		const sortedSenders = Object.entries(searchResults.facetDistribution.from)
-			.sort(([, countA], [, countB]) => countB - countA)
-			.slice(0, limit)
-			.map(([sender, count]) => ({ sender, count }));
-
-		return sortedSenders;
+		for (const [key, column] of [
+			['sourceLabels', 'ae.source_labels'],
+			['tags', 'ae.tags'],
+		] as const) {
+			const values = filters[key];
+			if (Array.isArray(values)) {
+				for (const value of values) {
+					if (typeof value === 'string' && value.length > 0) {
+						parts.push(
+							`EXISTS (SELECT 1 FROM json_each(COALESCE(${column}, '[]')) j WHERE j.value = ?)`
+						);
+						params.push(value);
+					}
+				}
+			}
+		}
+		const ranges: Array<[value: number | null, clause: string]> = [
+			[toTimestamp(filters.sentAfter), 'ae.sent_at >= ?'],
+			[toTimestamp(filters.sentBefore), 'ae.sent_at <= ?'],
+			[toTimestamp(filters.archivedAfter), 'ae.archived_at >= ?'],
+			[toTimestamp(filters.archivedBefore), 'ae.archived_at <= ?'],
+		];
+		for (const [value, clause] of ranges) {
+			if (value !== null) {
+				parts.push(clause);
+				params.push(value);
+			}
+		}
+		return { clause: parts.length ? ` AND ${parts.join(' AND ')}` : '', params };
 	}
 
-	/**
-	 * Returns the distinct values present in the archive for the filterable
-	 * facets used by the mailbox filter dropdowns (imported folder = sourcePath,
-	 * and tags). Values are sorted alphabetically. Note: Meilisearch caps facet
-	 * values at `faceting.maxValuesPerFacet` (default 100).
-	 */
+	/** Top senders across the whole archive (dashboard). Uncapped, unlike Meili's 100-value facet limit. */
+	public async getTopSenders(limit = 10): Promise<TopSender[]> {
+		const rows = sqlite
+			.prepare(
+				`SELECT sender_email AS sender, count(*) AS count
+				FROM archived_emails GROUP BY sender_email
+				ORDER BY count DESC, sender ASC LIMIT ?`
+			)
+			.all(limit) as TopSender[];
+		return rows;
+	}
+
+	/** Distinct tag values for the mailbox filter dropdown. Uncapped. */
 	public async getFilterFacets(): Promise<{ tags: string[] }> {
-		const index = await this.getIndex<EmailDocument>('emails');
-		const searchResults = await index.search('', {
-			facets: ['tags'],
-			limit: 0,
-		});
-		const distribution = searchResults.facetDistribution || {};
-		const distinctSorted = (values?: Record<string, number>): string[] =>
-			Object.keys(values || {})
-				.filter((value) => value.trim().length > 0)
-				.sort((a, b) => a.localeCompare(b));
-		return {
-			tags: distinctSorted(distribution.tags),
-		};
-	}
-
-	public async configureEmailIndex() {
-		const index = await this.getIndex('emails');
-		await index.updateSettings({
-			searchableAttributes: [
-				'subject',
-				'body',
-				'from',
-				'senderName',
-				'to',
-				'cc',
-				'bcc',
-				'attachments.filename',
-				'attachments.content',
-				'userEmail',
-				'sourcePath',
-				'sourceLabels',
-				'tags',
-			],
-			filterableAttributes: [
-				'from',
-				'senderName',
-				'to',
-				'cc',
-				'bcc',
-				'timestamp',
-				'archivedAt',
-				'ingestionSourceId',
-				'userEmail',
-				'hasAttachments',
-				'sourcePath',
-				'sourceLabels',
-				'tags',
-				'threadId',
-				'messageIdHeader',
-				'sizeBytes',
-			],
-			sortableAttributes: ['timestamp', 'archivedAt', 'from', 'subject', 'sizeBytes'],
-			pagination: {
-				maxTotalHits: 1_000_000,
-			},
-		});
+		const rows = sqlite
+			.prepare(
+				`SELECT DISTINCT j.value AS tag
+				FROM archived_emails ae, json_each(COALESCE(ae.tags, '[]')) j
+				WHERE trim(j.value) <> '' ORDER BY tag COLLATE NOCASE ASC`
+			)
+			.all() as Array<{ tag: string }>;
+		return { tags: rows.map((row) => row.tag) };
 	}
 }

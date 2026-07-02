@@ -1,13 +1,12 @@
 import { Router } from 'express';
 import { JobsController } from '../controllers/jobs.controller';
 import { requireAuth } from '../middleware/requireAuth';
-import { AuthService } from '../../services/AuthService';
 
-export const createJobsRouter = (authService: AuthService): Router => {
+export const createJobsRouter = (): Router => {
 	const router = Router();
 	const jobsController = new JobsController();
 
-	router.use(requireAuth(authService));
+	router.use(requireAuth());
 
 	/**
 	 * @openapi

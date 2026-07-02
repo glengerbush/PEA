@@ -10,7 +10,8 @@
 		options,
 		placeholder = 'Select…',
 		name,
-		class: className
+		class: className,
+		onValueChange
 	}: {
 		/** Selected option value (two-way bindable). */
 		value?: string;
@@ -18,6 +19,8 @@
 		placeholder?: string;
 		name?: string;
 		class?: string;
+		/** Fires after the user picks an option (not on external value changes). */
+		onValueChange?: (value: string) => void;
 	} = $props();
 
 	let open = $state(false);
@@ -44,7 +47,7 @@
 	});
 </script>
 
-<Combobox.Root type="single" {name} bind:value bind:open {inputValue}>
+<Combobox.Root type="single" {name} bind:value bind:open {inputValue} {onValueChange}>
 	<div class="relative">
 		<Combobox.Input
 			{placeholder}

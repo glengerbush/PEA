@@ -7,7 +7,6 @@ declare global {
 		// interface Error {}
 		interface Locals {
 			user: Omit<User, 'passwordHash'> | null;
-			accessToken: string | null;
 			enterpriseMode: boolean;
 			personalMode: boolean;
 		}

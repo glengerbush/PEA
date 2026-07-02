@@ -140,15 +140,16 @@ class DashboardService {
 		const thirtyDaysAgo = new Date();
 		thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
+		// archived_at is epoch-ms; date() truncates to the day as 'YYYY-MM-DD'.
 		const history = await this.#db
 			.select({
-				date: sql<string>`date_trunc('day', ${archivedEmails.archivedAt})`,
+				date: sql<string>`date(${archivedEmails.archivedAt} / 1000, 'unixepoch')`,
 				count: count(),
 			})
 			.from(archivedEmails)
 			.where(gte(archivedEmails.archivedAt, thirtyDaysAgo))
-			.groupBy(sql`date_trunc('day', ${archivedEmails.archivedAt})`)
-			.orderBy(sql`date_trunc('day', ${archivedEmails.archivedAt})`);
+			.groupBy(sql`date(${archivedEmails.archivedAt} / 1000, 'unixepoch')`)
+			.orderBy(sql`date(${archivedEmails.archivedAt} / 1000, 'unixepoch')`);
 
 		return { history };
 	}

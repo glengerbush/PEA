@@ -1,19 +1,19 @@
 {
   "version": "7",
-  "dialect": "postgresql",
+  "dialect": "sqlite",
   "entries": [
     {
       "idx": 0,
-      "version": "7",
-      "when": 1782866487825,
-      "tag": "0000_baseline",
+      "version": "6",
+      "when": 1783002064166,
+      "tag": "0000_fair_trish_tilby",
       "breakpoints": true
     },
     {
       "idx": 1,
-      "version": "7",
-      "when": 1782882826322,
-      "tag": "0001_steady_cammi",
+      "version": "6",
+      "when": 1783010106181,
+      "tag": "0001_lame_vertigo",
       "breakpoints": true
     }
   ]

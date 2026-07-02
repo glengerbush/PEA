@@ -1,22 +1,16 @@
-import { relations } from 'drizzle-orm';
-import {
-	boolean,
-	jsonb,
-	pgTable,
-	text,
-	timestamp,
-	uuid,
-	bigint,
-	index,
-} from 'drizzle-orm/pg-core';
+import { relations, sql } from 'drizzle-orm';
+import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { randomUUID } from 'crypto';
 import { ingestionSources } from './ingestion-sources';
 
-export const archivedEmails = pgTable(
+export const archivedEmails = sqliteTable(
 	'archived_emails',
 	{
-		id: uuid('id').primaryKey().defaultRandom(),
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => randomUUID()),
 		threadId: text('thread_id'),
-		ingestionSourceId: uuid('ingestion_source_id')
+		ingestionSourceId: text('ingestion_source_id')
 			.notNull()
 			.references(() => ingestionSources.id, { onDelete: 'cascade' }),
 		userEmail: text('user_email').notNull(),
@@ -24,33 +18,33 @@ export const archivedEmails = pgTable(
 		/** The provider-specific message ID (e.g., Gmail API ID, Graph API ID).
 		 * Used by the pre-fetch duplicate check to avoid unnecessary API calls during retries. */
 		providerMessageId: text('provider_message_id'),
-		sentAt: timestamp('sent_at', { withTimezone: true }).notNull(),
+		sentAt: integer('sent_at', { mode: 'timestamp_ms' }).notNull(),
 		subject: text('subject'),
 		senderName: text('sender_name'),
 		senderEmail: text('sender_email').notNull(),
-		recipients: jsonb('recipients'),
+		recipients: text('recipients', { mode: 'json' }),
 		storagePath: text('storage_path').notNull(),
 		storageHashSha256: text('storage_hash_sha256').notNull(),
-		sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
-		isIndexed: boolean('is_indexed').notNull().default(false),
-		hasAttachments: boolean('has_attachments').notNull().default(false),
-		archivedAt: timestamp('archived_at', { withTimezone: true }).notNull().defaultNow(),
+		sizeBytes: integer('size_bytes', { mode: 'number' }).notNull(),
+		isIndexed: integer('is_indexed', { mode: 'boolean' }).notNull().default(false),
+		hasAttachments: integer('has_attachments', { mode: 'boolean' }).notNull().default(false),
+		archivedAt: integer('archived_at', { mode: 'timestamp_ms' })
+			.notNull()
+			.default(sql`(unixepoch() * 1000)`),
 		sourcePath: text('source_path'),
-		sourceLabels: jsonb('source_labels'),
+		sourceLabels: text('source_labels', { mode: 'json' }),
 		duplicateSubjectHash: text('duplicate_subject_hash'),
 		duplicateFuzzyGroupKey: text('duplicate_fuzzy_group_key'),
 		duplicateBodyHash: text('duplicate_body_hash'),
 		duplicateRecipientFingerprint: text('duplicate_recipient_fingerprint'),
 		duplicateAttachmentFingerprint: text('duplicate_attachment_fingerprint'),
 		remoteContentStatus: text('remote_content_status').notNull().default('not_started'),
-		remoteContentAssetCount: bigint('remote_content_asset_count', { mode: 'number' })
+		remoteContentAssetCount: integer('remote_content_asset_count', { mode: 'number' })
 			.notNull()
 			.default(0),
-		remoteContentArchivedAt: timestamp('remote_content_archived_at', {
-			withTimezone: true,
-		}),
+		remoteContentArchivedAt: integer('remote_content_archived_at', { mode: 'timestamp_ms' }),
 		path: text('path'),
-		tags: jsonb('tags'),
+		tags: text('tags', { mode: 'json' }),
 	},
 	(table) => [
 		index('thread_id_idx').on(table.threadId),
@@ -67,6 +61,8 @@ export const archivedEmails = pgTable(
 		index('archived_emails_fuzzy_recipients_idx').on(table.duplicateRecipientFingerprint),
 		index('archived_emails_fuzzy_attachments_idx').on(table.duplicateAttachmentFingerprint),
 		index('archived_emails_remote_content_status_idx').on(table.remoteContentStatus),
+		// Supports the mailbox default sort (sent_at desc) without a full scan.
+		index('archived_emails_sent_at_idx').on(table.sentAt),
 	]
 );
 

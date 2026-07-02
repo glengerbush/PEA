@@ -1,4 +1,4 @@
-import { Job } from 'bullmq';
+import type { QueueJob as Job } from '../queue';
 import { RemoteContentService } from '../../services/RemoteContentService';
 import { logger } from '../../config/logger';
 

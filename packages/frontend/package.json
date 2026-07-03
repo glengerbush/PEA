@@ -1,5 +1,5 @@
 {
-	"name": "@open-archiver/frontend",
+	"name": "@pea/frontend",
 	"private": true,
 	"license": "SEE LICENSE IN LICENSE file",
 	"version": "0.0.1",
@@ -14,7 +14,7 @@
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
 	},
 	"dependencies": {
-		"@open-archiver/types": "workspace:*",
+		"@pea/types": "workspace:*",
 		"@sveltejs/kit": "^2.38.1",
 		"clsx": "^2.1.1",
 		"d3-shape": "^3.2.0",
@@ -28,8 +28,7 @@
 	"devDependencies": {
 		"@internationalized/date": "^3.8.2",
 		"@lucide/svelte": "^0.544.0",
-		"@sveltejs/adapter-auto": "^6.0.0",
-		"@sveltejs/adapter-node": "^5.2.13",
+		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/vite-plugin-svelte": "^5.0.0",
 		"@tailwindcss/vite": "^4.0.0",
 		"@types/d3-shape": "^3.1.7",

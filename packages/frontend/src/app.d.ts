@@ -1,15 +1,9 @@
-import type { User } from '@open-archiver/types';
-
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 declare global {
 	namespace App {
 		// interface Error {}
-		interface Locals {
-			user: Omit<User, 'passwordHash'> | null;
-			enterpriseMode: boolean;
-			personalMode: boolean;
-		}
+		// interface Locals {}
 		// interface PageData {}
 		// interface PageState {}
 		// interface Platform {}

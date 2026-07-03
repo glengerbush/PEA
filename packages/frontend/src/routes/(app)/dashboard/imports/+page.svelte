@@ -10,7 +10,7 @@
 	import IngestionSourceForm from '$lib/components/custom/IngestionSourceForm.svelte';
 	import { api } from '$lib/api.client';
 	import { formatBytes } from '$lib/utils';
-	import type { SafeIngestionSource, CreateIngestionSourceDto } from '@open-archiver/types';
+	import type { SafeIngestionSource, CreateIngestionSourceDto } from '@pea/types';
 	import Badge from '$lib/components/ui/badge/badge.svelte';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import * as HoverCard from '$lib/components/ui/hover-card/index.js';
@@ -379,7 +379,7 @@
 </script>
 
 <svelte:head>
-	<title>{$t('app.imports.title')} - OpenArchiver</title>
+	<title>{$t('app.imports.title')} - PEA</title>
 </svelte:head>
 
 <div class="">

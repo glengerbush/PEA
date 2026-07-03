@@ -87,7 +87,7 @@
 			"save_failed_title": "更新に失敗しました",
 			"updates": {
 				"title": "ソフトウェアの更新",
-				"description": "追跡中のブランチに OpenArchiver の新しいバージョンがあるか確認します。",
+				"description": "追跡中のブランチに PEA の新しいバージョンがあるか確認します。",
 				"current_build": "現在のビルド",
 				"up_to_date": "最新バージョンを使用しています。",
 				"available": "更新があります — {{count}} コミット遅れています。",
@@ -114,7 +114,7 @@
 		},
 		"setup": {
 			"title": "セットアップ",
-			"description": "Open Archiverの初期管理者アカウントをセットアップします。",
+			"description": "PEAの初期管理者アカウントをセットアップします。",
 			"welcome": "ようこそ",
 			"create_admin_account": "開始するには、最初の管理者アカウントを作成してください。",
 			"first_name": "名",

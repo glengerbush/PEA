@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import type { ArchivedEmail } from '@open-archiver/types';
+	import type { ArchivedEmail } from '@pea/types';
 	import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
 	import { t } from '$lib/translations';
 	import { formatDateTime } from '$lib/stores/datetime.svelte';

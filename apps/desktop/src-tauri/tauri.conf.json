@@ -1,8 +1,8 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "OpenArchiver",
-	"version": "0.7.0",
-	"identifier": "com.glengerbush.openarchiver",
+	"productName": "PEA",
+	"version": "0.8.0",
+	"identifier": "com.glengerbush.pea",
 	"build": {
 		"frontendDist": "../splash"
 	},
@@ -10,7 +10,7 @@
 		"updater": {
 			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFREM1RTkyMThBNzNENEUKUldST1BhY1lrbDdjam5ySlhmR1RoQXhFaGtyaWROZnNRSm5QTmc4OFFqWWlZUjYrbTcvUnFHckQK",
 			"endpoints": [
-				"https://github.com/glengerbush/OpenArchiver/releases/latest/download/latest.json"
+				"https://github.com/glengerbush/PEA/releases/latest/download/latest.json"
 			]
 		}
 	},
@@ -18,10 +18,10 @@
 		"windows": [
 			{
 				"label": "main",
-				"title": "Open Archiver",
+				"title": "PEA \u2014 Personal Email Archive",
 				"width": 1360,
 				"height": 860,
-				"url": "index.html"
+				"url": "pea://localhost/"
 			}
 		],
 		"security": {
@@ -31,12 +31,17 @@
 	"bundle": {
 		"active": true,
 		"createUpdaterArtifacts": true,
-		"targets": ["deb", "rpm", "appimage"],
-		"externalBin": ["binaries/node"],
-		"resources": ["resources"],
+		"targets": [
+			"deb",
+			"rpm",
+			"appimage"
+		],
+		"resources": [
+			"resources"
+		],
 		"category": "Utility",
-		"shortDescription": "Personal email archiving",
-		"longDescription": "Self-contained personal email archive: import mbox/eml, full-text search, attachment indexing. All data stays on your machine.",
+		"shortDescription": "Personal Email Archive",
+		"longDescription": "PEA (Personal Email Archive): a self-contained personal email archive. Import mbox/eml, full-text search, attachment indexing. All data stays on your machine.",
 		"icon": [
 			"icons/32x32.png",
 			"icons/128x128.png",
@@ -48,5 +53,6 @@
 				"depends": []
 			}
 		}
-	}
+	},
+	"mainBinaryName": "pea"
 }

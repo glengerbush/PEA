@@ -1,3 +1,3 @@
 <svelte:head>
-	<title>Open Archiver</title>
+	<title>PEA</title>
 </svelte:head>

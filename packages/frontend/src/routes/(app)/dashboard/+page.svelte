@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { PageData } from './$types';
-	import type { IngestionSourceStats } from '@open-archiver/types';
+	import type { IngestionSourceStats } from '@pea/types';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import { formatBytes } from '$lib/utils';
 	import EmptyState from '$lib/components/custom/EmptyState.svelte';
@@ -35,7 +35,7 @@
 </script>
 
 <svelte:head>
-	<title>{$t('app.dashboard_page.title')} - OpenArchiver</title>
+	<title>{$t('app.dashboard_page.title')} - PEA</title>
 	<meta name="description" content={$t('app.dashboard_page.meta_description')} />
 </svelte:head>
 

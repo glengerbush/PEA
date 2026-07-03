@@ -87,7 +87,7 @@
 			"save_failed_title": "Värskendamine ebaõnnestus",
 			"updates": {
 				"title": "Tarkvara värskendused",
-				"description": "Kontrollige, kas jälgitavas harus on saadaval OpenArchiveri uuem versioon.",
+				"description": "Kontrollige, kas jälgitavas harus on saadaval PEAi uuem versioon.",
 				"current_build": "Praegune järk",
 				"up_to_date": "Kasutate uusimat versiooni.",
 				"available": "Värskendus saadaval — {{count}} commit-i taga.",
@@ -114,7 +114,7 @@
 		},
 		"setup": {
 			"title": "Seadistamine",
-			"description": "Seadistage Open Archiveri esialgne administraatorikonto.",
+			"description": "Seadistage PEAi esialgne administraatorikonto.",
 			"welcome": "Tere tulemast",
 			"create_admin_account": "Alustamiseks looge esimene administraatorikonto.",
 			"first_name": "Eesnimi",

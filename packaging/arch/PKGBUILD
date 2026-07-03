@@ -1,6 +1,6 @@
 # Maintainer: Glen Gerbush
 #
-# Native pacman package for the Open Archiver desktop app, repacking the
+# Native pacman package for the PEA (Personal Email Archiver) desktop app, repacking the
 # released .deb. Not published to the AUR — build it straight from this repo:
 #
 #   cd packaging/arch && makepkg -si
@@ -8,13 +8,13 @@
 # Updates: bump pkgver (or re-run after a new release) and makepkg -si again,
 # or just use the AppImage which self-updates in-app.
 
-pkgname=open-archiver-bin
-_pkgname=OpenArchiver
+pkgname=pea-bin
+_pkgname=PEA
 pkgver=0.7.0
 pkgrel=1
 pkgdesc="Personal email archiving — self-contained desktop app"
 arch=('x86_64')
-url="https://github.com/glengerbush/OpenArchiver"
+url="https://github.com/glengerbush/PEA"
 license=('custom')
 depends=('webkit2gtk-4.1' 'gtk3')
 options=('!strip' '!debug')

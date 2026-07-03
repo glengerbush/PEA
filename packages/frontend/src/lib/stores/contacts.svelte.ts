@@ -1,4 +1,4 @@
-import type { ContactMap } from '@open-archiver/types';
+import type { ContactMap } from '@pea/types';
 
 let contactMap = $state<ContactMap>({});
 

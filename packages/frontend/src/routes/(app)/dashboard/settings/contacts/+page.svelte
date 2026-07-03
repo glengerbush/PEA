@@ -3,7 +3,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import { api } from '$lib/api.client';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
-	import type { ImportContactsResult, ContactImportFormat } from '@open-archiver/types';
+	import type { ImportContactsResult, ContactImportFormat } from '@pea/types';
 	import Upload from 'lucide-svelte/icons/upload';
 
 	let fileInput = $state<HTMLInputElement | null>(null);

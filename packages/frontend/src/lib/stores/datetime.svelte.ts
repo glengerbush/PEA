@@ -1,4 +1,4 @@
-import type { SystemSettings } from '@open-archiver/types';
+import type { SystemSettings } from '@pea/types';
 
 /**
  * Global date/time display preferences, sourced from system settings. Set once

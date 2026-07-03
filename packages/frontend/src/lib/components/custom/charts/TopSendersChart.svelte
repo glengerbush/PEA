@@ -1,7 +1,7 @@
 <script lang="ts">
 	import * as Chart from '$lib/components/ui/chart/index.js';
 	import { BarChart } from 'layerchart';
-	import type { TopSender } from '@open-archiver/types';
+	import type { TopSender } from '@pea/types';
 	import type { ChartConfig } from '$lib/components/ui/chart';
 	import { t } from '$lib/translations';
 

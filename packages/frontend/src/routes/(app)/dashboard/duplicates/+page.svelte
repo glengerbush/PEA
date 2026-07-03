@@ -18,7 +18,7 @@
 		FuzzyDuplicateGroup,
 		IgnoreFuzzyDuplicateGroupsResult,
 		ScanFuzzyDuplicatesResult,
-	} from '@open-archiver/types';
+	} from '@pea/types';
 
 	let { data }: { data: PageData } = $props();
 
@@ -285,7 +285,7 @@
 </script>
 
 <svelte:head>
-	<title>Duplicate Review - OpenArchiver</title>
+	<title>Duplicate Review - PEA</title>
 </svelte:head>
 
 <div class="mb-4">

@@ -1,0 +1,132 @@
+From alice@example.com Thu Jan  2 10:00:00 2020
+From: Alice Example <alice@example.com>
+To: Bob Jones <bob@example.com>
+Cc: carol@example.com
+Subject: Welcome to the reprap builders list
+Message-ID: <msg-001@example.com>
+Date: Thu, 02 Jan 2020 10:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+Hello Bob,
+
+Welcome aboard the printer project. The heated bed ships Friday.
+>From here on, updates go out weekly.
+
+Cheers,
+Alice
+
+From newsletter@shop.example Thu Jan  2 11:00:00 2020
+From: Shop News <newsletter@shop.example>
+To: alice@example.com
+Subject: Your order has shipped!
+Message-ID: <msg-002@shop.example>
+Date: Thu, 02 Jan 2020 11:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Your order <b>#42</b> has shipped and the xbox controller is on the way.</p><img src="https://cdn.shop.example/banner.png" width="600"><p><a href="https://shop.example/track/42">Track the package</a></p></body></html>
+
+From alice@example.com Thu Jan  2 12:00:00 2020
+From: Alice Example <alice@example.com>
+To: Bob Jones <bob@example.com>
+Subject: Extruder calibration notes attached
+Message-ID: <msg-003@example.com>
+Date: Thu, 02 Jan 2020 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mixed-003"
+
+--mixed-003
+Content-Type: multipart/alternative; boundary="alt-003"
+
+--alt-003
+Content-Type: text/plain; charset=utf-8
+
+Notes attached. Esteps landed at 93.1 after three passes.
+
+--alt-003
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Notes attached. Esteps landed at <b>93.1</b> after three passes.</p></body></html>
+
+--alt-003--
+
+--mixed-003
+Content-Type: text/plain; charset=utf-8; name="notes.txt"
+Content-Disposition: attachment; filename="notes.txt"
+Content-Transfer-Encoding: base64
+
+RXh0cnVkZXIgY2FsaWJyYXRpb24gbm90ZXM6IGVzdGVwcyA5My4xLCBqZXJrIDgsIGFjY2VsIDUw
+MC4gRmluYWwgdmVyZGljdDogdGhlIGJvd2RlbiB0dWJlIHdhcyB0aGUgY3VscHJpdC4K
+
+--mixed-003--
+
+From logos@brand.example Thu Jan  2 13:00:00 2020
+From: Brand Team <logos@brand.example>
+To: alice@example.com
+Subject: New logo inline preview
+Message-ID: <msg-004@brand.example>
+Date: Thu, 02 Jan 2020 13:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="rel-004"
+
+--rel-004
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Here is the new logo:</p><img src="cid:logo123@brand.example" alt="logo"></body></html>
+
+--rel-004
+Content-Type: image/png; name="logo.png"
+Content-ID: <logo123@brand.example>
+Content-Disposition: inline; filename="logo.png"
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmM
+IQAAAABJRU5ErkJggg==
+
+--rel-004--
+
+From bob@example.com Thu Jan  2 14:00:00 2020
+From: Bob Jones <bob@example.com>
+To: Alice Example <alice@example.com>
+Subject: Re: Welcome to the reprap builders list
+Message-ID: <msg-005@example.com>
+In-Reply-To: <msg-001@example.com>
+References: <msg-001@example.com>
+Date: Thu, 02 Jan 2020 14:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Merci, tr=C3=A8s content d'=C3=AAtre l=C3=A0 !
+
+The brown out reset issue on my controller board is finally fixed.
+
+From alice@example.com Thu Jan  2 15:00:00 2020
+From: Alice Example <alice@example.com>
+To: Bob Jones <bob@example.com>
+Subject: Welcome duplicate that must be skipped
+Message-ID: <msg-001@example.com>
+Date: Thu, 02 Jan 2020 15:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+This duplicate message-id must be skipped by the importer.
+
+From noid@example.com Thu Jan  2 16:00:00 2020
+From: No Id <noid@example.com>
+To: alice@example.com
+Subject: I forgot my message id
+Date: Thu, 02 Jan 2020 16:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+This message has no Message-ID header, so one is generated from its hash.
+
+From labeled@example.com Thu Jan  2 17:00:00 2020
+From: Labeled Sender <labeled@example.com>
+To: alice@example.com
+Subject: Filed under a Gmail label
+Message-ID: <msg-008@example.com>
+X-Gmail-Labels: Receipts,Important
+Date: Thu, 02 Jan 2020 17:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+The vacuum cleaner receipt is attached to the Receipts label.

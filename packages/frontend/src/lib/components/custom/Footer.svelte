@@ -26,7 +26,7 @@
 				</Alert.Root>
 			{/if}
 			<p class="text-balance text-center text-xs font-medium leading-loose">
-				© {new Date().getFullYear()} Open Archiver — a personal fork
+				© {new Date().getFullYear()} PEA — Personal Email Archive
 			</p>
 			<p class="text-muted-foreground text-balance text-center text-xs leading-loose">
 				Based on the upstream

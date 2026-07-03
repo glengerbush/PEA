@@ -6,15 +6,16 @@
 	import * as RadioGroup from '$lib/components/ui/radio-group';
 	import * as Select from '$lib/components/ui/select';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
-	import type { SupportedLanguage, UpdateCheckResult } from '@open-archiver/types';
+	import type { SupportedLanguage, UpdateCheckResult } from '@pea/types';
 	import { t } from '$lib/translations';
-	import { enhance } from '$app/forms';
+	import { api } from '$lib/api.client';
 
-	let { data, form }: { data: PageData; form: any } = $props();
+	let { data }: { data: PageData } = $props();
 	let settings = $state(data.systemSettings);
 	let isSaving = $state(false);
 	let isCheckingUpdates = $state(false);
 	let updateResult = $state<UpdateCheckResult | null>(null);
+	let updateError = $state<string | null>(null);
 
 	const shortSha = (sha: string) => (sha && sha !== 'unknown' ? sha.slice(0, 7) : 'unknown');
 
@@ -37,34 +38,61 @@
 			'Select a language'
 	);
 
-	$effect(() => {
-		if (form?.success) {
-			settings = form.settings;
-			setAlert({
-				type: 'success',
-				title: $t('app.system_settings.saved_title'),
-				message: $t('app.system_settings.saved_message'),
-				duration: 3000,
-				show: true,
+	// Only send the keys this form edits — the backend merges the partial body
+	// into current settings (a "full" body would wipe timeZone/clockFormat).
+	async function saveSettings(event: SubmitEvent) {
+		event.preventDefault();
+		isSaving = true;
+		try {
+			const response = await api('/settings/system', {
+				method: 'PUT',
+				body: JSON.stringify({ language: settings.language, theme: settings.theme }),
 			});
-		} else if (form?.message) {
-			setAlert({
-				type: 'error',
-				title: $t('app.system_settings.save_failed_title'),
-				message: form.message,
-				duration: 5000,
-				show: true,
-			});
+			const body = await response.json();
+			if (response.ok) {
+				settings = body;
+				setAlert({
+					type: 'success',
+					title: $t('app.system_settings.saved_title'),
+					message: $t('app.system_settings.saved_message'),
+					duration: 3000,
+					show: true,
+				});
+			} else {
+				setAlert({
+					type: 'error',
+					title: $t('app.system_settings.save_failed_title'),
+					message: body.message || 'Failed to update settings',
+					duration: 5000,
+					show: true,
+				});
+			}
+		} finally {
+			isSaving = false;
 		}
-	});
+	}
 
-	$effect(() => {
-		if (form?.update) updateResult = form.update;
-	});
+	async function checkUpdates() {
+		isCheckingUpdates = true;
+		updateError = null;
+		try {
+			const response = await api('/settings/updates/check');
+			if (response.ok) {
+				updateResult = await response.json();
+			} else {
+				const body = await response.json().catch(() => ({}) as { message?: string });
+				updateError = body.message || 'Update check failed';
+			}
+		} catch {
+			updateError = 'Update check failed';
+		} finally {
+			isCheckingUpdates = false;
+		}
+	}
 </script>
 
 <svelte:head>
-	<title>{$t('app.system_settings.title')} - OpenArchiver</title>
+	<title>{$t('app.system_settings.title')} - PEA</title>
 </svelte:head>
 
 <div class="space-y-6">
@@ -73,7 +101,7 @@
 		<p class="text-muted-foreground">{$t('app.system_settings.description')}</p>
 	</div>
 
-	<form method="POST" action="?/save" class="space-y-8" onsubmit={() => (isSaving = true)}>
+	<form class="space-y-8" onsubmit={saveSettings}>
 		<Card.Root>
 			<Card.Content class="space-y-4">
 				<!-- Hide language setting for now -->
@@ -192,28 +220,21 @@
 				<p class="text-muted-foreground">{$t('app.system_settings.updates.prompt')}</p>
 			{/if}
 
-			{#if form?.updateError}
-				<p class="text-destructive">{form.updateError}</p>
+			{#if updateError}
+				<p class="text-destructive">{updateError}</p>
 			{/if}
 		</Card.Content>
 		<Card.Footer class="border-t px-6 py-4">
-			<form
-				method="POST"
-				action="?/checkUpdates"
-				use:enhance={() => {
-					isCheckingUpdates = true;
-					return async ({ update: applyResult }) => {
-						await applyResult({ reset: false });
-						isCheckingUpdates = false;
-					};
-				}}
+			<Button
+				type="button"
+				variant="outline"
+				disabled={isCheckingUpdates}
+				onclick={checkUpdates}
 			>
-				<Button type="submit" variant="outline" disabled={isCheckingUpdates}>
-					{isCheckingUpdates
-						? $t('app.system_settings.updates.checking')
-						: $t('app.system_settings.updates.check')}
-				</Button>
-			</form>
+				{isCheckingUpdates
+					? $t('app.system_settings.updates.checking')
+					: $t('app.system_settings.updates.check')}
+			</Button>
 		</Card.Footer>
 	</Card.Root>
 </div>

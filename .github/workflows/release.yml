@@ -49,10 +49,10 @@ jobs:
       - name: Install workspace
         run: pnpm install --frozen-lockfile
 
-      - name: Build web app + backend
-        run: pnpm build:oss
+      - name: Build web app
+        run: pnpm --filter @pea/types build && pnpm --filter @pea/frontend build
 
-      - name: Assemble desktop bundle (backend, node, postgres, meilisearch)
+      - name: Assemble desktop bundle (static frontend — the engine is compiled in)
         run: node scripts/build-desktop-bundle.mjs
 
       - name: Build and publish with Tauri
@@ -66,12 +66,12 @@ jobs:
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
-          releaseName: 'Open Archiver ${{ github.ref_name }}'
+          releaseName: 'PEA ${{ github.ref_name }}'
           releaseBody: |
             ### Install
             - **Linux (any distro):** download the `.AppImage`, `chmod +x`, run — or use `scripts/install-desktop.sh` for menu integration. `.deb`/`.rpm` also available.
             - **Arch:** `git clone` the repo and `makepkg -si` in `packaging/arch/` (or use the AppImage).
-            - **macOS:** open the `.dmg`. The app is unsigned: on first launch use System Settings → Privacy & Security → "Open Anyway" (or run `xattr -cr /Applications/OpenArchiver.app`).
+            - **macOS:** open the `.dmg`. The app is unsigned: on first launch use System Settings → Privacy & Security → "Open Anyway" (or run `xattr -cr /Applications/PEA.app`).
 
             Updates after install are one click: the app checks this repo's releases at launch.
           releaseDraft: true

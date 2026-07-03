@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api.client';
 	import { t } from '$lib/translations';
-	import type { RemoteContentPreview } from '@open-archiver/types';
+	import type { RemoteContentPreview } from '@pea/types';
 
 	let { emailId, refreshKey = 0 }: { emailId: string; refreshKey?: number } = $props();
 

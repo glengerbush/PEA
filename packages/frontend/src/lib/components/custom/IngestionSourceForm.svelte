@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SafeIngestionSource, CreateIngestionSourceDto } from '@open-archiver/types';
+	import type { SafeIngestionSource, CreateIngestionSourceDto } from '@pea/types';
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Checkbox } from '$lib/components/ui/checkbox';

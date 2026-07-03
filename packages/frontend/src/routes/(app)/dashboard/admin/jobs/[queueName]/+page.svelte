@@ -5,7 +5,7 @@
 	import * as Table from '$lib/components/ui/table';
 	import { Button } from '$lib/components/ui/button';
 	import { goto } from '$app/navigation';
-	import type { JobStatus } from '@open-archiver/types';
+	import type { JobStatus } from '@pea/types';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
@@ -52,7 +52,7 @@
 </script>
 
 <svelte:head>
-	<title>{queueLabel(queue.name)} - {$t('app.jobs.title')} - Open Archiver</title>
+	<title>{queueLabel(queue.name)} - {$t('app.jobs.title')} - PEA</title>
 </svelte:head>
 
 <div class="space-y-4">

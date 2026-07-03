@@ -1,106 +1,106 @@
-# Open Archiver(a fork)
+<p align="center">
+  <img src="packages/frontend/static/logos/logo-sq.svg" alt="PEA logo" width="200" />
+</p>
 
-[![Docker Compose](https://img.shields.io/badge/Docker%20Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![Meilisearch](https://img.shields.io/badge/Meilisearch-FF5A5F?style=for-the-badge&logo=meilisearch&logoColor=white)](https://www.meilisearch.com/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Redis](https://img.shields.io/badge/Redis-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
-[![SvelteKit](https://img.shields.io/badge/SvelteKit-FF3E00?style=for-the-badge&logo=svelte&logoColor=white)](https://svelte.dev/)
+# PEA (Personal Email Archive)
 
-**A secure, sovereign, and open-source platform for email archiving.**
+*A fork of [Open Archiver](https://github.com/LogicLabs-OU/OpenArchiver), reworked into a local-only desktop app.*
+
+**A lightweight, open-source platform for email archiving.**
 
 This fork focuses on a local only, on device archiver, in order to get emails out of bad email clients or off of email servers, into an app that can handle searching and organizing your emails, completely offline.
 
-The changes that support that goal:
+The changes in this fork that make it a personal archiver:
 
-- **Runs entirely on your machine.** No accounts and no login — you're the sole owner with full access. It stays on `127.0.0.1` and starts with one command.
-- **Import from files, not live mailboxes.** Bring your mail in once from `.mbox` or `.eml` files instead of connecting to email servers, keeping the original folder structure.
+- **Now a desktop app:** It runs locally, so no login. One desktop app, one process, zero services.
+- **Import from files, no syncing with live mailboxes.** Bring your mail in once from `.mbox` or `.eml` files instead of connecting to email servers, keeping the original folder structure.
 - **Your mailbox is the home screen.** Browse and search your whole archive in one place; the dashboard is still there, just not the center.
-- **Fast search and filtering.** Search by field, tag, source, or attachment, then sort and page through results — every view is a URL you can bookmark.
+- **Archives remote content:** It downloads and sanitizes remote content, allowing emails to render correctly without relying on external resources.
+- **Fast search and filtering.** Search as you type, by field, tag, source, or attachment, then sort and page through results, every view is a URL you can bookmark.
 - **Organize with tags.** Add or remove tags on any email and filter by them.
 - **Clean up duplicates.** Exact copies are grouped for one-click removal; near-duplicates are surfaced for review.
 - **Emails render correctly offline.** Remote images are saved at import time and shown in a safe preview, so archived mail looks right without going back online.
-- **Easier on the eyes:** Uses [Everforest](https://github.com/sainnhe/everforest)
+- **Easier on the eyes:** Uses the [Everforest](https://github.com/sainnhe/everforest) theme
 
+
+## Screenshots
+
+![Mailbox](assets/screenshots/screenshot-mailbox.png)
+_Mailbox as the home screen_
+
+![Duplicate cleanup](assets/screenshots/screenshot-duplicates.png)
+_Clean up exact and near-duplicate emails_
 
 ## Tech Stack
 
-Open Archiver is built on a modern, scalable, and maintainable technology stack:
+PEA is a single self-contained process:
 
-- **Frontend**: SvelteKit with Svelte 5
-- **Backend**: Node.js with Express.js & TypeScript
-- **Job Queue**: BullMQ on Redis for robust, asynchronous processing. (We use Valkey as the Redis service in the Docker Compose deployment mode, but you can use Redis as well.)
-- **Search Engine**: Meilisearch for blazingly fast and resource-efficient search
-- **Database**: PostgreSQL for email metadata and application state
-- **Deployment**: Docker Compose deployment
+- **Desktop shell + engine**: one Rust binary, Tauri v2 window, and the whole
+  engine (API, job queue, ingestion, search, crypto) compiled in via `crates/engine`.
+  The webview talks to it over an in-process `oa://` protocol
+- **Frontend**: SvelteKit with Svelte 5, built as a static SPA served by the engine
+- **Database**: SQLite (WAL mode), metadata, application state, **and** the job queue live in one `archive.db` file
+- **Search**: SQLite FTS5, weighted BM25 full-text search over subjects, bodies, senders, recipients, and attachment text, inside the same file
+- **Packaging**: GitHub Actions → AppImage / `.deb` / `.rpm` / macOS `.dmg`
 
-## Deployment
+### Why one binary? (0.6 → 0.7 → 0.8)
 
-### Prerequisites
+0.6 ran as six Node processes coordinating with PostgreSQL, Redis, and
+Meilisearch under Docker Compose. 0.7 collapsed all of it into a single Node
+process on SQLite. 0.8 rewrote that process in Rust and folded it into the
+window binary itself:
 
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/). Docker must already be installed and running before `npm run local:up`; Node does not install Docker for you. Check with `docker --version` and `docker compose version`.
-- A server or local machine with at least 4GB of RAM (2GB of RAM if you use external Postgres, Redis (Valkey) and Meilisearch instances).
-- Optional: Node.js 22 or newer for the `npm run local:up` one-liner. If Node is not installed, use the Docker-only one-liner below.
+|                              | 0.6 (Docker stack)                                                                 | 0.7 (Node desktop app)                | 0.8 (Rust)                                  |
+| ---------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------- | -------------------------------------------- |
+| **Processes**                | 6 Node processes + 3-4 service containers                                           | 2 (shell + Node engine)                | **1 binary**                                  |
+| **Services to run & update** | PostgreSQL, Redis (Valkey), Meilisearch, Tika (opt.)                                | none                                   | **none**                                      |
+| **Install footprint**        | ~1.2 GB of Docker images                                                            | 52 MB .deb/.rpm · 143 MB AppImage      | **8.6 MB** .deb/.rpm · 104 MB AppImage        |
+| **Engine memory**            | 4 GB machine recommended; Meilisearch alone measured 392 MB on a 100-email archive  | ~200 MB                                | **~10 MB** idle                               |
+| **Listening sockets**        | 4+ service ports                                                                    | 1 localhost port                       | **none** (in-process `oa://` protocol)        |
+| **Search index on disk**     | 12 MB for 100 emails (~25× text amplification as it grows)                          | 2 MB - inside archive.db (~1.5× text)  | 2 MB - inside archive.db (~1.5× text)         |
+| **Search facets**            | silently capped at 100 values                                                       | uncapped                               | uncapped                                      |
+| **Installing**               | clone repo → generate .env → docker compose up                                      | one command / one download             | one command / one download                    |
+| **Updating**                 | git pull → rebuild image → recreate container                                       | one click in-app (signed)              | **one click in-app** (signed)                 |
+| **Backing up**               | pg_dump + three named volumes                                                       | copy `archive.db` + `storage/`         | copy `archive.db` + `storage/`                |
+| **Requirements**             | Docker + Compose                                                                    | none (WebKitGTK 4.1 on Linux)          | none (WebKitGTK 4.1 on Linux)                 |
 
-### Installation
 
-1.  **Clone the repository:**
+## Installing
 
-    ```bash
-    git clone https://github.com/glengerbush/OpenArchiver.git
-    cd OpenArchiver
-    ```
+PEA ships as a self-contained desktop app. All data lives in one
+place. The archive index and full-text search in a single SQLite file
+(`archive.db`) next to your encrypted email storage, under
+`~/.local/share/pea` (macOS:
+`~/Library/Application Support/PEA`; an existing Open Archiver
+directory is renamed automatically on first launch). Updates are one click, from
+GitHub Releases. Backing up = copying that folder.
 
-2.  **Start the local app:**
-    This generates `.env` automatically if it is missing, then starts the local Docker stack.
-    Docker is the runtime; Node is only used as a small convenience wrapper for this command and does not install or run the app itself.
-
-    ```bash
-    npm run local:up
-    ```
-
-    If you do not have Node.js installed locally, use this Docker-only one-liner:
-
-    ```bash
-    docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work -w /work node:22-alpine node scripts/setup-local-env.mjs --if-missing && docker compose up -d
-    ```
-
-    The generated `.env` exists so local service passwords, JWT signing, and encryption keys stay stable across restarts. It is not meant to defend against someone who already controls your laptop. The stack still binds the web UI to your laptop only (`127.0.0.1`), enables personal mode, and keeps heavier optional services like Apache Tika disabled by default.
-
-    If the launcher says Docker was not found, Docker is not installed or the `docker` command is not available in this terminal. If it says Docker Compose is not available, install Docker Compose v2 or Docker Desktop. After installing Docker Desktop, open/start it before running `npm run local:up` again; the generated `.env` will be reused.
-
-    The containers run detached in the background, so you do not need to keep the terminal open after the command finishes. Stop them later with `npm run local:down` or `docker compose down`.
-
-    For broader attachment text extraction, use:
-
-    ```bash
-    npm run local:up:tika
-    ```
-
-    For reference, [.env.example](.env.example) lists the variables the local Docker install can use, including optional ones you normally won't need. You normally do not need to copy it manually.
-
-3.  **Access the application:**
-    Once the services are running, you can access the Open Archiver web interface by navigating to `http://127.0.0.1:3000` in your web browser.
-
-### Updating A Running Local Install
-
-The app image is built from your local source, so update by rebuilding. `update-local.sh` runs the whole update end to end:
-
-```bash
-./update-local.sh
-```
-
-It backs up the database to `backups/` as a safety net, pulls the latest code (`git pull --ff-only`), rebuilds the image, recreates the app container (schema migrations run automatically on start), and waits for the app to return healthy.
-
-Your data is safe regardless — recreating the container preserves the named Docker volumes that hold your database, search index, queue data, and archived files. To watch the app restart afterward, run:
-
-```bash
-docker compose logs -f open-archiver
-```
+- **Linux (any distro), one command:**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/glengerbush/PEA/main/scripts/install-desktop.sh | bash
+  ```
+  installs the AppImage with a launcher entry, no root needed. `.deb` and `.rpm`
+  packages are on the [releases page](https://github.com/glengerbush/PEA/releases);
+  Arch users can also `cd packaging/arch && makepkg -si`.
+- **macOS:** download the `.dmg` from the releases page. The app is unsigned:
+  on first launch use System Settings → Privacy & Security → "Open Anyway"
+  (or `xattr -cr /Applications/PEA.app`).
+- **Running from source** (contributors):
+  ```bash
+  pnpm install && pnpm --filter @pea/types build && pnpm --filter @pea/frontend build
+  cargo run -p pea-engine -- --data-dir ~/.local/share/pea --port 47200
+  ```
+  with `FRONTEND_BUILD_DIR=packages/frontend/build` set, that serves the full
+  app in a browser — or `cd apps/desktop && pnpm tauri dev` for the real
+  window. The engine also has a CLI importer
+  (`pea-engine import --data-dir D --mbox file.mbox`). Releases are cut per
+  [RELEASING.md](RELEASING.md).
 
 ## Importing Your Email
 
 This fork does not connect to live mailboxes or run continuous ingestion. Instead, you import your existing mail once from static files through the web interface. Two formats are supported:
 
-- **[Mbox import](docs/user-guides/email-providers/mbox.md)** — a single `.mbox` file, or a folder of them (nested directories are scanned recursively).
-- **[EML import](docs/user-guides/email-providers/eml.md)** — a zip archive of `.eml` files; the folder structure inside the zip is preserved.
+- **Mbox import:** one or more `.mbox` files, an Apple Mail `.mbox` package, or a folder of them (nested directories are scanned recursively). Upload the files, or point **Local Path** at them on disk, best for large archives, since files are read in place.
+- **EML import:** a zip archive of `.eml` files; the folder structure inside the zip is preserved.
+
+Folder structure is preserved from the mailbox layout and email headers where possible, and repeat imports of the same mailbox can be merged into one source. Full guide: [docs](docs/index.md).

@@ -1,11 +1,11 @@
-# @open-archiver/types
+# @pea/types
 
 This package contains shared TypeScript type definitions for the Open Archiver project.
 
 ## Installation
 
 ```bash
-npm install @open-archiver/types
+npm install @pea/types
 ```
 
 ## Usage
@@ -13,5 +13,5 @@ npm install @open-archiver/types
 Import the types you need in your TypeScript files:
 
 ```typescript
-import { User, Email } from '@open-archiver/types';
+import { User, Email } from '@pea/types';
 ```

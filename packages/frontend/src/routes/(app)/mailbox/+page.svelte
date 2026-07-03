@@ -32,7 +32,7 @@
 		SearchHit,
 		SortDirection,
 		UpdateArchivedEmailTagsResult,
-	} from '@open-archiver/types';
+	} from '@pea/types';
 
 	type SelectOption = {
 		value: string;
@@ -387,7 +387,7 @@
 </script>
 
 <svelte:head>
-	<title>{$t('app.archived_emails_page.title')} - OpenArchiver</title>
+	<title>{$t('app.archived_emails_page.title')} - PEA</title>
 </svelte:head>
 
 <div class="mb-4 flex flex-col gap-1">

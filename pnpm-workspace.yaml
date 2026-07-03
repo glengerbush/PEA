@@ -4,7 +4,6 @@ packages:
     - 'apps/*'
 
 # Dependencies allowed to run their build/postinstall scripts (pnpm >=10 blocks
-# all by default). better-sqlite3 compiles/downloads its native binding.
+# all by default). esbuild (via vite) downloads its platform binary.
 onlyBuiltDependencies:
     - esbuild
-    - better-sqlite3

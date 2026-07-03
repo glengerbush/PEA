@@ -1,19 +1,19 @@
-# Contributing to Open Archiver
+# Contributing to PEA
 
-First off, thank you for considering contributing to Open Archiver! It's people like you that make open source such a great community. We welcome any and all contributions.
+First off, thank you for considering contributing to PEA (Personal Email Archive)! It's people like you that make open source such a great community. We welcome any and all contributions.
 
 ## Where do I start?
 
 Not sure where to start? You can:
 
-- Look through the [open issues](https://github.com/LogicLabs-OU/OpenArchiver/issues) for bugs or feature requests.
+- Look through the [open issues](https://github.com/glengerbush/PEA/issues) for bugs or feature requests.
 - Check the issues labeled `good first issue` for tasks that are a good entry point into the codebase.
 
 ## How to Contribute
 
 ### Reporting Bugs
 
-If you find a bug, please ensure the bug was not already reported by searching on GitHub under [Issues](https://github.com/LogicLabs-OU/OpenArchiver/issues). If you're unable to find an open issue addressing the problem, open a new one. Be sure to include a **title and clear description**, as much relevant information as possible, and a **code sample** or an **executable test case** demonstrating the expected behavior that is not occurring.
+If you find a bug, please ensure the bug was not already reported by searching on GitHub under [Issues](https://github.com/glengerbush/PEA/issues). If you're unable to find an open issue addressing the problem, open a new one. Be sure to include a **title and clear description**, as much relevant information as possible, and a **code sample** or an **executable test case** demonstrating the expected behavior that is not occurring.
 
 ### Suggesting Enhancements
 
@@ -35,7 +35,7 @@ By submitting a pull request to this repository, you agree to the terms and cond
 
 ## Code of Conduct
 
-This project and everyone participating in it is governed by the [Open Archiver Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior.
+This project and everyone participating in it is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior.
 
 ## Styleguides
 

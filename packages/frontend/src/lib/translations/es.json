@@ -116,7 +116,7 @@
 			"save_failed_title": "Error al actualizar",
 			"updates": {
 				"title": "Actualizaciones de software",
-				"description": "Comprueba si hay una versión más reciente de OpenArchiver disponible en la rama seguida.",
+				"description": "Comprueba si hay una versión más reciente de PEA disponible en la rama seguida.",
 				"current_build": "Compilación actual",
 				"up_to_date": "Estás usando la última versión.",
 				"available": "Actualización disponible — {{count}} commit(s) por detrás.",
@@ -170,7 +170,7 @@
 				"apple_mail_folder_help": "Seleccione un paquete .mbox o una carpeta principal que contenga varios paquetes. Vuelva a seleccionar para añadir más carpetas.",
 				"mbox_messages_ready": "archivos de mensajes preparados",
 				"no_new_mbox_messages": "No se encontraron nuevos archivos .mbox o mensajes de Apple Mail en esa selección.",
-				"local_path_container_help": "Esta ruta debe existir dentro del contenedor de OpenArchiver, no solo en el equipo anfitrión.",
+				"local_path_container_help": "Esta ruta debe existir dentro del contenedor de PEA, no solo en el equipo anfitrión.",
 				"upload_failed": "Error al cargar, por favor intente de nuevo",
 				"upload_network_error": "El servidor no pudo procesar la carga. El archivo puede superar el límite de tamaño configurado (BODY_SIZE_LIMIT). Para archivos muy grandes, utilice la opción de ruta local.",
 				"merge_into": "Combinar con ingesta existente",
@@ -183,7 +183,7 @@
 		},
 		"setup": {
 			"title": "Configuración",
-			"description": "Configure la cuenta de administrador inicial para Open Archiver.",
+			"description": "Configure la cuenta de administrador inicial para PEA.",
 			"welcome": "Bienvenido",
 			"create_admin_account": "Cree la primera cuenta de administrador para comenzar.",
 			"first_name": "Nombre",
@@ -336,7 +336,7 @@
 		},
 		"license_page": {
 			"title": "Estado de la licencia Enterprise",
-			"meta_description": "Vea el estado actual de su licencia Open Archiver Enterprise.",
+			"meta_description": "Vea el estado actual de su licencia PEA Enterprise.",
 			"revoked_title": "Licencia no válida",
 			"revoked_message": "Su licencia ha sido revocada o el período de gracia por exceso de plazas ha expirado. Todas las funciones Enterprise están ahora deshabilitadas. Comuníquese con su gestor de cuenta para obtener asistencia.",
 			"seat_limit_exceeded_title": "Límite de plazas superado",

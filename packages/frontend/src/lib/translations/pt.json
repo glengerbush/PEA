@@ -87,7 +87,7 @@
 			"save_failed_title": "Falha ao atualizar",
 			"updates": {
 				"title": "Atualizações de software",
-				"description": "Verifique se está disponível uma versão mais recente do OpenArchiver no branch acompanhado.",
+				"description": "Verifique se está disponível uma versão mais recente do PEA no branch acompanhado.",
 				"current_build": "Compilação atual",
 				"up_to_date": "Está a usar a versão mais recente.",
 				"available": "Atualização disponível — {{count}} commit(s) atrás.",
@@ -114,7 +114,7 @@
 		},
 		"setup": {
 			"title": "Configuração",
-			"description": "Configure a conta de administrador inicial para o Open Archiver.",
+			"description": "Configure a conta de administrador inicial para o PEA.",
 			"welcome": "Bem-vindo",
 			"create_admin_account": "Crie a primeira conta de administrador para começar.",
 			"first_name": "Primeiro nome",

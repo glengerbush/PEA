@@ -116,7 +116,7 @@
 			"save_failed_title": "Échec de la mise à jour",
 			"updates": {
 				"title": "Mises à jour logicielles",
-				"description": "Vérifiez si une version plus récente d'OpenArchiver est disponible sur la branche suivie.",
+				"description": "Vérifiez si une version plus récente d'PEA est disponible sur la branche suivie.",
 				"current_build": "Version actuelle",
 				"up_to_date": "Vous utilisez la dernière version.",
 				"available": "Mise à jour disponible — {{count}} commit(s) de retard.",
@@ -170,7 +170,7 @@
 				"apple_mail_folder_help": "Sélectionnez un paquet .mbox ou un dossier parent contenant plusieurs paquets. Sélectionnez à nouveau pour ajouter d’autres dossiers.",
 				"mbox_messages_ready": "fichiers de messages prêts",
 				"no_new_mbox_messages": "Aucun nouveau fichier .mbox ou message Apple Mail n’a été trouvé dans cette sélection.",
-				"local_path_container_help": "Ce chemin doit exister dans le conteneur OpenArchiver, et pas seulement sur l’ordinateur hôte.",
+				"local_path_container_help": "Ce chemin doit exister dans le conteneur PEA, et pas seulement sur l’ordinateur hôte.",
 				"upload_failed": "Échec du téléversement, veuillez réessayer",
 				"upload_network_error": "Le serveur n'a pas pu traiter le téléversement. Le fichier dépasse peut-être la limite de taille configurée (BODY_SIZE_LIMIT). Pour les fichiers très volumineux, utilisez l'option Chemin local.",
 				"merge_into": "Fusionner avec une importation existante",
@@ -183,7 +183,7 @@
 		},
 		"setup": {
 			"title": "Configuration",
-			"description": "Configurez le compte administrateur initial pour Open Archiver.",
+			"description": "Configurez le compte administrateur initial pour PEA.",
 			"welcome": "Bienvenue",
 			"create_admin_account": "Créez le premier compte administrateur pour commencer.",
 			"first_name": "Prénom",
@@ -336,7 +336,7 @@
 		},
 		"license_page": {
 			"title": "Statut de la licence Enterprise",
-			"meta_description": "Consultez le statut actuel de votre licence Open Archiver Enterprise.",
+			"meta_description": "Consultez le statut actuel de votre licence PEA Enterprise.",
 			"revoked_title": "Licence non valide",
 			"revoked_message": "Votre licence a été révoquée ou votre période de grâce pour dépassement de sièges a expiré. Toutes les fonctionnalités Enterprise sont désormais désactivées. Veuillez contacter votre gestionnaire de compte pour obtenir de l'aide.",
 			"seat_limit_exceeded_title": "Limite de sièges dépassée",

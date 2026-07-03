@@ -116,7 +116,7 @@
 			"save_failed_title": "Update failed",
 			"updates": {
 				"title": "Software updates",
-				"description": "Check whether a newer version of OpenArchiver is available on the tracked branch.",
+				"description": "Check whether a newer version of PEA is available on the tracked branch.",
 				"current_build": "Current build",
 				"up_to_date": "You're running the latest version.",
 				"available": "Update available — {{count}} commit(s) behind.",
@@ -170,7 +170,7 @@
 				"apple_mail_folder_help": "Select a .mbox package or a parent folder containing several packages. Choose again to add more folders.",
 				"mbox_messages_ready": "message files ready",
 				"no_new_mbox_messages": "No new .mbox or Apple Mail message files were found in that selection.",
-				"local_path_container_help": "This path must exist inside the OpenArchiver container, not only on the host computer.",
+				"local_path_container_help": "This path must exist inside the computer PEA runs on.",
 				"upload_failed": "Upload Failed, please try again",
 				"upload_network_error": "The server could not process the upload. The file may exceed the configured upload size limit (BODY_SIZE_LIMIT). For very large files, use the Local Path option instead.",
 				"merge_into": "Merge into existing import",
@@ -183,7 +183,7 @@
 		},
 		"setup": {
 			"title": "Setup",
-			"description": "Set up the initial administrator account for Open Archiver.",
+			"description": "Set up the initial administrator account for PEA.",
 			"welcome": "Welcome",
 			"create_admin_account": "Create the first administrator account to get started.",
 			"first_name": "First name",
@@ -336,7 +336,7 @@
 		},
 		"license_page": {
 			"title": "Enterprise License Status",
-			"meta_description": "View the current status of your Open Archiver Enterprise license.",
+			"meta_description": "View the current status of your PEA Enterprise license.",
 			"revoked_title": "License Invalid",
 			"revoked_message": "Your license has been revoked or your seat overage grace period has expired. All enterprise features are now disabled. Please contact your account manager for assistance.",
 			"seat_limit_exceeded_title": "Seat Limit Exceeded",

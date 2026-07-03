@@ -1,18 +1,18 @@
 <script lang="ts">
-	import { enhance } from '$app/forms';
 	import { t } from '$lib/translations';
+	import { invalidateAll } from '$app/navigation';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
+	import { api } from '$lib/api.client';
 
-	let { data, form } = $props();
+	let { data } = $props();
 	let user = $derived(data.user);
 
 	let isProfileDialogOpen = $state(false);
-	let isPasswordDialogOpen = $state(false);
 	let isSubmitting = $state(false);
 
 	// Profile form state
@@ -20,27 +20,27 @@
 	let profileLastName = $state('');
 	let profileEmail = $state('');
 
-	// Password form state
-	let currentPassword = $state('');
-	let newPassword = $state('');
-	let confirmNewPassword = $state('');
+	function openProfileDialog() {
+		profileFirstName = user?.first_name || '';
+		profileLastName = user?.last_name || '';
+		profileEmail = user?.email || '';
+		isProfileDialogOpen = true;
+	}
 
-	// Preload profile form
-	$effect(() => {
-		if (user && isProfileDialogOpen) {
-			profileFirstName = user.first_name || '';
-			profileLastName = user.last_name || '';
-			profileEmail = user.email || '';
-		}
-	});
-
-	// Handle form actions result
-	$effect(() => {
-		if (form) {
-			isSubmitting = false;
-			if (form.success) {
+	async function updateProfile(event: SubmitEvent) {
+		event.preventDefault();
+		isSubmitting = true;
+		try {
+			const response = await api('/users/profile', {
+				method: 'PATCH',
+				body: JSON.stringify({
+					first_name: profileFirstName,
+					last_name: profileLastName,
+					email: profileEmail,
+				}),
+			});
+			if (response.ok) {
 				isProfileDialogOpen = false;
-				isPasswordDialogOpen = false;
 				setAlert({
 					type: 'success',
 					title: $t('app.account.operation_successful'),
@@ -48,32 +48,25 @@
 					duration: 3000,
 					show: true,
 				});
-			} else if (form.profileError || form.passwordError) {
+				await invalidateAll();
+			} else {
+				const body = await response.json().catch(() => ({}) as { message?: string });
 				setAlert({
 					type: 'error',
 					title: $t('app.search.error'),
-					message: form.message,
+					message: body.message || 'Failed to update profile',
 					duration: 3000,
 					show: true,
 				});
 			}
+		} finally {
+			isSubmitting = false;
 		}
-	});
-
-	function openProfileDialog() {
-		isProfileDialogOpen = true;
-	}
-
-	function openPasswordDialog() {
-		currentPassword = '';
-		newPassword = '';
-		confirmNewPassword = '';
-		isPasswordDialogOpen = true;
 	}
 </script>
 
 <svelte:head>
-	<title>{$t('app.account.title')} - OpenArchiver</title>
+	<title>{$t('app.account.title')} - PEA</title>
 </svelte:head>
 
 <div class="space-y-6">
@@ -105,26 +98,6 @@
 			>
 		</Card.Footer>
 	</Card.Root>
-
-	<!-- Security -->
-	<Card.Root>
-		<Card.Header>
-			<Card.Title>{$t('app.account.security')}</Card.Title>
-		</Card.Header>
-		<Card.Content>
-			<div class="flex items-center justify-between">
-				<div>
-					<Label class="text-muted-foreground">{$t('app.auth.password')}</Label>
-					<p class="text-sm">*************</p>
-				</div>
-			</div>
-		</Card.Content>
-		<Card.Footer>
-			<Button variant="outline" onclick={openPasswordDialog}
-				>{$t('app.account.change_password')}</Button
-			>
-		</Card.Footer>
-	</Card.Root>
 </div>
 
 <!-- Profile Edit Dialog -->
@@ -134,18 +107,7 @@
 			<Dialog.Title>{$t('app.account.edit_profile')}</Dialog.Title>
 			<Dialog.Description>{$t('app.account.edit_profile_desc')}</Dialog.Description>
 		</Dialog.Header>
-		<form
-			method="POST"
-			action="?/updateProfile"
-			use:enhance={() => {
-				isSubmitting = true;
-				return async ({ update }) => {
-					await update();
-					isSubmitting = false;
-				};
-			}}
-			class="grid gap-4 py-4"
-		>
+		<form onsubmit={updateProfile} class="grid gap-4 py-4">
 			<div class="grid grid-cols-4 items-center gap-4">
 				<Label for="first_name" class="text-right">{$t('app.setup.first_name')}</Label>
 				<Input
@@ -172,85 +134,6 @@
 					type="email"
 					bind:value={profileEmail}
 					class="col-span-3"
-				/>
-			</div>
-			<Dialog.Footer>
-				<Button type="submit" disabled={isSubmitting}>
-					{#if isSubmitting}
-						{$t('app.components.common.submitting')}
-					{:else}
-						{$t('app.components.common.save')}
-					{/if}
-				</Button>
-			</Dialog.Footer>
-		</form>
-	</Dialog.Content>
-</Dialog.Root>
-
-<!-- Change Password Dialog -->
-<Dialog.Root bind:open={isPasswordDialogOpen}>
-	<Dialog.Content class="sm:max-w-[425px]">
-		<Dialog.Header>
-			<Dialog.Title>{$t('app.account.change_password')}</Dialog.Title>
-			<Dialog.Description>{$t('app.account.change_password_desc')}</Dialog.Description>
-		</Dialog.Header>
-		<form
-			method="POST"
-			action="?/updatePassword"
-			use:enhance={({ cancel }) => {
-				if (newPassword !== confirmNewPassword) {
-					setAlert({
-						type: 'error',
-						title: $t('app.search.error'),
-						message: $t('app.account.passwords_do_not_match'),
-						duration: 3000,
-						show: true,
-					});
-					cancel();
-					return;
-				}
-				isSubmitting = true;
-				return async ({ update }) => {
-					await update();
-					isSubmitting = false;
-				};
-			}}
-			class="grid gap-4 py-4"
-		>
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="currentPassword" class="text-right"
-					>{$t('app.account.current_password')}</Label
-				>
-				<Input
-					id="currentPassword"
-					name="currentPassword"
-					type="password"
-					bind:value={currentPassword}
-					class="col-span-3"
-					required
-				/>
-			</div>
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="newPassword" class="text-right">{$t('app.account.new_password')}</Label>
-				<Input
-					id="newPassword"
-					name="newPassword"
-					type="password"
-					bind:value={newPassword}
-					class="col-span-3"
-					required
-				/>
-			</div>
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="confirmNewPassword" class="text-right"
-					>{$t('app.account.confirm_new_password')}</Label
-				>
-				<Input
-					id="confirmNewPassword"
-					type="password"
-					bind:value={confirmNewPassword}
-					class="col-span-3"
-					required
 				/>
 			</div>
 			<Dialog.Footer>

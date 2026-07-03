@@ -109,7 +109,7 @@
 {/snippet}
 
 <svelte:head>
-	<title>Remote content issues - OpenArchiver</title>
+	<title>Remote content issues - PEA</title>
 </svelte:head>
 
 <div class="space-y-4">

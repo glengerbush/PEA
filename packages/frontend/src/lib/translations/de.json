@@ -116,7 +116,7 @@
 			"save_failed_title": "Aktualisierung fehlgeschlagen",
 			"updates": {
 				"title": "Software-Updates",
-				"description": "Prüfen, ob eine neuere Version von OpenArchiver im verfolgten Branch verfügbar ist.",
+				"description": "Prüfen, ob eine neuere Version von PEA im verfolgten Branch verfügbar ist.",
 				"current_build": "Aktueller Build",
 				"up_to_date": "Sie verwenden die neueste Version.",
 				"available": "Update verfügbar — {{count}} Commit(s) zurück.",
@@ -170,7 +170,7 @@
 				"apple_mail_folder_help": "Wählen Sie ein .mbox-Paket oder einen übergeordneten Ordner mit mehreren Paketen. Wählen Sie erneut, um weitere Ordner hinzuzufügen.",
 				"mbox_messages_ready": "Nachrichtendateien bereit",
 				"no_new_mbox_messages": "In dieser Auswahl wurden keine neuen .mbox- oder Apple-Mail-Nachrichtendateien gefunden.",
-				"local_path_container_help": "Dieser Pfad muss im OpenArchiver-Container vorhanden sein, nicht nur auf dem Host-Computer.",
+				"local_path_container_help": "Dieser Pfad muss im PEA-Container vorhanden sein, nicht nur auf dem Host-Computer.",
 				"upload_failed": "Hochladen fehlgeschlagen, bitte versuchen Sie es erneut",
 				"upload_network_error": "Der Server konnte den Upload nicht verarbeiten. Die Datei überschreitet möglicherweise das konfigurierte Upload-Größenlimit (BODY_SIZE_LIMIT). Verwenden Sie für sehr große Dateien stattdessen die Option \"Lokaler Pfad\".",
 				"merge_into": "In bestehende Erfassung zusammenführen",
@@ -183,7 +183,7 @@
 		},
 		"setup": {
 			"title": "Einrichtung",
-			"description": "Richten Sie das anfängliche Administratorkonto für Open Archiver ein.",
+			"description": "Richten Sie das anfängliche Administratorkonto für PEA ein.",
 			"welcome": "Willkommen",
 			"create_admin_account": "Erstellen Sie das erste Administratorkonto, um loszulegen.",
 			"first_name": "Vorname",
@@ -336,7 +336,7 @@
 		},
 		"license_page": {
 			"title": "Enterprise-Lizenzstatus",
-			"meta_description": "Zeigen Sie den aktuellen Status Ihrer Open Archiver Enterprise-Lizenz an.",
+			"meta_description": "Zeigen Sie den aktuellen Status Ihrer PEA Enterprise-Lizenz an.",
 			"revoked_title": "Lizenz widerrufen",
 			"revoked_message": "Ihre Lizenz wurde vom Lizenzadministrator widerrufen. Enterprise-Funktionen werden deaktiviert {{grace_period}}. Bitte kontaktieren Sie Ihren Account Manager für Unterstützung.",
 			"seat_limit_exceeded_title": "Sitzplatzlimit überschritten",

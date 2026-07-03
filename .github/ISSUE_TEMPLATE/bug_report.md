@@ -24,7 +24,7 @@ If applicable, add screenshots to help explain your problem.
 
 **System:**
 
-- Open Archiver Version:
+- PEA Version:
 
 **Relevant logs:**
 Any relevant logs (Redact sensitive information)

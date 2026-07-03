@@ -87,7 +87,7 @@
 			"save_failed_title": "Bijwerken mislukt",
 			"updates": {
 				"title": "Software-updates",
-				"description": "Controleer of er een nieuwere versie van OpenArchiver beschikbaar is op de gevolgde branch.",
+				"description": "Controleer of er een nieuwere versie van PEA beschikbaar is op de gevolgde branch.",
 				"current_build": "Huidige build",
 				"up_to_date": "Je gebruikt de nieuwste versie.",
 				"available": "Update beschikbaar — {{count}} commit(s) achter.",
@@ -114,7 +114,7 @@
 		},
 		"setup": {
 			"title": "Installatie",
-			"description": "Stel het initiële beheerdersaccount in voor Open Archiver.",
+			"description": "Stel het initiële beheerdersaccount in voor PEA.",
 			"welcome": "Welkom",
 			"create_admin_account": "Maak het eerste beheerdersaccount aan om te beginnen.",
 			"first_name": "Voornaam",

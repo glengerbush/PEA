@@ -1,19 +1,43 @@
 import { loadTranslations } from '$lib/translations';
 import type { LayoutLoad } from './$types';
-import { browser } from '$app/environment';
-import type { SupportedLanguage } from '@open-archiver/types';
+import type { SupportedLanguage, SystemSettings, User } from '@pea/types';
+import { api } from '$lib/api.load';
+import { version } from '../../../../package.json';
 
-export const load: LayoutLoad = async ({ url, data }) => {
-	const { pathname } = url;
+// Static SPA: everything renders client-side against the local engine.
+export const ssr = false;
+export const prerender = false;
 
-	let initLocale: SupportedLanguage = 'en'; // Default fallback
+// Single-user desktop app: every request is the local user. The backend
+// resolves the real identity independently; this constant only feeds the UI.
+const LOCAL_USER = {
+	id: 'local',
+	email: 'local@localhost',
+	first_name: 'Local',
+	last_name: 'User',
+	createdAt: new Date(),
+} as Omit<User, 'passwordHash'>;
 
-	if (data && data.systemSettings?.language) {
-		initLocale = data.systemSettings.language;
+export const load: LayoutLoad = async (event) => {
+	let systemSettings: SystemSettings | null = null;
+	try {
+		const response = await api('/settings/system', event);
+		if (response.ok) {
+			systemSettings = await response.json();
+		}
+	} catch {
+		// Engine still booting — defaults keep the shell rendering.
 	}
-	await loadTranslations(initLocale, pathname);
+
+	const initLocale: SupportedLanguage = systemSettings?.language || 'en';
+	await loadTranslations(initLocale, event.url.pathname);
 
 	return {
-		...data,
+		user: LOCAL_USER,
+		enterpriseMode: false,
+		personalMode: true,
+		systemSettings,
+		currentVersion: version,
+		newVersionInfo: null,
 	};
 };

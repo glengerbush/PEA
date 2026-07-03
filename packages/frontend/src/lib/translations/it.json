@@ -102,7 +102,7 @@
 			"save_failed_title": "Aggiornamento non riuscito",
 			"updates": {
 				"title": "Aggiornamenti software",
-				"description": "Verifica se è disponibile una versione più recente di OpenArchiver sul branch monitorato.",
+				"description": "Verifica se è disponibile una versione più recente di PEA sul branch monitorato.",
 				"current_build": "Build attuale",
 				"up_to_date": "Stai usando l'ultima versione.",
 				"available": "Aggiornamento disponibile — {{count}} commit indietro.",
@@ -153,7 +153,7 @@
 				"apple_mail_folder_help": "Seleziona un pacchetto .mbox o una cartella principale contenente più pacchetti. Seleziona di nuovo per aggiungere altre cartelle.",
 				"mbox_messages_ready": "file di messaggi pronti",
 				"no_new_mbox_messages": "Nella selezione non sono stati trovati nuovi file .mbox o messaggi Apple Mail.",
-				"local_path_container_help": "Questo percorso deve esistere nel container OpenArchiver, non solo nel computer host.",
+				"local_path_container_help": "Questo percorso deve esistere nel container PEA, non solo nel computer host.",
 				"upload_failed": "Caricamento non riuscito, riprova",
 				"local_path": "Percorso locale (consigliato per file di grandi dimensioni)"
 			},
@@ -163,7 +163,7 @@
 		},
 		"setup": {
 			"title": "Configurazione",
-			"description": "Configura l'account amministratore iniziale per Open Archiver.",
+			"description": "Configura l'account amministratore iniziale per PEA.",
 			"welcome": "Benvenuto",
 			"create_admin_account": "Crea il primo account amministratore per iniziare.",
 			"first_name": "Nome",
@@ -259,7 +259,7 @@
 		},
 		"license_page": {
 			"title": "Stato della licenza Enterprise",
-			"meta_description": "Visualizza lo stato attuale della tua licenza Open Archiver Enterprise.",
+			"meta_description": "Visualizza lo stato attuale della tua licenza PEA Enterprise.",
 			"revoked_title": "Licenza revocata",
 			"revoked_message": "La tua licenza è stata revocata dall'amministratore della licenza. Le funzionalità Enterprise verranno disabilitate {{grace_period}}. Contatta il tuo account manager per assistenza.",
 			"revoked_grace_period": "il {{date}}",

@@ -38,7 +38,7 @@
 		RemoteContentPreview,
 		RemoteContentStatus,
 		UpdateArchivedEmailTagsResult,
-	} from '@open-archiver/types';
+	} from '@pea/types';
 	import PostalMime, { type Attachment as PostalAttachment } from 'postal-mime';
 	import { Paperclip } from 'lucide-svelte';
 
@@ -434,7 +434,7 @@
 </script>
 
 <svelte:head>
-	<title>{email?.subject} | {$t('app.archive.title')} - OpenArchiver</title>
+	<title>{email?.subject} | {$t('app.archive.title')} - PEA</title>
 </svelte:head>
 
 {#if email}

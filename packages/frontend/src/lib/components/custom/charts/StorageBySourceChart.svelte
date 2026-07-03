@@ -1,7 +1,7 @@
 <script lang="ts">
 	import * as Chart from '$lib/components/ui/chart/index.js';
 	import { PieChart } from 'layerchart';
-	import type { IngestionSourceStats } from '@open-archiver/types';
+	import type { IngestionSourceStats } from '@pea/types';
 	import type { ChartConfig } from '$lib/components/ui/chart';
 	import { formatBytes } from '$lib/utils';
 	import { t } from '$lib/translations';

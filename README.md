@@ -3,8 +3,7 @@
 </p>
 
 # PEA (Personal Email Archive)
-
-*A fork of [Open Archiver](https://github.com/LogicLabs-OU/OpenArchiver), reworked into a local-only desktop app.*
+A fork of [Open Archiver](https://github.com/LogicLabs-OU/OpenArchiver), reworked into a local-only desktop app.
 
 **A lightweight, open-source platform for email archiving.**
 
@@ -64,7 +63,6 @@ window binary itself:
 | **Backing up**               | pg_dump + three named volumes                                                       | copy `archive.db` + `storage/`         | copy `archive.db` + `storage/`                |
 | **Requirements**             | Docker + Compose                                                                    | none (WebKitGTK 4.1 on Linux)          | none (WebKitGTK 4.1 on Linux)                 |
 
-
 ## Installing
 
 PEA ships as a self-contained desktop app. All data lives in one
@@ -75,23 +73,43 @@ place. The archive index and full-text search in a single SQLite file
 directory is renamed automatically on first launch). Updates are one click, from
 GitHub Releases. Backing up = copying that folder.
 
-- **Linux (any distro), one command:**
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/glengerbush/PEA/main/scripts/install-desktop.sh | bash
-  ```
-  installs the AppImage with a launcher entry, no root needed. `.deb` and `.rpm`
-  packages are on the [releases page](https://github.com/glengerbush/PEA/releases);
-  Arch users can also `cd packaging/arch && makepkg -si`.
-- **macOS:** download the `.dmg` from the releases page. The app is unsigned:
+#### Linux:
+**Arch:** (Arch, Manjaro, EndeavourOS, Omarchy, …): build the native
+    package from this repo, it runs against your system WebKitGTK rather than
+    the AppImage's bundled copy:
+    ```bash
+    git clone https://github.com/glengerbush/PEA && cd PEA/packaging/arch && makepkg -si
+    ```
+    Update by re-running `makepkg -si` after a new release.
+    
+**Debian:** (Debian, Ubuntu, Mint, Pop!\_OS, …)
+Download the `.deb` from the [releases page](https://github.com/glengerbush/PEA/releases)
+    and `sudo apt install ./PEA_*_amd64.deb`.
+    
+**Fedora:** (Fedora, Nobara, openSUSE, …)
+Download the `.rpm` from the [releases page](https://github.com/glengerbush/PEA/releases) and
+    `sudo dnf install ./PEA-*.rpm` (openSUSE: `sudo zypper install ./PEA-*.rpm`).
+    
+**Anything else:** Get the AppImage in one command, no root:
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/glengerbush/PEA/main/scripts/install-desktop.sh | bash
+    ```
+    installs it into `~/.local/bin` with a launcher entry and self-updates
+    in-app. Note the AppImage bundles its own WebKitGTK; if it aborts with an
+    EGL error or opens a blank window, use your distro's native package above
+    instead.
+    
+#### **macOS:** 
+Download the `.dmg` from the releases page. The app is unsigned:
   on first launch use System Settings → Privacy & Security → "Open Anyway"
   (or `xattr -cr /Applications/PEA.app`).
-- **Running from source** (contributors):
+- **Running from source**:
   ```bash
   pnpm install && pnpm --filter @pea/types build && pnpm --filter @pea/frontend build
   cargo run -p pea-engine -- --data-dir ~/.local/share/pea --port 47200
   ```
   with `FRONTEND_BUILD_DIR=packages/frontend/build` set, that serves the full
-  app in a browser — or `cd apps/desktop && pnpm tauri dev` for the real
+  app in a browser, or `cd apps/desktop && pnpm tauri dev` for the real
   window. The engine also has a CLI importer
   (`pea-engine import --data-dir D --mbox file.mbox`). Releases are cut per
   [RELEASING.md](RELEASING.md).

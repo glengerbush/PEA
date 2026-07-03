@@ -12,27 +12,55 @@ full-text search in one SQLite file, next to your encrypted email storage.
 
 ## Installing
 
-**Linux** (any distro, one command, no root):
+### Linux
+
+Use the package for your distro base. The only runtime dependency is
+WebKitGTK 4.1, which the native packages take from your system.
+
+**Arch-based** (Arch, Manjaro, EndeavourOS, Omarchy, …) — build the native
+package from this repo; it runs against your system WebKitGTK rather than the
+AppImage's bundled copy:
+
+```bash
+git clone https://github.com/glengerbush/PEA && cd PEA/packaging/arch && makepkg -si
+```
+
+Update by re-running `makepkg -si` after a new release.
+
+**Debian/Ubuntu-based** (Debian, Ubuntu, Mint, Pop!\_OS, …) — download the
+`.deb` from the [releases page](https://github.com/glengerbush/PEA/releases):
+
+```bash
+sudo apt install ./PEA_*_amd64.deb
+```
+
+**Fedora/RHEL-based** (Fedora, Nobara, openSUSE, …) — download the `.rpm`
+from the [releases page](https://github.com/glengerbush/PEA/releases):
+
+```bash
+sudo dnf install ./PEA-*.rpm     # openSUSE: sudo zypper install ./PEA-*.rpm
+```
+
+**Anything else** — the AppImage, one command, no root:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/glengerbush/PEA/main/scripts/install-desktop.sh | bash
 ```
 
 This installs the AppImage into `~/.local/bin` with a launcher entry; it
-self-updates in place from then on. Alternatives from the
-[releases page](https://github.com/glengerbush/PEA/releases):
-`.deb` (`sudo apt install ./PEA_*.deb`), `.rpm`
-(`sudo dnf install ./PEA-*.rpm`), or on Arch clone the repo and
-`cd packaging/arch && makepkg -si`. The only runtime dependency is
-WebKitGTK 4.1; if you ever see a blank window on NVIDIA proprietary drivers,
-launch with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+self-updates in place from then on. The AppImage bundles its own WebKitGTK —
+if it aborts with an EGL error or opens a blank window, prefer your distro's
+native package above. On NVIDIA proprietary drivers, a blank window can also
+be worked around with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
-**macOS:** download the `.dmg` and drag to Applications. The build is
+### macOS
+
+Download the `.dmg` and drag to Applications. The build is
 unsigned, so the **first** launch needs System Settings → Privacy & Security →
 **Open Anyway** (or `xattr -cr /Applications/PEA.app`). Updates never
 re-trigger the prompt.
 
-**From source:**
+### From source
 
 ```bash
 pnpm install && pnpm build                            # types + frontend SPA

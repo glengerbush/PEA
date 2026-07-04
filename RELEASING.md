@@ -9,9 +9,8 @@ publish the draft release, everything else is automatic.**
  ───────────────           ─────────────────────────          ─────────────────────────
  bump version      tag     ubuntu-22.04: AppImage/.deb/.rpm   app checks latest.json
  commit + tag  ──push──▶   macos-latest: .dmg (arm64)     ┌─▶ at every launch
-                           macos-13:     .dmg (x64)       │   "Update available →
-                           sign updater artifacts         │    Update now" → restart
-                           draft release + latest.json    │
+                           sign updater artifacts         │   "Update available →
+                           draft release + latest.json    │    Update now" → restart
  publish the draft  ──────────────────────────────────────┘
 ```
 
@@ -60,8 +59,8 @@ publish the draft release, everything else is automatic.**
    > Is tagging required? Yes, the release workflow only runs on tags matching
    > `v*` (`.github/workflows/release.yml`). A plain push to main builds nothing.
 
-3. **Wait for CI** (~15–25 min). The workflow builds on three runners
-   (Ubuntu 22.04, macOS arm64, macOS Intel), compiles the self-contained
+3. **Wait for CI** (~15–25 min). The workflow builds on two runners
+   (Ubuntu 22.04, macOS arm64 / Apple Silicon), compiles the self-contained
    Rust binary (the whole engine is linked in; only the static frontend ships
    as a resource), signs
    the updater artifacts with the secret key, and attaches everything to a
@@ -72,8 +71,13 @@ publish the draft release, everything else is automatic.**
    | `PEA_X.Y.Z_amd64.AppImage` (+ `.sig`) | Linux portable app, self-updates in place |
    | `PEA_X.Y.Z_amd64.deb` | Debian/Ubuntu package (also the PKGBUILD source) |
    | `PEA-X.Y.Z-1.x86_64.rpm` | Fedora package |
-   | `PEA_X.Y.Z_{aarch64,x64}.dmg` + `.app.tar.gz` (+ `.sig`) | macOS installs and update payloads |
+   | `PEA_X.Y.Z_aarch64.dmg` + `.app.tar.gz` (+ `.sig`) | macOS (Apple Silicon) install and update payload |
    | `latest.json` | the update feed: version + per-platform URLs + signatures |
+
+   No Intel macOS build: GitHub's `macos-13` hosted runners have become
+   unreliable to schedule (a job can queue 24h with no runner ever allocated),
+   so that matrix entry was removed. Re-add it if Intel runner availability
+   improves, or self-host an Intel macOS runner.
 
 4. **Review and publish the draft.** This is deliberate: nothing reaches users
    until you click *Publish release*. The updater endpoint

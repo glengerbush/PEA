@@ -2,8 +2,12 @@ name: Release desktop builds
 
 # Push a tag like v0.7.0 and this builds + publishes:
 #   Linux:  .AppImage (self-updating), .deb, .rpm
-#   macOS:  .dmg for Apple Silicon + Intel (unsigned — see release notes)
+#   macOS:  .dmg for Apple Silicon (unsigned — see release notes)
 # plus signed updater artifacts and latest.json for the in-app updater.
+#
+# No Intel macOS build: GitHub's macos-13 (Intel) hosted runners have become
+# unreliable to schedule (jobs can queue for 24h with no runner allocated).
+# Re-add a `macos-13` matrix entry (bundles: dmg,app) if Intel support returns.
 #
 # Required repo secret: TAURI_SIGNING_PRIVATE_KEY (contents of the minisign
 # key generated with `pnpm tauri signer generate`; password empty).
@@ -24,8 +28,6 @@ jobs:
           - platform: ubuntu-22.04 # oldest glibc for AppImage compatibility
             bundles: deb,rpm,appimage
           - platform: macos-latest # Apple Silicon
-            bundles: dmg,app
-          - platform: macos-13 # Intel
             bundles: dmg,app
     runs-on: ${{ matrix.platform }}
     steps:
@@ -71,7 +73,7 @@ jobs:
             ### Install
             - **Linux (any distro):** download the `.AppImage`, `chmod +x`, run — or use `scripts/install-desktop.sh` for menu integration. `.deb`/`.rpm` also available.
             - **Arch:** `git clone` the repo and `makepkg -si` in `packaging/arch/` (or use the AppImage).
-            - **macOS:** open the `.dmg`. The app is unsigned: on first launch use System Settings → Privacy & Security → "Open Anyway" (or run `xattr -cr /Applications/PEA.app`).
+            - **macOS (Apple Silicon):** open the `.dmg`. The app is unsigned: on first launch use System Settings → Privacy & Security → "Open Anyway" (or run `xattr -cr /Applications/PEA.app`).
 
             Updates after install are one click: the app checks this repo's releases at launch.
           releaseDraft: true

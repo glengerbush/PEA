@@ -28,4 +28,11 @@ export interface SystemSettings {
 
 	/** Whether to display times in 12-hour (AM/PM) or 24-hour format. */
 	clockFormat: '12h' | '24h';
+
+	/**
+	 * When true, the desktop app checks for updates at launch and prompts before
+	 * installing. When false, updates are only checked when the user asks. Has no
+	 * effect on the standalone engine (which never self-updates).
+	 */
+	autoCheckUpdates: boolean;
 }

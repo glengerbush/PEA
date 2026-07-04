@@ -1,7 +1,6 @@
 //! Port of jobs/queue.ts — the in-process SQLite job queue: claim loop with
 //! per-queue concurrency, exponential backoff (1s·2^n, cap 5min), singleton
-//! suppression, boot recovery of interrupted jobs, retention sweep, and the
-//! croner-driven continuous-sync schedule.
+//! suppression, boot recovery of interrupted jobs, and the retention sweep.
 
 use crate::state::AppState;
 use rusqlite::Connection;
@@ -36,6 +35,15 @@ pub fn master_job_options(singleton_key: &str) -> SendOptions<'_> {
     SendOptions { retry_limit: 0, singleton_key: Some(singleton_key), start_after: None }
 }
 
+/// A one-shot job: run exactly once. File imports are single-mailbox and
+/// deterministic, so a failed process-mailbox won't recover on the queue's
+/// backoff — and retrying is actively broken, because the first failure is
+/// `is_last` and finalizes (deletes) the import session, so every retry then
+/// errors with "session not found". One shot → clean terminal 'error' state.
+pub fn no_retry() -> SendOptions<'static> {
+    SendOptions { retry_limit: 0, singleton_key: None, start_after: None }
+}
+
 /// sendJob — returns the job id, or None when singleton-suppressed.
 pub fn send_job(
     state: &AppState,
@@ -59,7 +67,7 @@ pub fn send_job(
         }
     }
     let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
+    if let Err(e) = conn.execute(
         "INSERT INTO jobs (id, queue, name, payload, max_attempts, run_at, singleton_key) \
          VALUES (?, ?, ?, ?, ?, ?, ?)",
         rusqlite::params![
@@ -71,8 +79,14 @@ pub fn send_job(
             options.start_after.unwrap_or_else(now_ms),
             options.singleton_key,
         ],
-    )
-    .ok()?;
+    ) {
+        // Enqueue failed (e.g. transient SQLITE_BUSY). Log rather than panic:
+        // send_job runs inside worker threads, and a panic there would unwind
+        // past the concurrency-slot release and permanently stall the queue.
+        // `None` means "not enqueued" here (callers ignore the return value).
+        eprintln!("[queue] failed to enqueue {queue}/{name}: {e}");
+        return None;
+    }
     state.queue_nudge.notify_one();
     Some(id)
 }
@@ -164,11 +178,18 @@ fn finish(conn: &Connection, job: &ClaimedJob, result: Result<(), String>) {
     }
 }
 
-/// Boot-time recovery: anything 'active' is a leftover from a crash — re-run.
+/// Boot-time recovery: an 'active' job is a leftover from a crash. Re-queue it
+/// only if it still has attempts left; a job that had already used its last
+/// attempt (e.g. a no_retry process-mailbox that crashed after committing) is
+/// marked 'failed' rather than re-run, which would double-count its work.
 pub fn recover_interrupted(conn: &Connection) {
     conn.execute(
-        "UPDATE jobs SET state = 'pending', run_at = ? WHERE state = 'active'",
-        [now_ms()],
+        "UPDATE jobs SET \
+           state = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END, \
+           run_at = ?, \
+           finished_at = CASE WHEN attempts >= max_attempts THEN ? ELSE finished_at END \
+         WHERE state = 'active'",
+        rusqlite::params![now_ms(), now_ms()],
     )
     .ok();
 }
@@ -207,7 +228,9 @@ pub async fn start_queue(state: AppState) {
         QUEUE_NAMES.iter().map(|q| (*q, AtomicI64::new(0))).collect(),
     );
 
-    // Retention sweep every 10 minutes.
+    // Retention + stale-session sweep every 10 minutes. (The Node engine's
+    // continuous-sync cron is gone: every provider is a one-time file import,
+    // so the minutely schedule only produced no-op or unprocessable jobs.)
     {
         let state = state.clone();
         tokio::spawn(async move {
@@ -216,33 +239,8 @@ pub async fn start_queue(state: AppState) {
                 interval.tick().await;
                 if let Ok(conn) = state.pool.get() {
                     retention_sweep(&conn);
+                    crate::sessions::clean_stale_sessions(&conn);
                 }
-            }
-        });
-    }
-
-    // Continuous-sync schedule (croner in Node; same pattern semantics).
-    {
-        let state = state.clone();
-        let pattern =
-            std::env::var("SYNC_FREQUENCY").unwrap_or_else(|_| "* * * * *".to_string());
-        tokio::spawn(async move {
-            let Ok(cron) = croner::Cron::new(&pattern).parse() else {
-                eprintln!("[queue] invalid SYNC_FREQUENCY pattern: {pattern}");
-                return;
-            };
-            loop {
-                let now = chrono::Utc::now();
-                let Ok(next) = cron.find_next_occurrence(&now, false) else { break };
-                let wait = (next - now).to_std().unwrap_or_default();
-                tokio::time::sleep(wait).await;
-                send_job(
-                    &state,
-                    "ingestion",
-                    "schedule-continuous-sync",
-                    &serde_json::json!({}),
-                    master_job_options("schedule-continuous-sync"),
-                );
             }
         });
     }
@@ -265,7 +263,13 @@ pub async fn start_queue(state: AppState) {
                 let state = state.clone();
                 let running = running.clone();
                 tokio::task::spawn_blocking(move || {
-                    let result = crate::processors::dispatch(&state, &job.queue, &job.name, &job.payload);
+                    // Catch a panicking job so it is marked failed (not left
+                    // 'active') AND the concurrency slot is ALWAYS released — a
+                    // panic escaping here would leak the slot and stall the queue.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        crate::processors::dispatch(&state, &job.queue, &job.name, &job.payload)
+                    }))
+                    .unwrap_or_else(|_| Err(format!("job {}/{} panicked", job.queue, job.name)));
                     let conn = state.pool.get().unwrap();
                     finish(&conn, &job, result);
                     running[job.queue.as_str()].fetch_sub(1, Ordering::SeqCst);

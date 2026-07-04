@@ -20,7 +20,7 @@ publish the draft release, everything else is automatic.**
 ## One-time setup (before the first release)
 
 1. **Add the updater signing key as a repo secret.** The private key lives at
-   `~/.tauri/openarchiver-updater.key` (no password). Add its *contents* as the
+   `~/.tauri/pea-updater.key` (no password). Add its *contents* as the
    GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`
    (repo → Settings → Secrets and variables → Actions).
 2. **Back that key up somewhere safe.** Every update is signed with it and the
@@ -50,8 +50,8 @@ publish the draft release, everything else is automatic.**
 2. **Commit, tag, push:**
 
    ```bash
-   git add -A && git commit -m "Release v0.8.0"
-   git tag v0.8.0
+   git add -A && git commit -m "Release v1.0.0"
+   git tag v1.0.0
    git push && git push --tags
    ```
 
@@ -116,7 +116,7 @@ losing that key permanently breaks auto-update for every existing install.
 
 ## Versioning conventions
 
-- Plain semver, `vMAJOR.MINOR.PATCH` tags (`v0.8.0`).
+- Plain semver, `vMAJOR.MINOR.PATCH` tags (`v1.0.0`).
 - The updater does a semver comparison, any higher published version
   triggers the prompt; there is no channel/beta mechanism configured.
 - Data-directory compatibility: migrations run automatically at app startup,

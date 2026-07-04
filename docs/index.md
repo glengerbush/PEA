@@ -7,7 +7,7 @@ One desktop app, one process, zero services. Import your mail once from
 `.mbox` or `.eml` files; everything lives on your machine in a single data
 directory (`~/.local/share/pea`, macOS: `~/Library/Application Support/PEA`;
 the archive index and
-full-text search in one SQLite file, next to your encrypted email storage.
+full-text search in one SQLite file, next to your email storage.
 **Backing up = copying that folder.**
 
 ## Installing
@@ -75,9 +75,9 @@ FRONTEND_BUILD_DIR=packages/frontend/build \
 Import once from static files via **Import Archive** in the app. Two formats:
 
 - **Mbox:** one or more `.mbox` files, an Apple Mail `.mbox` package, or a
-  folder of them (scanned recursively). Upload the files, or give a **Local
-  Path** on your machine (best for large archives; files are read in place,
-  nothing is uploaded).
+  folder of them (scanned recursively). Pick the file or folder on your
+  machine with the native picker; files are read in place, so this handles
+  very large archives without copying them.
 - **EML:** a zip archive of `.eml` files; the folder structure inside the
   zip is preserved.
 

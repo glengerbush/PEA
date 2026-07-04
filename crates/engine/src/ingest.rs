@@ -1,17 +1,19 @@
 //! Port of the Node ingestion pipeline: IngestionService.processEmail
-//! (dedupe, fingerprints, attachment stripping + dedup, encrypted storage,
+//! (dedupe, fingerprints, attachment stripping + dedup, blob storage,
 //! DB rows) and IndexingService/SearchService (FTS document build + insert).
-//! Connectors live in connectors.rs / eml.rs; job orchestration in
+//! Readers live in readers.rs / eml.rs; job orchestration in
 //! processors.rs. `import_mbox` drives the same queue pipeline from the CLI.
 //!
 //! Known divergences from Node (verified by scripts/golden-import.mjs):
-//!  - re-composed .eml bytes for emails whose attachments were stripped
-//!    (nodemailer vs mail-builder serialization; content is parse-equal)
+//!  - stored .eml bytes for emails with attachments: Node re-composed the
+//!    message; this engine "hollows" it instead (original bytes with each
+//!    attachment body removed and an X-PEA-Attachment marker added; the
+//!    /eml endpoint splices the blobs back for download)
 //!  - extracted text for pdf/docx/xlsx attachments (different extractors)
 
 use crate::state::AppState;
 use mail_parser::{Message, MessageParser, MimeHeaders};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -19,7 +21,7 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
+    crate::hex_encode(Sha256::digest(data))
 }
 
 fn now_ms() -> i64 {
@@ -46,9 +48,9 @@ fn normalize_source_path(path: &str) -> String {
 }
 
 fn normalize_duplicate_text(value: &str) -> String {
-    static TAGS: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]*>").unwrap());
-    static NON_ALNUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-z0-9]+").unwrap());
-    static WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+    static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
+    static NON_ALNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^a-z0-9]+").unwrap());
+    static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
     let v = TAGS.replace_all(value, " ").to_lowercase();
     let v = NON_ALNUM.replace_all(&v, " ");
     WS.replace_all(v.trim(), " ").into_owned()
@@ -62,7 +64,7 @@ fn duplicate_hash(value: &str) -> Option<String> {
     }
 }
 
-fn build_fuzzy_group_key(sender_email: &str, subject_hash: &Option<String>) -> Option<String> {
+fn build_likely_group_key(sender_email: &str, subject_hash: &Option<String>) -> Option<String> {
     let subject_hash = subject_hash.as_ref()?;
     if sender_email.is_empty() {
         return None;
@@ -75,7 +77,7 @@ fn build_fuzzy_group_key(sender_email: &str, subject_hash: &Option<String>) -> O
 }
 
 fn sanitize_filename(name: &str) -> String {
-    static SEP: Lazy<Regex> = Lazy::new(|| Regex::new(r"[\\/ ]+").unwrap());
+    static SEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\\/ ]+").unwrap());
     let base = name.trim().rsplit('/').next().unwrap_or("").to_string();
     let cleaned = SEP.replace_all(&base, "_").trim().to_string();
     if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
@@ -85,10 +87,27 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
+/// Makes a value safe to use as a single path segment. The Message-ID (which
+/// becomes the stored `.eml` filename) is copied verbatim from untrusted email
+/// headers and can legally contain `/`, so strip separators and control chars
+/// and neutralise `.`/`..` before it reaches the filesystem.
+fn sanitize_path_component(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        "_".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// IndexingService.sanitizeText — strips U+FFFD and control chars, trims.
-fn sanitize_text(text: &str) -> String {
-    static CTRL: Lazy<Regex> =
-        Lazy::new(|| Regex::new("[\u{0000}-\u{0008}\u{000B}\u{000C}\u{000E}-\u{001F}\u{007F}]").unwrap());
+pub(crate) fn sanitize_text(text: &str) -> String {
+    static CTRL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new("[\u{0000}-\u{0008}\u{000B}\u{000C}\u{000E}-\u{001F}\u{007F}]").unwrap());
     let v = text.replace('\u{FFFD}', "");
     CTRL.replace_all(&v, "").trim().to_string()
 }
@@ -106,6 +125,12 @@ pub struct AttachmentObj {
     pub filename: String,
     pub content_type: Option<String>,
     pub content: Vec<u8>,
+    /// Content-Description header, when the sender included one.
+    pub content_description: Option<String>,
+    /// creation-date / modification-date Content-Disposition parameters
+    /// (RFC 2183 file timestamps, kept as the sender's original strings).
+    pub creation_date: Option<String>,
+    pub modification_date: Option<String>,
 }
 
 pub struct EmailObj {
@@ -124,6 +149,9 @@ pub struct EmailObj {
     pub attachments: Vec<AttachmentObj>,
     pub received_at_ms: i64,
     pub path: String,
+    /// All folder/label tags for this message (e.g. every X-Gmail-Label). The
+    /// first is also `path`; the rest would otherwise be silently discarded.
+    pub labels: Vec<String>,
     pub raw: Vec<u8>,
 }
 
@@ -137,10 +165,11 @@ fn header_string(msg: &Message, name: &str) -> Option<String> {
 /// getThreadId — references[0] → in-reply-to → conversation-id → message-id.
 fn thread_id_for(msg: &Message) -> Option<String> {
     if let Some(refs) = header_string(msg, "references") {
-        if let Some(first) = refs.split(' ').next() {
-            let t = first.trim();
-            if !t.is_empty() {
-                return Some(t.to_string());
+        // split on any RFC5322 whitespace (incl. CRLF/tab folds), so a folded
+        // References header still yields just the root message-id.
+        if let Some(first) = refs.split_whitespace().next() {
+            if !first.is_empty() {
+                return Some(first.to_string());
             }
         }
     }
@@ -172,7 +201,7 @@ fn map_addresses(addr: Option<&mail_parser::Address>) -> Vec<EmailAddr> {
         .collect()
 }
 
-fn part_content_type(part: &mail_parser::MessagePart) -> Option<String> {
+pub(crate) fn part_content_type(part: &mail_parser::MessagePart) -> Option<String> {
     part.content_type().map(|ct| match ct.subtype() {
         Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
         None => ct.ctype().to_lowercase(),
@@ -185,15 +214,15 @@ fn part_content_type(part: &mail_parser::MessagePart) -> Option<String> {
 /// Whitespace details differ (no 80-col wrapping); consumers only need the
 /// token sequence (duplicate hashes normalize, FTS comparisons collapse ws).
 fn html_to_text(html: &str) -> String {
-    static SCRIPT: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?is)<script\b[^>]*>.*?</script\s*>").unwrap());
-    static STYLE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?is)<style\b[^>]*>.*?</style\s*>").unwrap());
-    static HEAD: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<head\b[^>]*>.*?</head\s*>").unwrap());
-    static COMMENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
-    static TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<(/?)([a-z][a-z0-9]*)([^>]*)>").unwrap());
-    static WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t\r\n]+").unwrap());
-    static BLANKS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unwrap());
+    static SCRIPT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<script\b[^>]*>.*?</script\s*>").unwrap());
+    static STYLE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<style\b[^>]*>.*?</style\s*>").unwrap());
+    static HEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<head\b[^>]*>.*?</head\s*>").unwrap());
+    static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
+    static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<(/?)([a-z][a-z0-9]*)([^>]*)>").unwrap());
+    static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t\r\n]+").unwrap());
+    static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
     static BLOCKS: [&str; 12] = [
         "p", "div", "table", "tr", "ul", "ol", "li", "blockquote", "pre", "section", "article",
         "header",
@@ -281,7 +310,7 @@ fn html_to_text(html: &str) -> String {
     push_text(&mut out, &s[cursor..], heading_depth > 0);
 
     // Tidy: strip spaces around newlines, cap blank runs, trim.
-    static SPACE_NL: Lazy<Regex> = Lazy::new(|| Regex::new(r" *\n *").unwrap());
+    static SPACE_NL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" *\n *").unwrap());
     let out = SPACE_NL.replace_all(&out, "\n");
     BLANKS.replace_all(&out, "\n\n").trim().to_string()
 }
@@ -322,8 +351,8 @@ pub(crate) fn mailparser_text_and_html(msg: &Message) -> (String, String) {
 
     let mut html = html_parts.join("<br/>\n");
     if !html.is_empty() {
-        static CID: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bcid:([^'"\s]{1,256})"#).unwrap());
-        static IMAGE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^image/\w+$").unwrap());
+        static CID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\bcid:([^'"\s]{1,256})"#).unwrap());
+        static IMAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^image/\w+$").unwrap());
         html = CID
             .replace_all(&html, |c: &regex::Captures| {
                 let cid = &c[1];
@@ -332,6 +361,11 @@ pub(crate) fn mailparser_text_and_html(msg: &Message) -> (String, String) {
                         .content_id()
                         .map(|p| p.trim_start_matches('<').trim_end_matches('>'));
                     if part_cid == Some(cid) {
+                        // Hollowed parts have no bytes here; leave the cid:
+                        // reference for the preview to resolve from storage.
+                        if part.contents().is_empty() {
+                            continue;
+                        }
                         if let Some(ct) = part_content_type(part) {
                             if IMAGE.is_match(&ct) {
                                 use base64::Engine as _;
@@ -364,7 +398,7 @@ pub(crate) fn mailparser_text_and_html(msg: &Message) -> (String, String) {
     (text, html)
 }
 
-/// MboxConnector.parseMessage — a clean RFC 5322 buffer to an EmailObj.
+/// Mbox reader: parse — a clean RFC 5322 buffer to an EmailObj.
 pub(crate) fn parse_message(eml: Vec<u8>, source_path: &str) -> Result<EmailObj, String> {
     let msg = MessageParser::default()
         .parse(&eml)
@@ -378,13 +412,23 @@ pub(crate) fn parse_message(eml: Vec<u8>, source_path: &str) -> Result<EmailObj,
 
     let attachments: Vec<AttachmentObj> = msg
         .attachments()
-        .map(|part| AttachmentObj {
-            filename: part
-                .attachment_name()
-                .map(String::from)
-                .unwrap_or_else(|| "untitled".into()),
-            content_type: part_content_type(part),
-            content: part.contents().to_vec(),
+        .map(|part| {
+            let disposition = part.content_disposition();
+            AttachmentObj {
+                filename: part
+                    .attachment_name()
+                    .map(String::from)
+                    .unwrap_or_else(|| "untitled".into()),
+                content_type: part_content_type(part),
+                content: part.contents().to_vec(),
+                content_description: part.content_description().map(String::from),
+                creation_date: disposition
+                    .and_then(|d| d.attribute("creation-date"))
+                    .map(String::from),
+                modification_date: disposition
+                    .and_then(|d| d.attribute("modification-date"))
+                    .map(String::from),
+            }
         })
         .collect();
 
@@ -403,11 +447,21 @@ pub(crate) fn parse_message(eml: Vec<u8>, source_path: &str) -> Result<EmailObj,
         });
     }
 
-    // Folder from client headers: X-Gmail-Labels (first label) → X-Folder → path.
+    // Folder from client headers: X-Gmail-Labels → X-Folder → source path.
+    // Gmail Takeout stores each message once with ALL its labels in one header,
+    // so the folder-tag-merge path (which only fires on re-ingest) never sees
+    // the others. Keep the first label as the folder/path but carry every label
+    // as a tag, or the message is findable only under its first label.
     let mut final_path = source_path.to_string();
-    if let Some(labels) = header_string(&msg, "x-gmail-labels") {
-        if let Some(first) = labels.split(',').next() {
-            final_path = first.to_string();
+    let mut labels: Vec<String> = Vec::new();
+    if let Some(raw_labels) = header_string(&msg, "x-gmail-labels") {
+        labels = raw_labels
+            .split(',')
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if let Some(first) = labels.first() {
+            final_path = first.clone();
         }
     } else if let Some(folder) = header_string(&msg, "x-folder") {
         final_path = folder;
@@ -432,6 +486,7 @@ pub(crate) fn parse_message(eml: Vec<u8>, source_path: &str) -> Result<EmailObj,
         attachments,
         received_at_ms,
         path: final_path,
+        labels,
         raw: eml,
     })
 }
@@ -440,140 +495,207 @@ pub(crate) fn parse_message(eml: Vec<u8>, source_path: &str) -> Result<EmailObj,
 // Mbox splitting (MboxSplitter + envelope/quoting cleanup)
 // ---------------------------------------------------------------------------
 
-// (mbox splitting/unescaping lives in connectors.rs now)
+// (mbox splitting/unescaping lives in readers.rs now)
 
 // ---------------------------------------------------------------------------
 // Attachment stripping (emlUtils.stripAttachmentsFromEml)
 // ---------------------------------------------------------------------------
 
-fn extract_cid_references(html: &str) -> std::collections::HashSet<String> {
-    static CID: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)\bcid:([^\s"'>]+)"#).unwrap());
+pub(crate) fn extract_cid_references(html: &str) -> std::collections::HashSet<String> {
+    // Exclude `)` too, so an unquoted CSS `url(cid:hero)` captures `hero`, not
+    // `hero)` — otherwise the part reads as unreferenced and renders twice.
+    static CID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcid:([^\s"'>)]+)"#).unwrap());
     CID.captures_iter(html)
-        .map(|m| m[1].to_lowercase())
+        // Normalize identically to the cid_map keys: strip angle brackets and
+        // lowercase, so `cid:<logo>` matches a `Content-ID: <logo>` part.
+        .map(|m| m[1].trim_start_matches('<').trim_end_matches('>').to_lowercase())
         .collect()
 }
 
-fn is_inline_attachment(
-    part: &mail_parser::MessagePart,
-    referenced_cids: &std::collections::HashSet<String>,
-) -> bool {
-    let cid = part.content_id().map(|c| c.trim_start_matches('<').trim_end_matches('>'));
-    let disposition = part
-        .content_disposition()
-        .map(|d| d.ctype().to_lowercase());
-    if let Some(cid) = cid {
-        // mailparser's `related` flag ≈ non-attachment disposition with a CID.
-        if disposition.as_deref() != Some("attachment") {
-            return true;
+/// Marker header added to hollowed attachment parts; its value is the
+/// sha-256 of the decoded part contents, which is also the blob-store key.
+pub(crate) const PEA_ATTACHMENT_MARKER: &str = "X-PEA-Attachment";
+
+/// The sha-256 blob key of a hollowed part, when this part was hollowed.
+/// Scans headers in REVERSE so a part that already carried a (foreign)
+/// X-PEA-Attachment header can't shadow the one hollowing appended last.
+pub(crate) fn part_pea_marker(part: &mail_parser::MessagePart) -> Option<String> {
+    part.headers.iter().rev().find_map(|header| {
+        if !header.name.as_str().eq_ignore_ascii_case(PEA_ATTACHMENT_MARKER) {
+            return None;
         }
-        if disposition.as_deref() == Some("inline") {
-            return true;
-        }
-        if referenced_cids.contains(&cid.to_lowercase()) {
-            return true;
-        }
-    }
-    false
+        header.value.as_text().map(|v| v.trim().to_string())
+    })
 }
 
-const HEADERS_HANDLED_BY_COMPOSER: [&str; 15] = [
-    "content-type",
-    "content-transfer-encoding",
-    "mime-version",
-    "from",
-    "to",
-    "cc",
-    "bcc",
-    "subject",
-    "message-id",
-    "date",
-    "in-reply-to",
-    "references",
-    "reply-to",
-    "sender",
-    // nodemailer also regenerates this structural header
-    "content-disposition",
-];
+/// Line-ending style of the header/body separator ending at `offset_body`.
+fn body_separator_eol(eml: &[u8], offset_body: usize) -> &'static [u8] {
+    if offset_body >= 2 && &eml[offset_body - 2..offset_body] == b"\r\n" {
+        b"\r\n"
+    } else {
+        b"\n"
+    }
+}
 
-/// Strips non-inline attachments by re-composing the message (mail-builder).
-/// Returns the original buffer when there is nothing to strip.
-fn strip_attachments_from_eml(eml: &[u8]) -> Vec<u8> {
+/// "Hollows" every attachment part: the original bytes are kept verbatim —
+/// headers, folding, boundaries, part order — except each attachment body is
+/// removed and an X-PEA-Attachment marker (the blob-store sha-256) is added
+/// to that part's headers. The bytes live once, decoded, in the attachment
+/// store; `rebuild_eml` splices them back for download.
+fn hollow_attachments_from_eml(eml: &[u8]) -> Vec<u8> {
     let Some(msg) = MessageParser::default().parse(eml) else {
         return eml.to_vec();
     };
     if msg.attachment_count() == 0 {
         return eml.to_vec();
     }
-    let html = if msg.html_body_count() > 0 {
-        msg.body_html(0).map(|c| c.to_string()).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let referenced = extract_cid_references(&html);
-    let strippable = msg
+
+    // (offset_header, offset_body, offset_end, content sha) per hollowable part.
+    let mut regions: Vec<(usize, usize, usize, String)> = msg
         .attachments()
-        .any(|p| !is_inline_attachment(p, &referenced));
-    if !strippable {
+        .filter_map(|part| {
+            let (header, body, end) = (part.offset_header, part.offset_body, part.offset_end);
+            if body == 0 || body > end || end > eml.len() || part.contents().is_empty() {
+                return None;
+            }
+            Some((header, body, end, sha256_hex(part.contents())))
+        })
+        .collect();
+    if regions.is_empty() {
         return eml.to_vec();
     }
+    regions.sort_by_key(|r| r.0);
 
-    let mut builder = mail_builder::MessageBuilder::new();
-    // Address headers passed through as raw strings (like addressToString).
-    for (header, name) in [
-        ("from", "From"),
-        ("to", "To"),
-        ("cc", "Cc"),
-        ("bcc", "Bcc"),
-        ("reply-to", "Reply-To"),
-        ("in-reply-to", "In-Reply-To"),
-        ("references", "References"),
-    ] {
-        if let Some(value) = msg.header_raw(header) {
-            builder = builder.header(name, mail_builder::headers::raw::Raw::new(value.trim().to_string()));
-        }
-    }
-    if let Some(subject) = msg.subject() {
-        builder = builder.subject(subject.to_string());
-    }
-    if let Some(mid) = msg.message_id() {
-        builder = builder.message_id(mid.to_string());
-    }
-    if let Some(date) = msg.date() {
-        builder = builder.date(date.to_timestamp());
-    }
-    // Additional headers not handled by the composer.
-    for header in msg.headers() {
-        let name = header.name().to_lowercase();
-        if HEADERS_HANDLED_BY_COMPOSER.contains(&name.as_str()) {
+    let mut out = Vec::with_capacity(eml.len() / 2);
+    let mut cursor = 0usize;
+    for (offset_header, offset_body, offset_end, hash) in regions {
+        // Skip parts nested inside an already-hollowed region (rfc822 parts).
+        if offset_header < cursor {
             continue;
         }
-        if let Some(value) = msg.header_raw(header.name()) {
-            builder = builder.header(
-                header.name().to_string(),
-                mail_builder::headers::raw::Raw::new(value.trim().to_string()),
-            );
-        }
+        let eol = body_separator_eol(eml, offset_body);
+        let blank_start = offset_body.saturating_sub(eol.len());
+        // Original part headers, then the marker, then the blank line. The
+        // body span excludes the CRLF preceding the next boundary, so an
+        // empty body needs nothing further.
+        out.extend_from_slice(&eml[cursor..blank_start]);
+        out.extend_from_slice(format!("{PEA_ATTACHMENT_MARKER}: {hash}").as_bytes());
+        out.extend_from_slice(eol);
+        out.extend_from_slice(eol);
+        cursor = offset_end;
     }
-    let text = if msg.text_body_count() > 0 {
-        msg.body_text(0).map(|c| c.to_string()).unwrap_or_default()
-    } else {
-        String::new()
+    out.extend_from_slice(&eml[cursor..]);
+    out
+}
+
+/// Wraps base64 output at the RFC 2045 76-character line length. No trailing
+/// line break — the part body span excludes the CRLF before the boundary.
+fn base64_wrapped(bytes: &[u8], eol: &[u8]) -> Vec<u8> {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let mut out = Vec::with_capacity(encoded.len() + encoded.len() / 76 * eol.len());
+    for (i, chunk) in encoded.as_bytes().chunks(76).enumerate() {
+        if i > 0 {
+            out.extend_from_slice(eol);
+        }
+        out.extend_from_slice(chunk);
+    }
+    out
+}
+
+/// Reconstructs a downloadable .eml from a hollowed one: each marker part
+/// gets its blob spliced back (re-encoded per the part's declared
+/// Content-Transfer-Encoding) and the marker header removed. Emails stored
+/// before hollowing existed have no markers and pass through unchanged.
+pub(crate) fn rebuild_eml(stored: &[u8], load_blob: &dyn Fn(&str) -> Option<Vec<u8>>) -> Vec<u8> {
+    let Some(msg) = MessageParser::default().parse(stored) else {
+        return stored.to_vec();
     };
-    if !text.is_empty() {
-        builder = builder.text_body(text);
+
+    struct Splice {
+        offset_header: usize,
+        offset_body: usize,
+        offset_end: usize,
+        hash: String,
+        encoding: Option<String>,
     }
-    if !html.is_empty() {
-        builder = builder.html_body(html.clone());
+    let mut splices: Vec<Splice> = msg
+        .attachments()
+        .filter_map(|part| {
+            let hash = part_pea_marker(part)?;
+            Some(Splice {
+                offset_header: part.offset_header,
+                offset_body: part.offset_body,
+                offset_end: part.offset_end,
+                hash,
+                encoding: part
+                    .content_transfer_encoding()
+                    .map(|e| e.trim().to_lowercase()),
+            })
+        })
+        .collect();
+    if splices.is_empty() {
+        return stored.to_vec();
     }
-    for part in msg.attachments() {
-        if is_inline_attachment(part, &referenced) {
-            let ctype = part_content_type(part).unwrap_or_else(|| "application/octet-stream".into());
-            // Every branch of is_inline_attachment requires a CID.
-            let cid = part.content_id().unwrap_or_default().to_string();
-            builder = builder.inline(ctype, cid, part.contents().to_vec());
+    splices.sort_by_key(|s| s.offset_header);
+
+    let mut out = Vec::with_capacity(stored.len());
+    let mut cursor = 0usize;
+    for splice in splices {
+        if splice.offset_header < cursor || splice.offset_end > stored.len() {
+            continue;
         }
+        let Some(bytes) = load_blob(&splice.hash) else {
+            continue; // blob missing: leave the hollowed part as stored
+        };
+        let eol = body_separator_eol(stored, splice.offset_body);
+
+        // mail-parser hands us DECODED bytes for both base64 and
+        // quoted-printable, so both must be re-encoded on the way out. We
+        // re-encode quoted-printable parts as base64 (universally decodable,
+        // no fragile QP encoder) and rewrite that part's CTE header to match.
+        let reencode_base64 = matches!(
+            splice.encoding.as_deref(),
+            Some("base64") | Some("quoted-printable")
+        );
+        let is_qp = splice.encoding.as_deref() == Some("quoted-printable");
+
+        // Copy the part headers, dropping the marker line and — for a QP part
+        // being rebased to base64 — rewriting its Content-Transfer-Encoding.
+        let header_block = &stored[splice.offset_header..splice.offset_body];
+        let marker_prefix = format!("{PEA_ATTACHMENT_MARKER}:").to_lowercase();
+        out.extend_from_slice(&stored[cursor..splice.offset_header]);
+        let mut line_start = 0usize;
+        while line_start < header_block.len() {
+            let line_end = header_block[line_start..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .map(|p| line_start + p + 1)
+                .unwrap_or(header_block.len());
+            let line = &header_block[line_start..line_end];
+            let lower = String::from_utf8_lossy(line).to_lowercase();
+            if lower.starts_with(&marker_prefix) {
+                // drop the hollowing marker
+            } else if is_qp && lower.starts_with("content-transfer-encoding:") {
+                out.extend_from_slice(b"Content-Transfer-Encoding: base64");
+                out.extend_from_slice(eol);
+            } else {
+                out.extend_from_slice(line);
+            }
+            line_start = line_end;
+        }
+
+        // Splice the body back, re-encoded to match the (possibly rewritten) CTE.
+        if reencode_base64 {
+            out.extend_from_slice(&base64_wrapped(&bytes, eol));
+        } else {
+            // 7bit/8bit/binary/none: the decoded bytes are the original body.
+            out.extend_from_slice(&bytes);
+        }
+        cursor = splice.offset_end;
     }
-    builder.write_to_vec().unwrap_or_else(|_| eml.to_vec())
+    out.extend_from_slice(&stored[cursor..]);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +707,13 @@ fn extract_text(buffer: &[u8], mime_type: &str) -> String {
         return String::new();
     }
     if mime_type == "application/pdf" {
-        return pdf_extract::extract_text_from_mem(buffer).unwrap_or_default();
+        // pdf_extract can PANIC (not just Err) on malformed/adversarial PDFs. A
+        // panic mid-import would abort the whole batch, so isolate it and fail
+        // closed (empty text) for this one attachment.
+        return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pdf_extract::extract_text_from_mem(buffer).unwrap_or_default()
+        }))
+        .unwrap_or_default();
     }
     if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
         return extract_docx_text(buffer).unwrap_or_default();
@@ -730,19 +858,52 @@ pub(crate) fn process_email(
             |r| r.get(0),
         )
         .ok();
-    if existing.is_some() {
+    if let Some(existing_id) = existing {
+        // A duplicate isn't dropped silently: it still contributes its mbox
+        // folder as a tag so the surviving email is findable under every
+        // folder it appeared in.
+        let folder_tag = normalize_source_path(&email.path);
+        if !folder_tag.is_empty() {
+            let current: Option<String> = conn
+                .query_row(
+                    "SELECT tags FROM archived_emails WHERE id = ?",
+                    [&existing_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let mut tags: Vec<String> = current
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            if !tags.contains(&folder_tag) {
+                tags.push(folder_tag);
+                conn.execute(
+                    "UPDATE archived_emails SET tags = ? WHERE id = ?",
+                    rusqlite::params![serde_json::to_string(&tags).unwrap(), existing_id],
+                )
+                .map_err(|e| e.to_string())?;
+                index_email(state, conn, &existing_id)?;
+            }
+        }
         return Ok(None);
     }
 
     let source_path = normalize_source_path(&email.path);
-    let source_labels: Vec<String> = Vec::new(); // mbox connector sets no tags
-    let mut email_tags = source_labels.clone();
-    if !source_path.is_empty() && !email_tags.contains(&source_path) {
+    let mut email_tags: Vec<String> = Vec::new();
+    if !source_path.is_empty() {
         email_tags.push(source_path.clone());
+    }
+    // Every folder/label (e.g. all X-Gmail-Labels) becomes a tag so the message
+    // is findable under each — not just the first, which is the source_path.
+    for label in &email.labels {
+        let tag = normalize_source_path(label);
+        if !tag.is_empty() && !email_tags.contains(&tag) {
+            email_tags.push(tag);
+        }
     }
     let sender_email = email.from.first().map(|a| a.address.clone()).unwrap_or_default();
     let duplicate_subject_hash = duplicate_hash(&normalize_duplicate_text(&email.subject));
-    let duplicate_fuzzy_group_key = build_fuzzy_group_key(&sender_email, &duplicate_subject_hash);
+    let duplicate_likely_group_key = build_likely_group_key(&sender_email, &duplicate_subject_hash);
     let body_or_html = if !email.body.is_empty() { &email.body } else { &email.html };
     let duplicate_body_hash = duplicate_hash(&normalize_duplicate_text(body_or_html));
     let mut recipient_addresses: Vec<String> = email
@@ -765,16 +926,23 @@ pub(crate) fn process_email(
     } else {
         format!("{source_path}/")
     };
-    // Storage and DB ownership always go to the merge-group root.
+    // Storage and DB ownership always go to the merge-group root. email.id is
+    // the untrusted Message-ID (see sanitize_path_component). effective.id only
+    // disambiguates the SOURCE directory, not two emails within it, so a 7-char
+    // uuid prefix on the filename keeps it unique even when two distinct
+    // Message-IDs sanitise to the same string (e.g. `<a/b@h>` and `<a_b@h>`) —
+    // otherwise the second email's .eml would silently overwrite the first's.
+    let email_uniq = &uuid()[..7];
     let email_path = format!(
-        "open-archiver/{}-{}/emails/{}{}.eml",
+        "pea/{}-{}/emails/{}{}-{}.eml",
         effective.name.replace(' ', "-"),
         effective.id,
         storage_path_segment,
-        email.id
+        email_uniq,
+        sanitize_path_component(&email.id)
     );
 
-    let eml_buffer = strip_attachments_from_eml(&email.raw);
+    let eml_buffer = hollow_attachments_from_eml(&email.raw);
     let email_hash = sha256_hex(&eml_buffer);
     state.storage_put(&email_path, &eml_buffer)?;
 
@@ -797,10 +965,10 @@ pub(crate) fn process_email(
             "INSERT INTO archived_emails (id, ingestion_source_id, user_email, thread_id, \
              message_id_header, provider_message_id, sent_at, subject, sender_name, sender_email, \
              recipients, storage_path, storage_hash_sha256, size_bytes, has_attachments, \
-             source_path, source_labels, duplicate_subject_hash, duplicate_fuzzy_group_key, \
+             source_path, duplicate_subject_hash, duplicate_likely_group_key, \
              duplicate_body_hash, duplicate_recipient_fingerprint, duplicate_attachment_fingerprint, \
-             path, tags) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             tags) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rusqlite::params![
                 archived_id,
                 effective.id,
@@ -818,13 +986,11 @@ pub(crate) fn process_email(
                 eml_buffer.len() as i64,
                 !email.attachments.is_empty(),
                 source_path,
-                serde_json::to_string(&source_labels).unwrap(),
                 duplicate_subject_hash,
-                duplicate_fuzzy_group_key,
+                duplicate_likely_group_key,
                 duplicate_body_hash,
                 duplicate_recipient_fingerprint,
                 Option::<String>::None,
-                source_path,
                 serde_json::to_string(&email_tags).unwrap(),
             ],
         )
@@ -847,19 +1013,27 @@ pub(crate) fn process_email(
                 None => {
                     let unique = &uuid()[..7];
                     let storage_path = format!(
-                        "open-archiver/{}-{}/attachments/{}-{}",
+                        "pea/{}-{}/attachments/{}-{}",
                         effective.name.replace(' ', "-"),
                         effective.id,
                         unique,
                         sanitize_filename(&attachment.filename)
                     );
                     state.storage_put(&storage_path, &attachment.content)?;
+                    // Extract searchable text once here (parsing PDFs/xlsx is
+                    // costly) and cache it so re-indexing never re-parses.
+                    let extracted = extract_text(
+                        &attachment.content,
+                        attachment.content_type.as_deref().unwrap_or(""),
+                    );
                     let id = uuid();
                     conn
                         .execute(
                             "INSERT INTO attachments (id, filename, mime_type, size_bytes, \
-                             content_hash_sha256, storage_path, ingestion_source_id) \
-                             VALUES (?, ?, ?, ?, ?, ?, ?)",
+                             content_hash_sha256, storage_path, ingestion_source_id, \
+                             content_description, original_created_at, original_modified_at, \
+                             extracted_text) \
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             rusqlite::params![
                                 id,
                                 attachment.filename,
@@ -868,6 +1042,10 @@ pub(crate) fn process_email(
                                 attachment_hash,
                                 storage_path,
                                 effective.id,
+                                attachment.content_description,
+                                attachment.creation_date,
+                                attachment.modification_date,
+                                extracted,
                             ],
                         )
                         .map_err(|e| e.to_string())?;
@@ -904,15 +1082,13 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
         storage_path: String,
         user_email: String,
         source_path: Option<String>,
-        path: Option<String>,
-        source_labels: Option<String>,
         tags: Option<String>,
         has_attachments: bool,
     }
     let row = conn
         .query_row(
             "SELECT subject, sender_email, sender_name, recipients, storage_path, user_email, \
-             source_path, path, source_labels, tags, has_attachments \
+             source_path, tags, has_attachments \
              FROM archived_emails WHERE id = ?",
             [email_id],
             |r| {
@@ -924,10 +1100,8 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
                     storage_path: r.get(4)?,
                     user_email: r.get(5)?,
                     source_path: r.get(6)?,
-                    path: r.get(7)?,
-                    source_labels: r.get(8)?,
-                    tags: r.get(9)?,
-                    has_attachments: r.get::<_, i64>(10)? != 0,
+                    tags: r.get(7)?,
+                    has_attachments: r.get::<_, i64>(8)? != 0,
                 })
             },
         )
@@ -938,32 +1112,40 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
     let body = match MessageParser::default().parse(&raw) {
         Some(msg) => {
             let (text, html) = mailparser_text_and_html(&msg);
+            // A parseable email with no text/html part (e.g. attachments only)
+            // has no indexable body — do NOT dump the raw MIME, or the hollowing
+            // X-PEA-Attachment markers and boundaries leak into the FTS index.
             if !text.is_empty() {
                 text
-            } else if !html.is_empty() {
-                html
             } else {
-                extract_text(&raw, "text/plain")
+                html
             }
         }
+        // Not a parseable message: fall back to treating the file as text.
         None => extract_text(&raw, "text/plain"),
     };
 
-    // Attachment contents from storage.
+    // Attachment text, from the cached extracted_text column (populated once at
+    // ingest); only re-parse the blob when the cache is NULL (legacy rows).
     let mut attachment_texts: Vec<(String, String)> = Vec::new();
     if row.has_attachments {
         let mut stmt = conn
             .prepare(
-                "SELECT a.filename, a.mime_type, a.storage_path FROM email_attachments ea \
+                "SELECT a.filename, a.mime_type, a.storage_path, a.extracted_text \
+                 FROM email_attachments ea \
                  INNER JOIN attachments a ON ea.attachment_id = a.id WHERE ea.email_id = ?",
             )
             .map_err(|e| e.to_string())?;
-        let atts: Vec<(String, Option<String>, String)> = stmt
-            .query_map([email_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        let atts: Vec<(String, Option<String>, String, Option<String>)> = stmt
+            .query_map([email_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
             .collect();
-        for (filename, mime, storage_path) in atts {
+        for (filename, mime, storage_path, cached) in atts {
+            if let Some(text) = cached {
+                attachment_texts.push((filename, text));
+                continue;
+            }
             if let Ok(content) = state.storage_get(&storage_path) {
                 let text = extract_text(&content, mime.as_deref().unwrap_or(""));
                 attachment_texts.push((filename, text));
@@ -993,11 +1175,6 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
     for key in ["to", "cc", "bcc"] {
         all_recipients.extend(addresses(key).into_iter().map(|a| sanitize_text(&a)));
     }
-    let labels: Vec<String> = row
-        .source_labels
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
     let tags: Vec<String> = row
         .tags
         .as_deref()
@@ -1019,14 +1196,8 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
         .map(|(f, c)| format!("{}\n{}", sanitize_text(f), sanitize_text(c)))
         .collect::<Vec<_>>()
         .join("\n");
-    let source_path_value = row
-        .source_path
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or(row.path.clone())
-        .unwrap_or_default();
+    let source_path_value = row.source_path.clone().unwrap_or_default();
     let mut meta_parts: Vec<String> = vec![sanitize_text(&row.user_email), sanitize_text(&source_path_value)];
-    meta_parts.extend(labels.iter().map(|l| sanitize_text(l)));
     meta_parts.extend(tags.iter().map(|t| sanitize_text(t)));
     let meta = meta_parts.join(" ");
 
@@ -1053,4 +1224,324 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
         )
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_source_path_cleans_segments() {
+        assert_eq!(normalize_source_path("/a/./b/../c/"), "a/b/c");
+        assert_eq!(normalize_source_path("A\\B"), "A/B");
+        assert_eq!(normalize_source_path(""), "");
+    }
+
+    #[test]
+    fn normalize_duplicate_text_strips_markup_and_case() {
+        assert_eq!(normalize_duplicate_text("<b>Hello,  World!</b>"), "hello world");
+        assert_eq!(normalize_duplicate_text("A---B"), "a b");
+    }
+
+    #[test]
+    fn duplicate_hash_and_likely_key() {
+        assert!(duplicate_hash("").is_none());
+        assert_eq!(duplicate_hash("x"), duplicate_hash("x"));
+        assert!(duplicate_hash("x") != duplicate_hash("y"));
+        let h = duplicate_hash("subj");
+        assert!(build_likely_group_key("", &h).is_none()); // no sender
+        assert!(build_likely_group_key("a@x.com", &None).is_none()); // no subject
+        assert!(build_likely_group_key("a@x.com", &h).is_some());
+    }
+
+    #[test]
+    fn sanitize_filename_and_path_component() {
+        assert_eq!(sanitize_filename("../../evil name.sh"), "evil_name.sh");
+        assert_eq!(sanitize_filename(""), "file");
+        assert_eq!(sanitize_path_component("a/b\\c"), "a_b_c");
+        assert_eq!(sanitize_path_component(".."), "_");
+        assert_eq!(sanitize_path_component("<id@host>"), "<id@host>");
+    }
+
+    #[test]
+    fn sanitize_text_strips_control_and_replacement() {
+        assert_eq!(sanitize_text("a\u{FFFD}b\u{0007}c "), "abc");
+    }
+
+    #[test]
+    fn extract_cid_references_normalizes() {
+        // case-folded, angle-brackets stripped, and deduped
+        let refs = extract_cid_references(r#"<img src="cid:Logo"><img src='cid:<logo>'> url(cid:Hero)"#);
+        assert!(refs.contains("logo"));
+        assert!(refs.contains("hero"));
+        assert_eq!(refs.len(), 2);
+    }
+
+    #[test]
+    fn message_id_cannot_traverse_the_storage_path() {
+        // A hostile Message-ID with path separators must collapse to a single
+        // safe filename segment (no `..`, no `/`).
+        let hostile = "<x/../../../../home/victim/.config/PWNED>";
+        let safe = sanitize_path_component(hostile);
+        assert!(!safe.contains('/'), "no separators survive: {safe}");
+        assert!(!safe.contains('\\'));
+        assert_ne!(safe, "..");
+        // And the storage guard rejects a path built from a separator-bearing id.
+        let root = std::path::Path::new("/data/storage");
+        assert!(crate::state::resolve_within(root, "pea/n-id/emails/../../etc/x").is_err());
+        assert!(crate::state::resolve_within(root, &format!("pea/n-id/emails/{safe}.eml")).is_ok());
+    }
+
+    /// Apple-Mail-style photo email: multipart/mixed with a text part, an
+    /// inline (no CID) jpeg, and a trailing text part.
+    fn apple_photo_eml() -> Vec<u8> {
+        concat!(
+            "From: a@example.com\r\n",
+            "To: b@example.com\r\n",
+            "Subject: photo\r\n",
+            "Message-ID: <photo-1@example.com>\r\n",
+            "Date: Wed, 3 Jun 2015 02:31:00 +0000\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=BOUND\r\n",
+            "\r\n",
+            "--BOUND\r\n",
+            "Content-Type: text/plain; charset=us-ascii\r\n",
+            "\r\n",
+            "Look at this!\r\n",
+            "--BOUND\r\n",
+            "Content-Type: image/jpeg; name=IMG_1.JPG\r\n",
+            "Content-Disposition: inline; filename=IMG_1.JPG\r\n",
+            "Content-Transfer-Encoding: base64\r\n",
+            "\r\n",
+            "ZmFrZSBqcGVnIGJ5dGVz\r\n",
+            "--BOUND\r\n",
+            "Content-Type: text/plain; charset=us-ascii\r\n",
+            "\r\n",
+            "Sent from my iPhone\r\n",
+            "--BOUND--\r\n",
+        )
+        .as_bytes()
+        .to_vec()
+    }
+
+    #[test]
+    fn hollowing_removes_bodies_and_keeps_headers_verbatim() {
+        let eml = apple_photo_eml();
+        let stored = hollow_attachments_from_eml(&eml);
+
+        let text = String::from_utf8(stored.clone()).unwrap();
+        assert!(!text.contains("ZmFrZSBqcGVnIGJ5dGVz"), "jpeg bytes removed");
+        assert!(text.contains("X-PEA-Attachment: "), "marker added");
+        // Everything before the photo part is the original bytes, untouched.
+        let original = String::from_utf8(eml.clone()).unwrap();
+        let prefix = original.split("Content-Transfer-Encoding").next().unwrap();
+        assert!(text.starts_with(prefix), "prefix bytes identical");
+
+        let msg = MessageParser::default().parse(&stored).unwrap();
+        let body = mailparser_text_and_html(&msg).0;
+        assert!(body.contains("Look at this!"), "first text part kept");
+        assert!(body.contains("Sent from my iPhone"), "second text part kept");
+        let photo = msg
+            .attachments()
+            .find(|p| part_content_type(p).as_deref() == Some("image/jpeg"))
+            .expect("photo part still present");
+        assert!(photo.contents().is_empty(), "photo body hollowed");
+        assert!(part_pea_marker(photo).is_some(), "marker readable");
+        assert_eq!(
+            photo.attachment_name(),
+            Some("IMG_1.JPG"),
+            "original part headers intact"
+        );
+    }
+
+    #[test]
+    fn rebuild_restores_original_bytes() {
+        let eml = apple_photo_eml();
+        let stored = hollow_attachments_from_eml(&eml);
+        assert_ne!(stored, eml);
+
+        // The blob store holds the decoded part contents, keyed by sha-256.
+        let original = MessageParser::default().parse(&eml).unwrap();
+        let photo = original.attachments().next().unwrap();
+        let decoded = photo.contents().to_vec();
+        let hash = sha256_hex(&decoded);
+
+        let rebuilt = rebuild_eml(&stored, &|requested| {
+            (requested == hash).then(|| decoded.clone())
+        });
+        assert_eq!(
+            String::from_utf8(rebuilt).unwrap(),
+            String::from_utf8(eml).unwrap(),
+            "hollow + rebuild round-trips to the original bytes"
+        );
+    }
+
+    #[test]
+    fn rebuild_passes_unhollowed_emails_through() {
+        let eml = apple_photo_eml();
+        let rebuilt = rebuild_eml(&eml, &|_| None);
+        assert_eq!(rebuilt, eml, "no markers: bytes unchanged");
+    }
+
+    #[test]
+    fn rebuild_reencodes_quoted_printable_attachment() {
+        let eml = concat!(
+            "From: a@example.com\r\n",
+            "Subject: qp\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=B\r\n",
+            "\r\n",
+            "--B\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "hello\r\n",
+            "--B\r\n",
+            "Content-Type: text/csv; name=d.csv\r\n",
+            "Content-Disposition: attachment; filename=d.csv\r\n",
+            "Content-Transfer-Encoding: quoted-printable\r\n",
+            "\r\n",
+            "a=3Db,c=3Dd\r\n",
+            "--B--\r\n",
+        )
+        .as_bytes()
+        .to_vec();
+
+        // mail-parser stores the DECODED attachment body.
+        let decoded = MessageParser::default()
+            .parse(&eml)
+            .unwrap()
+            .attachments()
+            .next()
+            .unwrap()
+            .contents()
+            .to_vec();
+        assert_eq!(decoded, b"a=b,c=d", "QP decoded content");
+        let hash = sha256_hex(&decoded);
+
+        let stored = hollow_attachments_from_eml(&eml);
+        let rebuilt = rebuild_eml(&stored, &|h| (h == hash).then(|| decoded.clone()));
+        let text = String::from_utf8_lossy(&rebuilt);
+        assert!(text.contains("Content-Transfer-Encoding: base64"), "CTE rebased to base64");
+
+        // The rebuilt attachment must decode back to the original bytes.
+        let att = MessageParser::default().parse(&rebuilt).unwrap();
+        assert_eq!(
+            att.attachments().next().unwrap().contents(),
+            b"a=b,c=d",
+            "attachment decodes correctly after rebuild (not re-QP-mangled)"
+        );
+    }
+
+    #[test]
+    fn rebuild_ignores_a_foreign_pea_marker_header() {
+        let eml = concat!(
+            "From: a@example.com\r\nSubject: x\r\nMIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=B\r\n\r\n",
+            "--B\r\nContent-Type: text/plain\r\n\r\nhi\r\n",
+            "--B\r\n",
+            "Content-Type: application/pdf; name=d.pdf\r\n",
+            "Content-Disposition: attachment; filename=d.pdf\r\n",
+            "Content-Transfer-Encoding: base64\r\n",
+            "X-PEA-Attachment: deadbeefforeign\r\n",
+            "\r\n",
+            "JVBERi1mYWtlcGRm\r\n",
+            "--B--\r\n",
+        )
+        .as_bytes()
+        .to_vec();
+
+        let decoded = MessageParser::default()
+            .parse(&eml)
+            .unwrap()
+            .attachments()
+            .next()
+            .unwrap()
+            .contents()
+            .to_vec();
+        let hash = sha256_hex(&decoded);
+
+        let stored = hollow_attachments_from_eml(&eml);
+        // Our appended marker (last) must win over the foreign one.
+        let smsg = MessageParser::default().parse(&stored).unwrap();
+        assert_eq!(
+            part_pea_marker(smsg.attachments().next().unwrap()).as_deref(),
+            Some(hash.as_str()),
+            "reads our marker, not the foreign one"
+        );
+
+        let rebuilt = rebuild_eml(&stored, &|h| (h == hash).then(|| decoded.clone()));
+        assert!(
+            !String::from_utf8_lossy(&rebuilt).contains("deadbeefforeign"),
+            "foreign marker header dropped on rebuild"
+        );
+        let att = MessageParser::default().parse(&rebuilt).unwrap();
+        assert_eq!(
+            att.attachments().next().unwrap().contents(),
+            decoded.as_slice(),
+            "correct blob spliced despite the foreign marker"
+        );
+    }
+}
+
+#[cfg(test)]
+mod header_fold_tests {
+    use super::*;
+
+    /// Hollowing must never corrupt long pre-folded headers into blank
+    /// lines — a blank line ends the header block and everything after it
+    /// (the remaining headers!) renders as the message body.
+    #[test]
+    fn hollowed_headers_survive_long_folded_values() {
+        let eml = concat!(
+            "Received: from mail.example.com (mail.example.com [10.0.0.1])\r\n",
+            "\tby mx.google.com with ESMTPS id abc123 (version=TLSv1 cipher=DHE-RSA-AES256-SHA bits=256/256)\r\n",
+            "\tfor <me@example.com>; Tue,  2 Jun 2015 22:31:02 -0400 (EDT)\r\n",
+            "Authentication-Results: mx.google.com; spf=pass (google.com: domain of a@b.com designates 10.0.0.1 as permitted sender)\r\n",
+            "\tsmtp.mail=a@b.com; dkim=pass header.i=@b.com; dmarc=pass (p=REJECT dis=NONE) header.from=b.com\r\n",
+            "From: a@example.com\r\n",
+            "To: me@example.com\r\n",
+            "Subject: folded headers\r\n",
+            "Message-ID: <fold-1@example.com>\r\n",
+            "Date: Tue, 2 Jun 2015 22:31:00 -0400\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=BOUND\r\n",
+            "\r\n",
+            "--BOUND\r\n",
+            "Content-Type: text/plain; charset=us-ascii\r\n",
+            "\r\n",
+            "The actual body.\r\n",
+            "--BOUND\r\n",
+            "Content-Type: application/pdf; name=doc.pdf\r\n",
+            "Content-Disposition: attachment; filename=doc.pdf\r\n",
+            "Content-Transfer-Encoding: base64\r\n",
+            "\r\n",
+            "JVBERi1mYWtlcGRm\r\n",
+            "--BOUND--\r\n",
+        )
+        .as_bytes()
+        .to_vec();
+
+        let stored = hollow_attachments_from_eml(&eml);
+        assert_ne!(stored, eml, "pdf body must be hollowed");
+
+        let text = String::from_utf8(stored.clone()).unwrap();
+        let header_block = text.split("\r\n\r\n").next().unwrap();
+        assert!(
+            header_block.contains("Received"),
+            "long headers stay inside the header block"
+        );
+
+        let msg = MessageParser::default().parse(&stored).unwrap();
+        assert!(msg.header_raw("received").is_some(), "Received survives");
+        assert!(
+            msg.header_raw("authentication-results").is_some(),
+            "Authentication-Results survives"
+        );
+        let body = mailparser_text_and_html(&msg).0;
+        assert_eq!(body.trim(), "The actual body.");
+        assert!(
+            !body.contains("Received"),
+            "no headers leak into the body: {body}"
+        );
+    }
 }

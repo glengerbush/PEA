@@ -9,10 +9,10 @@
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import { formatDateTime } from '$lib/stores/datetime.svelte';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
-	import ArrowUp from 'lucide-svelte/icons/arrow-up';
-	import ArrowDown from 'lucide-svelte/icons/arrow-down';
-	import ChevronsUpDown from 'lucide-svelte/icons/chevrons-up-down';
-	import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+	import ArrowUp from '@lucide/svelte/icons/arrow-up';
+	import ArrowDown from '@lucide/svelte/icons/arrow-down';
+	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
+	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
 	let { data }: { data: PageData } = $props();
 	const result = $derived(data.result);

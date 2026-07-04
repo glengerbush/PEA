@@ -1,77 +1,31 @@
-export type SyncState = {
-	google?: {
-		[userEmail: string]: {
-			historyId: string;
-		};
-	};
-	microsoft?: {
-		[userEmail: string]: {
-			deltaTokens: { [folderId: string]: string };
-		};
-	};
-	imap?: {
-		[mailboxPath: string]: {
-			maxUid: number;
-		};
-	};
-	lastSyncTimestamp?: string;
-	statusMessage?: string;
-};
-
-export type IngestionProvider =
-	| 'google_workspace'
-	| 'microsoft_365'
-	| 'generic_imap'
-	| 'pst_import'
-	| 'eml_import'
-	| 'mbox_import'
-	| 'smtp_journaling';
+export type IngestionProvider = 'eml_import' | 'mbox_import';
 
 export type IngestionStatus =
 	| 'active'
 	| 'paused'
 	| 'error'
-	| 'pending_auth'
-	| 'syncing'
+	| 'pending' // created; validating the source before import
+	| 'ready' // validated; the queue is about to start the import
 	| 'importing'
-	| 'auth_success'
 	| 'imported'
 	| 'partially_active'; // For sources with merged children where some are active and others are not
 
-export interface BaseIngestionCredentials {
+export interface BaseProviderConfig {
 	type: IngestionProvider;
 }
 
-export interface EMLImportCredentials extends BaseIngestionCredentials {
+export interface EMLImportProviderConfig extends BaseProviderConfig {
 	type: 'eml_import';
-	uploadedFileName?: string;
-	uploadedFilePath?: string;
 	localFilePath?: string;
 }
 
-export interface MboxImportCredentials extends BaseIngestionCredentials {
+export interface MboxImportProviderConfig extends BaseProviderConfig {
 	type: 'mbox_import';
-	uploadedFileName?: string;
-	uploadedFilePath?: string;
-	uploadedFiles?: Array<{
-		fileName: string;
-		filePath: string;
-		relativePath?: string;
-	}>;
 	localFilePath?: string;
 }
 
-export interface SmtpJournalingCredentials extends BaseIngestionCredentials {
-	type: 'smtp_journaling';
-	/** The ID of the journaling_sources row that owns this ingestion source */
-	journalingSourceId: string;
-}
-
-// Discriminated union for all possible credential types
-export type IngestionCredentials =
-	| EMLImportCredentials
-	| MboxImportCredentials
-	| SmtpJournalingCredentials;
+// Discriminated union for all possible provider-config shapes
+export type IngestionProviderConfig = EMLImportProviderConfig | MboxImportProviderConfig;
 
 export interface IngestionSource {
 	id: string;
@@ -80,22 +34,21 @@ export interface IngestionSource {
 	status: IngestionStatus;
 	createdAt: Date;
 	updatedAt: Date;
-	credentials: IngestionCredentials;
-	lastSyncStartedAt?: Date | null;
-	lastSyncFinishedAt?: Date | null;
-	lastSyncStatusMessage?: string | null;
-	syncState?: SyncState | null;
+	providerConfig: IngestionProviderConfig;
+	lastImportStartedAt?: Date | null;
+	lastImportFinishedAt?: Date | null;
+	lastImportStatusMessage?: string | null;
 	/** The ID of the root ingestion source this child is merged into.
 	 *  Null or undefined when this source is a standalone root. */
 	mergedIntoId?: string | null;
 }
 
 /**
- * Represents an ingestion source with sensitive credential information removed.
- * This type is safe to use in client-side applications or API responses
- * where exposing credentials would be a security risk.
+ * Represents an ingestion source with its provider config omitted. For the
+ * local mbox/eml importers the config is just a file path (no secrets), but
+ * the safe shape keeps the API response and client models lean and uniform.
  */
-export type SafeIngestionSource = Omit<IngestionSource, 'credentials'>;
+export type SafeIngestionSource = Omit<IngestionSource, 'providerConfig'>;
 
 export interface CreateIngestionSourceDto {
 	name: string;
@@ -104,42 +57,3 @@ export interface CreateIngestionSourceDto {
 	/** Merge this new source into an existing root source's group. */
 	mergedIntoId?: string;
 }
-
-export interface UpdateIngestionSourceDto {
-	name?: string;
-	provider?: IngestionProvider;
-	status?: IngestionStatus;
-	providerConfig?: Record<string, any>;
-	lastSyncStartedAt?: Date;
-	lastSyncFinishedAt?: Date;
-	lastSyncStatusMessage?: string;
-	syncState?: SyncState;
-	/** Set or clear the merge parent. Use null to unmerge. */
-	mergedIntoId?: string | null;
-}
-
-export interface IContinuousSyncJob {
-	ingestionSourceId: string;
-}
-
-export interface IInitialImportJob {
-	ingestionSourceId: string;
-}
-
-export interface IProcessMailboxJob {
-	ingestionSourceId: string;
-	userEmail: string;
-	/** ID of the SyncSession tracking this sync cycle's progress */
-	sessionId: string;
-}
-
-export type MailboxUser = {
-	id: string;
-	primaryEmail: string;
-	displayName: string;
-};
-
-export type ProcessMailboxError = {
-	error: boolean;
-	message: string;
-};

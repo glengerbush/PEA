@@ -6,7 +6,7 @@ use crate::{duplicates, handlers, preview, writes};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -18,10 +18,6 @@ fn qlookup(params: &HashMap<String, String>) -> impl Fn(&str) -> Option<String> 
     move |key: &str| params.get(key).cloned()
 }
 
-async fn healthz() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
-}
-
 async fn archived_emails(
     State(app): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -29,27 +25,6 @@ async fn archived_emails(
     let started = search::now_ms();
     let conn = app.pool.get().unwrap();
     Json(search::query_archived_emails(&conn, &qlookup(&params), started))
-}
-
-async fn search_emails(
-    State(app): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    if params.get("keywords").map_or(true, |k| k.trim().is_empty()) {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "message": "Keywords are required" })))
-            .into_response();
-    }
-    let started = search::now_ms();
-    let conn = app.pool.get().unwrap();
-    // /search maps keywords -> q; only page/limit/matchingStrategy pass through.
-    let q = |key: &str| -> Option<String> {
-        match key {
-            "q" => params.get("keywords").cloned(),
-            "page" | "limit" | "matchingStrategy" => params.get(key).cloned(),
-            _ => None,
-        }
-    };
-    Json(search::query_archived_emails(&conn, &q, started)).into_response()
 }
 
 async fn facets(State(app): State<AppState>) -> Json<Value> {
@@ -123,6 +98,7 @@ async fn settings_system(State(app): State<AppState>) -> Json<Value> {
         "theme": "system",
         "timeZone": Value::Null,
         "clockFormat": "12h",
+        "autoCheckUpdates": true,
     });
     let config: Option<String> = conn
         .query_row("SELECT config FROM system_settings LIMIT 1", [], |r| r.get(0))
@@ -150,28 +126,6 @@ async fn settings_system(State(app): State<AppState>) -> Json<Value> {
     Json(merged)
 }
 
-async fn users_profile(State(app): State<AppState>) -> Json<Value> {
-    let conn = app.pool.get().unwrap();
-    // Mirrors UserService.toPublicUser — only these five fields.
-    let user = conn
-        .query_row(
-            "SELECT id, email, first_name, last_name, created_at \
-             FROM users ORDER BY created_at ASC LIMIT 1",
-            [],
-            |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "email": row.get::<_, String>(1)?,
-                    "first_name": row.get::<_, Option<String>>(2)?,
-                    "last_name": row.get::<_, Option<String>>(3)?,
-                    "createdAt": iso(row.get::<_, i64>(4)?),
-                }))
-            },
-        )
-        .unwrap_or(json!(null));
-    Json(user)
-}
-
 async fn contacts_map(State(app): State<AppState>) -> Json<Value> {
     let conn = app.pool.get().unwrap();
     let mut stmt = conn
@@ -193,27 +147,24 @@ async fn ingestion_sources(State(app): State<AppState>) -> Json<Value> {
     let conn = app.pool.get().unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT id, user_id, name, provider, status, last_sync_started_at, \
-             last_sync_finished_at, last_sync_status_message, sync_state, merged_into_id, \
+            "SELECT id, name, provider, status, last_import_started_at, \
+             last_import_finished_at, last_import_status_message, merged_into_id, \
              created_at, updated_at FROM ingestion_sources ORDER BY created_at DESC",
         )
         .unwrap();
     let rows: Vec<Value> = stmt
         .query_map([], |row| {
-            let sync_state: Option<String> = row.get(8)?;
             Ok(json!({
                 "id": row.get::<_, String>(0)?,
-                "userId": row.get::<_, Option<String>>(1)?,
-                "name": row.get::<_, String>(2)?,
-                "provider": row.get::<_, String>(3)?,
-                "status": row.get::<_, String>(4)?,
-                "lastSyncStartedAt": row.get::<_, Option<i64>>(5)?.map(iso),
-                "lastSyncFinishedAt": row.get::<_, Option<i64>>(6)?.map(iso),
-                "lastSyncStatusMessage": row.get::<_, Option<String>>(7)?,
-                "syncState": sync_state.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
-                "mergedIntoId": row.get::<_, Option<String>>(9)?,
-                "createdAt": iso(row.get::<_, i64>(10)?),
-                "updatedAt": iso(row.get::<_, i64>(11)?),
+                "name": row.get::<_, String>(1)?,
+                "provider": row.get::<_, String>(2)?,
+                "status": row.get::<_, String>(3)?,
+                "lastImportStartedAt": row.get::<_, Option<i64>>(4)?.map(iso),
+                "lastImportFinishedAt": row.get::<_, Option<i64>>(5)?.map(iso),
+                "lastImportStatusMessage": row.get::<_, Option<String>>(6)?,
+                "mergedIntoId": row.get::<_, Option<String>>(7)?,
+                "createdAt": iso(row.get::<_, i64>(8)?),
+                "updatedAt": iso(row.get::<_, i64>(9)?),
             }))
         })
         .unwrap()
@@ -281,12 +232,12 @@ async fn duplicates_exact(
     ))
 }
 
-async fn duplicates_fuzzy(
+async fn duplicates_likely(
     State(app): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Json<Value> {
     let conn = app.pool.get().unwrap();
-    Json(duplicates::list_fuzzy_groups(
+    Json(duplicates::list_likely_duplicates(
         &conn,
         params.get("page").map(String::as_str),
         params.get("limit").map(String::as_str),
@@ -295,32 +246,36 @@ async fn duplicates_fuzzy(
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
-        .route("/search", get(search_emails))
         // Express (non-strict routing) matched both forms; the mailbox page
         // fetches the list WITHOUT the trailing slash, so serve both.
         .route("/archived-emails", get(archived_emails))
         .route("/archived-emails/", get(archived_emails))
         .route("/archived-emails/facets", get(facets))
         .route("/archived-emails/duplicates/exact", get(duplicates_exact))
-        .route("/archived-emails/duplicates/fuzzy", get(duplicates_fuzzy))
+        .route("/archived-emails/duplicates/likely", get(duplicates_likely))
         .route(
             "/archived-emails/duplicates/exact/approve",
             post(writes::approve_exact_duplicates),
         )
-        .route("/archived-emails/duplicates/fuzzy/scan", post(writes::scan_fuzzy))
-        .route("/archived-emails/duplicates/fuzzy/approve", post(writes::approve_fuzzy))
-        .route("/archived-emails/duplicates/fuzzy/ignore", post(writes::ignore_fuzzy))
+        .route("/archived-emails/duplicates/likely/approve", post(writes::approve_likely))
+        .route("/archived-emails/duplicates/likely/ignore", post(writes::ignore_likely))
         .route("/archived-emails/bulk/tags", post(writes::update_tags))
         .route("/archived-emails/bulk/delete", post(writes::bulk_delete))
-        .route(
-            "/archived-emails/ingestion-source/{ingestionSourceId}",
-            get(handlers::emails_by_source),
-        )
         .route(
             "/archived-emails/{id}",
             get(handlers::email_detail).delete(writes::delete_email),
         )
         .route("/archived-emails/{id}/preview", get(preview::email_preview))
+        .route(
+            "/archived-emails/{id}/attachments/archive",
+            get(handlers::download_all_attachments),
+        )
+        .route("/archived-emails/{id}/eml", get(handlers::download_email_eml))
+        .route("/archived-emails/{id}/raw", get(handlers::download_email_raw))
+        .route(
+            "/attachments/quicklook",
+            post(handlers::quicklook_attachment),
+        )
         .route(
             "/archived-emails/{id}/remote-content/archive",
             post(writes::enqueue_remote_content),
@@ -336,19 +291,12 @@ pub fn router(state: AppState) -> Router {
         .route("/dashboard/stats", get(dashboard_stats))
         .route("/dashboard/ingestion-history", get(dashboard_history))
         .route("/dashboard/ingestion-sources", get(handlers::dashboard_sources))
-        .route("/dashboard/recent-syncs", get(handlers::recent_syncs))
         .route("/dashboard/indexed-insights", get(dashboard_insights))
         .route(
             "/dashboard/remote-content-issues",
             get(handlers::remote_content_issues),
         )
         .route("/settings/system", get(settings_system).put(writes::update_settings))
-        .route("/settings/updates/check", get(writes::check_updates))
-        .route("/settings/search/rebuild", post(writes::rebuild_search))
-        .route(
-            "/users/profile",
-            get(users_profile).patch(writes::update_profile),
-        )
         .route("/contacts/map", get(contacts_map))
         .route("/contacts/import", post(writes::import_contacts))
         .route(
@@ -357,21 +305,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/ingestion-sources/{id}",
-            get(handlers::ingestion_source_detail)
-                .put(writes::update_source)
-                .delete(writes::delete_source),
+            put(writes::update_source).delete(writes::delete_source),
         )
-        .route("/ingestion-sources/{id}/import", post(writes::trigger_import))
         .route("/ingestion-sources/{id}/pause", post(writes::pause_source))
-        .route("/ingestion-sources/{id}/sync", post(writes::force_sync))
+        .route("/ingestion-sources/{id}/reimport", post(writes::reimport))
         .route("/ingestion-sources/{id}/unmerge", post(writes::unmerge_source))
-        .route("/upload", post(writes::upload_file))
         .route("/storage/download", get(handlers::storage_download))
         .route("/jobs/queues", get(jobs_queues))
         .route("/jobs/queues/{queueName}", get(handlers::jobs_queue_details));
     Router::new()
-        .route("/healthz", get(healthz))
-        .nest("/v1", api.clone())
         .nest("/api/v1", api)
         .fallback(static_files)
         .with_state(state)
@@ -411,7 +353,7 @@ async fn static_files(
         return StatusCode::NOT_FOUND.into_response();
     };
     let path = uri.path().trim_start_matches('/');
-    if path.starts_with("api/") || path.starts_with("v1/") || path == "healthz" {
+    if path.starts_with("api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
     // Lexically sanitize — no parent traversal out of the build dir.

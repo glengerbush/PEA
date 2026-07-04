@@ -1,7 +1,9 @@
 <script lang="ts">
 	import type { AlertItem } from './alert-state.svelte';
 	import { dismissAlert } from './alert-state.svelte';
-	import { CircleCheck, CircleX, TriangleAlert } from 'lucide-svelte';
+	import CircleCheck from '@lucide/svelte/icons/circle-check';
+	import CircleX from '@lucide/svelte/icons/circle-x';
+	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
 	let { alert }: { alert: AlertItem } = $props();
 

@@ -4,7 +4,6 @@ dist
 build
 node_modules
 pnpm-lock.yaml
-meili_data/
 tmp/
 
 ## shadcn installs

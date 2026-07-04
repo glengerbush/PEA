@@ -1,12 +1,12 @@
 //! Port of RemoteContentService's archive side: SSRF-guarded fetching of
-//! remote images/stylesheets referenced by archived emails, stored encrypted
+//! remote images/stylesheets referenced by archived emails, stored on disk
 //! and recorded in remote_content_assets. Statuses and failure messages match
 //! the Node implementation string-for-string.
 
 use crate::preview::{self, normalize_content_type};
 use crate::state::AppState;
 use crate::{ingest, queue};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -21,7 +21,7 @@ const MAX_REDIRECTS: usize = 3;
 const USER_AGENT: &str = "PEA-LocalRemoteContentArchiver/1.0";
 
 fn hash_value(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
+    crate::hex_encode(Sha256::digest(data))
 }
 
 fn now_ms() -> i64 {
@@ -44,7 +44,7 @@ impl FetchError {
 }
 
 fn is_private_ipv4(octets: [u8; 4]) -> bool {
-    let [a, b, _, _] = octets;
+    let [a, b, c, _] = octets;
     a == 0
         || a == 10
         || a == 127
@@ -55,8 +55,8 @@ fn is_private_ipv4(octets: [u8; 4]) -> bool {
         || (a == 192 && b == 0)
         || (a == 192 && b == 2)
         || (a == 198 && (b == 18 || b == 19))
-        || (a == 198 && b == 51)
-        || (a == 203 && b == 0)
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
         || a >= 224
 }
 
@@ -224,7 +224,7 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| FetchError::Failed(e.to_string()))?;
-    let response = client
+    let mut response = client
         .get(url.as_str())
         .header(
             reqwest::header::ACCEPT,
@@ -265,12 +265,20 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let body = response
-        .bytes()
-        .map_err(|e| FetchError::Failed(e.to_string()))?
-        .to_vec();
-    if body.len() > MAX_REMOTE_CONTENT_BYTES {
-        return Err(FetchError::Blocked("Remote content is too large".into()));
+    // Stream with a hard cap: a chunked response with no Content-Length would
+    // otherwise read an unbounded body into memory before any size check.
+    let mut body: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = std::io::Read::read(&mut response, &mut buf)
+            .map_err(|e| FetchError::Failed(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        if body.len() + n > MAX_REMOTE_CONTENT_BYTES {
+            return Err(FetchError::Blocked("Remote content is too large".into()));
+        }
+        body.extend_from_slice(&buf[..n]);
     }
     let content_type = validate_archivable(&body, content_type_header.as_deref())?;
     Ok(Fetched { body, content_type, final_url: url.to_string() })
@@ -343,25 +351,28 @@ fn archive_remote_asset(state: &AppState, conn: &Connection, email_id: &str, ori
 
     match fetch_remote_content(original_url, 0) {
         Ok(fetched) => {
-            let content_hash = hash_value(&fetched.body);
             let storage_path = format!(
-                "open-archiver/remote-content/{email_id}/{asset_id}{}",
+                "pea/remote-content/{email_id}/{asset_id}{}",
                 extension_for(&fetched.content_type)
             );
-            if state.storage_put(&storage_path, &fetched.body).is_err() {
+            if let Err(e) = state.storage_put(&storage_path, &fetched.body) {
+                // Reach a terminal state so the URL is counted, not stuck pending.
+                conn.execute(
+                    "UPDATE remote_content_assets SET status = 'failed', failure_reason = ? WHERE id = ?",
+                    rusqlite::params![format!("storage error: {e}"), asset_id],
+                )
+                .ok();
                 return;
             }
             conn.execute(
                 "UPDATE remote_content_assets SET final_url = ?, status = 'archived', \
-                 content_type = ?, size_bytes = ?, content_hash_sha256 = ?, storage_path = ?, \
-                 failure_reason = NULL, updated_at = ? WHERE id = ?",
+                 content_type = ?, size_bytes = ?, storage_path = ?, \
+                 failure_reason = NULL WHERE id = ?",
                 rusqlite::params![
                     fetched.final_url,
                     fetched.content_type,
                     fetched.body.len() as i64,
-                    content_hash,
                     storage_path,
-                    now_ms(),
                     asset_id
                 ],
             )
@@ -373,9 +384,9 @@ fn archive_remote_asset(state: &AppState, conn: &Connection, email_id: &str, ori
                 FetchError::Failed(_) => "failed",
             };
             conn.execute(
-                "UPDATE remote_content_assets SET status = ?, failure_reason = ?, updated_at = ? \
+                "UPDATE remote_content_assets SET status = ?, failure_reason = ? \
                  WHERE id = ?",
-                rusqlite::params![status, error.message(), now_ms(), asset_id],
+                rusqlite::params![status, error.message(), asset_id],
             )
             .ok();
         }
@@ -384,7 +395,7 @@ fn archive_remote_asset(state: &AppState, conn: &Connection, email_id: &str, ori
 
 /// Second pass — archive url(...) images referenced by archived stylesheets.
 fn archive_stylesheet_subresources(state: &AppState, conn: &Connection, email_id: &str) {
-    static URL_PAT: Lazy<Regex> = Lazy::new(|| {
+    static URL_PAT: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?i)url\(\s*(?:"([^"]+)"|'([^']+)'|([^)]+))\s*\)"#).unwrap()
     });
     let mut stmt = match conn.prepare(
@@ -568,4 +579,67 @@ pub fn archive_batch(state: &AppState, payload: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_and_reserved_ipv4_blocked() {
+        for ip in [
+            [10, 0, 0, 1],
+            [127, 0, 0, 1],
+            [192, 168, 1, 1],
+            [172, 16, 0, 1],
+            [169, 254, 1, 1],
+            [100, 64, 0, 1],
+            [0, 0, 0, 0],
+        ] {
+            assert!(is_private_ipv4(ip), "{ip:?} should be blocked");
+        }
+    }
+
+    #[test]
+    fn test_net_ranges_only_block_the_24() {
+        assert!(is_private_ipv4([198, 51, 100, 5]));
+        assert!(is_private_ipv4([203, 0, 113, 5]));
+        // the rest of those /16s is public
+        assert!(!is_private_ipv4([198, 51, 1, 1]));
+        assert!(!is_private_ipv4([203, 0, 1, 1]));
+    }
+
+    #[test]
+    fn public_ipv4_allowed() {
+        assert!(!is_private_ipv4([8, 8, 8, 8]));
+        assert!(!is_private_ipv4([1, 1, 1, 1]));
+    }
+
+    #[test]
+    fn extension_for_types() {
+        assert_eq!(extension_for("image/png"), ".png");
+        assert_eq!(extension_for("image/jpeg"), ".jpg");
+        assert_eq!(extension_for("image/webp"), ".webp");
+        assert_eq!(extension_for("application/pdf"), ".bin");
+    }
+
+    #[test]
+    fn validate_archivable_sniffs_and_rejects() {
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
+        assert_eq!(validate_archivable(&png, None).ok().as_deref(), Some("image/png"));
+        assert!(validate_archivable(b"", None).is_err());
+        assert!(validate_archivable(b"not an image", Some("text/plain")).is_err());
+        assert_eq!(
+            validate_archivable(b"body { color: red }", Some("text/css")).ok().as_deref(),
+            Some("text/css")
+        );
+    }
+
+    #[test]
+    fn ipv6_blocking() {
+        use std::net::IpAddr;
+        assert!(is_blocked_ip(&"::1".parse::<IpAddr>().unwrap()), "loopback");
+        assert!(is_blocked_ip(&"::ffff:127.0.0.1".parse::<IpAddr>().unwrap()), "mapped loopback");
+        assert!(!is_blocked_ip(&"2001:4860:4860::8888".parse::<IpAddr>().unwrap()), "public ipv6");
+    }
 }

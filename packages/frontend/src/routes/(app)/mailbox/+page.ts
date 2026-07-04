@@ -18,7 +18,7 @@ const SORT_FIELDS = new Set<ArchiveSortField>([
 	'sizeBytes',
 ]);
 const DIRECTIONS = new Set<SortDirection>(['asc', 'desc']);
-const MATCHING_STRATEGIES = new Set<MatchingStrategy>(['last', 'all', 'frequency']);
+const MATCHING_STRATEGIES = new Set<MatchingStrategy>(['last', 'all']);
 const SEARCH_FIELDS = new Set<ArchiveSearchField>([
 	'subject',
 	'body',
@@ -31,7 +31,6 @@ const SEARCH_FIELDS = new Set<ArchiveSearchField>([
 	'attachments.content',
 	'userEmail',
 	'sourcePath',
-	'sourceLabels',
 	'tags',
 ]);
 
@@ -72,6 +71,7 @@ export const load: PageLoad = async (event) => {
 	const fields = getFields(url.searchParams.get('fields'));
 	const ingestionSourceId = url.searchParams.get('ingestionSourceId') || 'all';
 	const hasAttachments = url.searchParams.get('hasAttachments') || 'any';
+	const attachmentExt = url.searchParams.get('attachmentExt') || '';
 	const tags = url.searchParams.get('tags') || '';
 	const page = getPositiveInteger(url.searchParams.get('page'), 1);
 	const limit = Math.min(getPositiveInteger(url.searchParams.get('limit'), 25), 100);
@@ -116,6 +116,7 @@ export const load: PageLoad = async (event) => {
 	if (hasAttachments === 'true' || hasAttachments === 'false') {
 		archiveParams.set('hasAttachments', hasAttachments);
 	}
+	if (attachmentExt) archiveParams.set('attachmentExt', attachmentExt);
 	if (tags) archiveParams.set('tags', tags);
 
 	const emptySearchResult: SearchResult = {
@@ -145,6 +146,7 @@ export const load: PageLoad = async (event) => {
 			fields: fields.join(',') || 'all',
 			ingestionSourceId,
 			hasAttachments,
+			attachmentExt,
 			tags,
 			page,
 			limit,

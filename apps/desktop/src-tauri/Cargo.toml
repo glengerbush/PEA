@@ -1,6 +1,6 @@
 [package]
 name = "pea-desktop"
-version = "0.8.0"
+version = "1.0.0"
 description = "PEA (Personal Email Archive) desktop shell"
 edition = "2021"
 
@@ -11,7 +11,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
-tauri-plugin-dialog = "2"
+# xdg-portal instead of the default in-process gtk3 dialog: on wlroots
+# compositors (Hyprland/Omarchy) the gtk3 dialog's buttons can go unresponsive;
+# the portal delegates to the system's file chooser service instead.
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 serde_json = "1"
 pea-engine = { path = "../../../crates/engine" }
 axum = "0.8"

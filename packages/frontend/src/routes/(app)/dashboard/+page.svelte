@@ -5,7 +5,9 @@
 	import { formatBytes } from '$lib/utils';
 	import EmptyState from '$lib/components/custom/EmptyState.svelte';
 	import { goto } from '$app/navigation';
-	import { Archive, HardDrive, ImageOff } from 'lucide-svelte';
+	import Archive from '@lucide/svelte/icons/archive';
+	import HardDrive from '@lucide/svelte/icons/hard-drive';
+	import ImageOff from '@lucide/svelte/icons/image-off';
 	import TopSendersChart from '$lib/components/custom/charts/TopSendersChart.svelte';
 	import IngestionHistoryChart from '$lib/components/custom/charts/IngestionHistoryChart.svelte';
 	import StorageBySourceChart from '$lib/components/custom/charts/StorageBySourceChart.svelte';

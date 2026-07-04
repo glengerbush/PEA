@@ -1,136 +1,31 @@
-import i18n from 'sveltekit-i18n';
-import type { Config } from 'sveltekit-i18n';
-
-// Import your locales
+import { readable } from 'svelte/store';
 import en from './en.json';
-import de from './de.json';
-import es from './es.json';
-import fr from './fr.json';
-import it from './it.json';
-import pt from './pt.json';
-import nl from './nl.json';
-import ja from './ja.json';
-import et from './et.json';
-import el from './el.json';
-import bg from './bg.json';
-// This is your config object.
-// It defines the languages and how to load them.
-const config: Config = {
-	// Define the loaders for each language
-	loaders: [
-		// English 🇬🇧
-		{
-			locale: 'en',
-			key: 'app', // This key matches the top-level key in your en.json
-			loader: async () => en.app, // We return the nested 'app' object
-		},
-		// German 🇩🇪
-		{
-			locale: 'de',
-			key: 'app', // This key matches the top-level key in your en.json
-			loader: async () => de.app, // We return the nested 'app' object
-		},
-		// Spanish 🇪🇸
-		{
-			locale: 'es',
-			key: 'app',
-			loader: async () => es.app,
-		},
-		// French 🇫🇷
-		{
-			locale: 'fr',
-			key: 'app',
-			loader: async () => fr.app,
-		},
-		// Italian 🇮🇹
-		{
-			locale: 'it',
-			key: 'app',
-			loader: async () => it.app,
-		},
-		// Portuguese 🇵🇹
-		{
-			locale: 'pt',
-			key: 'app',
-			loader: async () => pt.app,
-		},
-		// Dutch 🇳🇱
-		{
-			locale: 'nl',
-			key: 'app',
-			loader: async () => nl.app,
-		},
-		// Japanese 🇯🇵
-		{
-			locale: 'ja',
-			key: 'app',
-			loader: async () => ja.app,
-		},
-		// Estonian 🇪🇪
-		{
-			locale: 'et',
-			key: 'app',
-			loader: async () => et.app,
-		},
-		// Greek 🇬🇷
-		{
-			locale: 'el',
-			key: 'app',
-			loader: async () => el.app,
-		},
-		// Bulgarian 🇧🇬
-		{
-			locale: 'bg',
-			key: 'app',
-			loader: async () => bg.app,
-		},
-	],
-	fallbackLocale: 'en',
-};
 
-// Create the i18n instance.
-// export const i18nInstance = new i18n(config);
+// Single-user local app — English only, no locale switching. This replaces
+// the sveltekit-i18n runtime with a ~30-line dot-path lookup. Existing
+// `$t('app.x.y')` and `$t('app.x.y', { count })` call sites work unchanged.
 
-export const { t, locale, locales, loading, loadTranslations } = new i18n(config);
+type Params = Record<string, string | number>;
 
-// Export the t store for use in components
-// export const t = i18n.t;
+function lookup(key: string): string {
+	let node: unknown = en;
+	for (const part of key.split('.')) {
+		if (node && typeof node === 'object' && part in (node as Record<string, unknown>)) {
+			node = (node as Record<string, unknown>)[part];
+		} else {
+			return key; // missing key falls back to the key itself
+		}
+	}
+	return typeof node === 'string' ? node : key;
+}
 
-// import i18n from 'sveltekit-i18n';
-// import type { Config } from 'sveltekit-i18n';
+function translate(key: string, params?: Params): string {
+	const text = lookup(key);
+	if (!params) return text;
+	return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, name: string) =>
+		name in params ? String(params[name]) : `{{${name}}}`
+	);
+}
 
-// const config: Config = ({
-//     loaders: [
-//         {
-//             locale: 'en',
-//             key: 'app',
-//             loader: async () => (
-//                 await import('./en/app.json')
-//             ).default,
-//         },
-//         {
-//             locale: 'en',
-//             key: 'marketing',
-//             loader: async () => (
-//                 await import('./en/marketing.json')
-//             ).default,
-//         },
-//         {
-//             locale: 'fr',
-//             key: 'app',
-//             loader: async () => (
-//                 await import('./fr/app.json')
-//             ).default,
-//         },
-//         {
-//             locale: 'fr',
-//             key: 'marketing',
-//             loader: async () => (
-//                 await import('./fr/marketing.json')
-//             ).default,
-//         },
-//     ],
-//     fallbackLocale: 'en'
-// });
-
-// export const { t, locale, locales, loading, loadTranslations } = new i18n(config);
+/** Translator exposed as a store so `$t(...)` keeps working. Value is static. */
+export const t = readable(translate);

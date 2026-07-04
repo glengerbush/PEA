@@ -1,65 +1,44 @@
-//! Port of EMLConnector — .eml files inside an uploaded (or local) zip.
+//! EML reader — .eml files inside a local zip.
 
 use crate::ingest::{parse_message, EmailObj};
-use crate::state::AppState;
 use serde_json::Value;
 use std::io::Read;
 
-fn display_name(credentials: &Value) -> String {
-    if let Some(name) = credentials.get("uploadedFileName").and_then(|v| v.as_str()) {
-        return name.to_string();
-    }
-    if let Some(local) = credentials.get("localFilePath").and_then(|v| v.as_str()) {
+fn display_name(provider_config: &Value) -> String {
+    if let Some(local) = provider_config.get("localFilePath").and_then(|v| v.as_str()) {
         let base = local.rsplit('/').next().unwrap_or(local);
-        return base.replace(".zip", "");
+        // Strip only the trailing ".zip", not every occurrence (so
+        // "trip.zipped.zip" → "trip.zipped", not "tripped").
+        return base.strip_suffix(".zip").unwrap_or(base).to_string();
     }
     format!("eml-import-{}", crate::search::now_ms())
 }
 
-pub fn eml_user_email(credentials: &Value) -> String {
-    format!("{}@eml.local", display_name(credentials).replace(' ', ".").to_lowercase())
+pub fn eml_user_email(provider_config: &Value) -> String {
+    format!("{}@eml.local", display_name(provider_config).replace(' ', ".").to_lowercase())
 }
 
-/// testConnection — same validation messages as the Node connector.
-pub fn validate(state: &AppState, credentials: &Value) -> Result<(), String> {
-    let local = credentials.get("localFilePath").and_then(|v| v.as_str()).unwrap_or("");
-    let uploaded = credentials.get("uploadedFilePath").and_then(|v| v.as_str()).unwrap_or("");
-    let file_path = if !local.is_empty() { local } else { uploaded };
-    if file_path.is_empty() {
+/// testConnection — validates the local zip path.
+pub fn validate(provider_config: &Value) -> Result<(), String> {
+    let local = provider_config.get("localFilePath").and_then(|v| v.as_str()).unwrap_or("");
+    if local.is_empty() {
         return Err("EML Zip file path not provided.".into());
     }
-    if !file_path.contains(".zip") {
+    if !local.to_lowercase().ends_with(".zip") {
         return Err("Provided file is not in the ZIP format.".into());
     }
-    let exists = if !local.is_empty() {
-        std::path::Path::new(local).exists()
-    } else {
-        state.storage_root().join(uploaded).is_file()
-    };
-    if !exists {
-        if !local.is_empty() {
-            return Err(format!("EML Zip file not found at path: {local}"));
-        }
-        return Err(
-            "Uploaded EML Zip file not found. The upload may not have finished yet, or it failed."
-                .into(),
-        );
+    if !std::path::Path::new(local).exists() {
+        return Err(format!("EML Zip file not found at path: {local}"));
     }
     Ok(())
 }
 
 pub fn for_each_email(
-    state: &AppState,
-    credentials: &Value,
+    provider_config: &Value,
     mut handle: impl FnMut(EmailObj),
 ) -> Result<(), String> {
-    let local = credentials.get("localFilePath").and_then(|v| v.as_str()).unwrap_or("");
-    let uploaded = credentials.get("uploadedFilePath").and_then(|v| v.as_str()).unwrap_or("");
-    let bytes = if !local.is_empty() {
-        std::fs::read(local).map_err(|e| e.to_string())?
-    } else {
-        state.storage_get(uploaded)?
-    };
+    let local = provider_config.get("localFilePath").and_then(|v| v.as_str()).unwrap_or("");
+    let bytes = std::fs::read(local).map_err(|e| e.to_string())?;
     let mut zip =
         zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     for i in 0..zip.len() {
@@ -88,9 +67,67 @@ pub fn for_each_email(
             Err(e) => eprintln!("[eml] failed to parse {name}: {e}"),
         }
     }
-    // Delete the uploaded zip after processing (Node's finally block).
-    if local.is_empty() && !uploaded.is_empty() {
-        std::fs::remove_file(state.storage_root().join(uploaded)).ok();
-    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn display_name_strips_only_trailing_zip() {
+        assert_eq!(display_name(&json!({"localFilePath":"/x/trip.zipped.zip"})), "trip.zipped");
+        assert_eq!(display_name(&json!({"localFilePath":"/x/Backup.zip"})), "Backup");
+        assert_eq!(display_name(&json!({"localFilePath":"noslash.zip"})), "noslash");
+    }
+
+    #[test]
+    fn eml_user_email_normalizes() {
+        assert_eq!(eml_user_email(&json!({"localFilePath":"/x/My Mail.zip"})), "my.mail@eml.local");
+    }
+
+    #[test]
+    fn validate_rejects_bad_paths() {
+        assert!(validate(&json!({})).is_err());
+        assert!(validate(&json!({"localFilePath":""})).is_err());
+        assert!(validate(&json!({"localFilePath":"/x/file.txt"})).is_err());
+        // case-insensitive .zip is accepted at the format check; existence fails next
+        assert!(validate(&json!({"localFilePath":"/nonexistent/X.ZIP"}))
+            .unwrap_err()
+            .contains("not found"));
+    }
+
+    #[test]
+    fn for_each_email_reads_eml_entries_only() {
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            let write = |w: &mut zip::ZipWriter<_>, name: &str, body: &str| {
+                w.start_file(name, opts).unwrap();
+                std::io::Write::write_all(w, body.as_bytes()).unwrap();
+            };
+            write(&mut w, "folder/one.eml", "From: a@x.com\nSubject: Hi\nMessage-ID: <e1@x>\n\nbody\n");
+            write(&mut w, "two.eml", "From: c@x.com\nSubject: Two\nMessage-ID: <e2@x>\n\nbody\n");
+            write(&mut w, "readme.txt", "not an eml");
+            write(&mut w, "__MACOSX/skip.eml", "junk");
+            w.finish().unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("pea-eml-foreach-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("in.zip");
+        std::fs::write(&path, &buf).unwrap();
+
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for_each_email(&json!({ "localFilePath": path.to_str().unwrap() }), |email| {
+            seen.push((email.subject.clone(), email.path.clone()));
+        })
+        .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(seen.len(), 2, "only the two real .eml entries, txt + __MACOSX skipped");
+        assert!(seen.iter().any(|(s, p)| s == "Hi" && p == "folder"));
+        assert!(seen.iter().any(|(s, p)| s == "Two" && p.is_empty()));
+    }
 }

@@ -4,7 +4,7 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
 	import { t } from '$lib/translations';
 	import { formatDateTime } from '$lib/stores/datetime.svelte';
-	import Paperclip from 'lucide-svelte/icons/paperclip';
+	import Paperclip from '@lucide/svelte/icons/paperclip';
 
 	let {
 		thread,

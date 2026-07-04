@@ -4,7 +4,7 @@
 	import { api } from '$lib/api.client';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import type { ImportContactsResult, ContactImportFormat } from '@pea/types';
-	import Upload from 'lucide-svelte/icons/upload';
+	import Upload from '@lucide/svelte/icons/upload';
 
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let selectedFile = $state<File | null>(null);

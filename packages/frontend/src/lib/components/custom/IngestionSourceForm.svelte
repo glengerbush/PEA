@@ -8,9 +8,10 @@
 	import * as Select from '$lib/components/ui/select';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import { api } from '$lib/api.client';
-	import { Loader2, Info } from 'lucide-svelte';
-	import tippy from 'tippy.js';
-	import 'tippy.js/dist/tippy.css';
+	import FileIcon from '@lucide/svelte/icons/file';
+	import FolderOpen from '@lucide/svelte/icons/folder-open';
+	import Info from '@lucide/svelte/icons/info';
+	import { tooltip } from '$lib/actions/tooltip';
 	import { t } from '$lib/translations';
 	let {
 		source = null,
@@ -24,8 +25,8 @@
 	} = $props();
 
 	// This fork only imports static mailbox files, so there is no live-connection or
-	// user-facing "provider" concept. One Import Method selector drives the form and
-	// the backend provider (mbox_import / eml_import) is derived from the choice.
+	// user-facing "provider" concept. The form takes a single local path and the
+	// backend provider (mbox_import / eml_import) is derived from its extension.
 
 	/** Only show root sources (not children) in the merge dropdown */
 	const mergeableRootSources = $derived(existingSources.filter((s) => !s.mergedIntoId));
@@ -35,13 +36,10 @@
 		provider: source?.provider ?? 'mbox_import',
 		providerConfig: {
 			type: source?.provider ?? 'mbox_import',
-			secure: true,
-			allowInsecureCert: false,
 		},
 	});
 
 	let isSubmitting = $state(false);
-	let fileUploading = $state(false);
 	let mergeEnabled = $state(false);
 
 	/** When merge is toggled off, clear the mergedIntoId */
@@ -51,56 +49,57 @@
 		}
 	});
 
-	// The single source of truth for the create form. Each option maps to a backend
-	// provider + input shape:
-	//   mbox-files   → mbox_import, upload flat .mbox file(s)
-	//   mbox-folder  → mbox_import, upload an Apple Mail .mbox package (folder)
-	//   eml-zip      → eml_import, upload a .zip of .eml files
-	//   local        → server path; format detected from the extension (.zip → eml)
-	type ImportMethod = 'mbox-files' | 'mbox-folder' | 'eml-zip' | 'local';
-	let importMethod = $state<ImportMethod>('mbox-files');
-
-	const importMethodLabel = $derived(
-		importMethod === 'mbox-files'
-			? $t('app.components.import_source_form.mbox_files')
-			: importMethod === 'mbox-folder'
-				? $t('app.components.import_source_form.apple_mail_folder')
-				: importMethod === 'eml-zip'
-					? $t('app.components.import_source_form.provider_eml_import')
-					: $t('app.components.import_source_form.local_path')
-	);
-
-	// Derive the backend provider from the chosen method (create mode only).
+	// One import method: a local path (picked natively or typed). The backend
+	// detects the format from the path — a directory is scanned recursively for
+	// .mbox files and Apple Mail .mbox packages (.emlx messages), a .mbox file
+	// imports directly, and a .zip is treated as a zip of .eml files.
 	$effect(() => {
 		if (source) return;
-		const isZipPath =
-			importMethod === 'local' &&
-			(formData.providerConfig.localFilePath ?? '').toLowerCase().endsWith('.zip');
-		const provider = importMethod === 'eml-zip' || isZipPath ? 'eml_import' : 'mbox_import';
+		const isZipPath = (formData.providerConfig.localFilePath ?? '')
+			.toLowerCase()
+			.endsWith('.zip');
+		const provider = isZipPath ? 'eml_import' : 'mbox_import';
 		formData.provider = provider;
 		formData.providerConfig.type = provider;
 	});
 
-	// Keep only the providerConfig fields that belong to the selected method, so a
-	// stale upload path is never submitted after switching. Mbox uploads accumulate
-	// into uploadedFiles; eml uses a single uploaded file; local uses a path.
-	$effect(() => {
-		const cfg = formData.providerConfig;
-		const isMbox = importMethod === 'mbox-files' || importMethod === 'mbox-folder';
-		if (!isMbox && 'uploadedFiles' in cfg) delete cfg.uploadedFiles;
-		if (importMethod !== 'eml-zip') {
-			if ('uploadedFilePath' in cfg) delete cfg.uploadedFilePath;
-			if ('uploadedFileName' in cfg) delete cfg.uploadedFileName;
+	/** The last name this form filled in automatically — user edits win. */
+	let lastAutoName = $state('');
+
+	/** "…/Mail Exports/Inbox.mbox" → "Inbox"; empty for unusable paths. */
+	function nameFromPath(path: string): string {
+		const base = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+		return base.replace(/\.(mbox|zip|eml)$/i, '').trim();
+	}
+
+	/** Fills the Name field from the chosen path unless the user typed one. */
+	function autoFillName(path: string) {
+		const suggestion = nameFromPath(path);
+		if (!suggestion) return;
+		if (!formData.name.trim() || formData.name === lastAutoName) {
+			formData.name = suggestion;
+			lastAutoName = suggestion;
 		}
-		if (importMethod !== 'local' && 'localFilePath' in cfg) delete cfg.localFilePath;
-	});
+	}
+
+	function timestampName(): string {
+		const now = new Date();
+		const pad = (n: number) => String(n).padStart(2, '0');
+		return `Import ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+	}
 
 	const handleSubmit = async (event: Event) => {
 		event.preventDefault();
+		// Never submit a blank name: fall back to the path's basename, then a
+		// dated name that naturally stays unique across repeated imports.
+		if (!source && !formData.name.trim()) {
+			formData.name =
+				nameFromPath(formData.providerConfig.localFilePath ?? '') || timestampName();
+		}
 		isSubmitting = true;
 		try {
 			// Edit mode only renames the import. Send just the name so we don't overwrite
-			// the stored provider credentials (file paths) with an empty stub — and so
+			// the stored provider config (file paths) with an empty stub — and so
 			// editing never re-runs or alters the already-imported emails.
 			const payload = source
 				? ({ name: formData.name } as CreateIngestionSourceDto)
@@ -111,102 +110,29 @@
 		}
 	};
 
-	const handleFileChange = async (event: Event) => {
-		const target = event.target as HTMLInputElement;
-		const selectedFiles = Array.from(target.files ?? []);
-		if (selectedFiles.length === 0) {
-			return;
-		}
-		fileUploading = true;
-
+	/** Opens the OS file/folder picker (served by the desktop shell) and puts
+	 *  the chosen path into the path field. */
+	async function pickNative(mode: 'file' | 'folder') {
 		try {
-			const isMboxImport = importMethod === 'mbox-files' || importMethod === 'mbox-folder';
-			const compatibleFiles = isMboxImport
-				? selectedFiles.filter(
-						(file) =>
-							file.name.toLowerCase().endsWith('.mbox') ||
-							file.name.toLowerCase().endsWith('.emlx')
-					)
-				: selectedFiles.slice(0, 1);
-			const existingFiles: Array<{
-				fileName: string;
-				filePath: string;
-				relativePath?: string;
-			}> =
-				isMboxImport && Array.isArray(formData.providerConfig.uploadedFiles)
-					? formData.providerConfig.uploadedFiles
-					: [];
-			const existingFileKeys = new Set(
-				existingFiles.map((file) => file.relativePath || file.fileName)
-			);
-			const filesToUpload = compatibleFiles.filter(
-				(file) => !existingFileKeys.has(file.webkitRelativePath || file.name)
-			);
-
-			if (filesToUpload.length === 0) {
-				throw new Error($t('app.components.import_source_form.no_new_mbox_messages'));
+			const response = await api(`/native/pick-${mode}`, { method: 'POST' });
+			if (!response.ok) {
+				throw new Error($t('app.components.import_source_form.picker_unavailable'));
 			}
-
-			const uploadedFiles: Array<{
-				fileName: string;
-				filePath: string;
-				relativePath?: string;
-			}> = [];
-
-			for (const file of filesToUpload) {
-				const uploadFormData = new FormData();
-				uploadFormData.append('file', file);
-				const response = await api('/upload', {
-					method: 'POST',
-					body: uploadFormData,
-				});
-
-				let result: Record<string, string>;
-				try {
-					result = await response.json();
-				} catch {
-					throw new Error(
-						$t('app.components.import_source_form.upload_network_error')
-					);
-				}
-
-				if (!response.ok) {
-					throw new Error(
-						result.message || $t('app.components.import_source_form.upload_failed')
-					);
-				}
-
-				uploadedFiles.push({
-					fileName: file.name,
-					filePath: result.filePath,
-					relativePath: file.webkitRelativePath || undefined,
-				});
-			}
-
-			if (isMboxImport) {
-				formData.providerConfig.uploadedFiles = [...existingFiles, ...uploadedFiles];
-				delete formData.providerConfig.uploadedFilePath;
-				delete formData.providerConfig.uploadedFileName;
-				target.value = '';
-			} else {
-				formData.providerConfig.uploadedFilePath = uploadedFiles[0].filePath;
-				formData.providerConfig.uploadedFileName = uploadedFiles[0].fileName;
+			const result = (await response.json()) as { path: string | null };
+			if (result.path) {
+				formData.providerConfig.localFilePath = result.path;
+				autoFillName(result.path);
 			}
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
 			setAlert({
 				type: 'error',
-				title: $t('app.components.import_source_form.upload_failed'),
-				message,
+				title: $t('app.components.import_source_form.picker_unavailable'),
+				message: error instanceof Error ? error.message : String(error),
 				duration: 5000,
 				show: true,
 			});
-			// Reset file input so the user can retry with the same file
-			target.value = '';
-		} finally {
-			fileUploading = false;
 		}
-	};
+	}
 
 	const mergeTriggerContent = $derived(
 		formData.mergedIntoId
@@ -225,112 +151,42 @@
 	     it; the emails are already imported and are never changed here. -->
 	{#if !source}
 		<div class="grid grid-cols-4 items-start gap-4">
-			<Label class="pt-2 text-left"
-				>{$t('app.components.import_source_form.import_method')}</Label
+			<Label for="import-path" class="pt-2 text-left"
+				>{$t('app.components.import_source_form.import_path')}</Label
 			>
-			<Select.Root name="importMethod" bind:value={importMethod} type="single">
-				<Select.Trigger class="col-span-3">
-					{importMethodLabel}
-				</Select.Trigger>
-				<Select.Content>
-					<Select.Item value="mbox-files"
-						>{$t('app.components.import_source_form.mbox_files')}</Select.Item
+			<div class="col-span-3 space-y-2">
+				<Input
+					id="import-path"
+					bind:value={formData.providerConfig.localFilePath}
+					placeholder="/home/you/Mail Exports"
+				/>
+				<div class="flex gap-2">
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						class="gap-2 text-xs"
+						onclick={() => pickNative('file')}
 					>
-					<Select.Item value="mbox-folder"
-						>{$t('app.components.import_source_form.apple_mail_folder')}</Select.Item
+						<FileIcon class="h-3.5 w-3.5" />
+						{$t('app.components.import_source_form.choose_file')}
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						class="gap-2 text-xs"
+						onclick={() => pickNative('folder')}
 					>
-					<Select.Item value="eml-zip"
-						>{$t(
-							'app.components.import_source_form.provider_eml_import'
-						)}</Select.Item
-					>
-					<Select.Item value="local"
-						>{$t('app.components.import_source_form.local_path')}</Select.Item
-					>
-				</Select.Content>
-			</Select.Root>
+						<FolderOpen class="h-3.5 w-3.5" />
+						{$t('app.components.import_source_form.choose_folder')}
+					</Button>
+				</div>
+				<p class="text-muted-foreground text-xs">
+					{$t('app.components.import_source_form.import_path_help')}
+				</p>
+			</div>
 		</div>
-
-		{#if importMethod === 'mbox-files'}
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="mbox-file" class="text-left"
-					>{$t('app.components.import_source_form.mbox_files')}</Label
-				>
-				<div class="col-span-3">
-					<Input
-						id="mbox-file"
-						type="file"
-						accept=".mbox"
-						multiple
-						onchange={handleFileChange}
-					/>
-				</div>
-			</div>
-		{:else if importMethod === 'mbox-folder'}
-			<div class="grid grid-cols-4 items-start gap-4">
-				<Label for="mbox-folder" class="pt-2 text-left"
-					>{$t('app.components.import_source_form.apple_mail_folder')}</Label
-				>
-				<div class="col-span-3 space-y-1">
-					<Input
-						id="mbox-folder"
-						type="file"
-						accept=".emlx"
-						multiple
-						webkitdirectory
-						onchange={handleFileChange}
-					/>
-					<p class="text-muted-foreground text-xs">
-						{$t('app.components.import_source_form.apple_mail_folder_help')}
-					</p>
-				</div>
-			</div>
-		{:else if importMethod === 'eml-zip'}
-			<div class="grid grid-cols-4 items-center gap-4">
-				<Label for="eml-file" class="text-left"
-					>{$t('app.components.import_source_form.eml_file')}</Label
-				>
-				<div class="col-span-3 flex flex-row items-center space-x-2">
-					<Input id="eml-file" type="file" accept=".zip" onchange={handleFileChange} />
-					{#if fileUploading}
-						<span class=" text-primary animate-spin"><Loader2 /></span>
-					{/if}
-				</div>
-			</div>
-		{:else}
-			<div class="grid grid-cols-4 items-start gap-4">
-				<Label for="mbox-local-path" class="text-left"
-					>{$t('app.components.import_source_form.local_file_path')}</Label
-				>
-				<div class="col-span-3 space-y-1">
-					<Input
-						id="mbox-local-path"
-						bind:value={formData.providerConfig.localFilePath}
-						placeholder="/path/inside-container"
-					/>
-					<p class="text-muted-foreground text-xs">
-						{$t('app.components.import_source_form.local_path_container_help')}
-					</p>
-				</div>
-			</div>
-		{/if}
-
-		{#if (importMethod === 'mbox-files' || importMethod === 'mbox-folder') && (fileUploading || formData.providerConfig.uploadedFiles?.length)}
-			<div class="grid grid-cols-4 items-center gap-4">
-				<div></div>
-				<div class="text-muted-foreground col-span-3 flex items-center gap-2 text-sm">
-					{#if fileUploading}
-						<span class="text-primary animate-spin"><Loader2 /></span>
-					{/if}
-					{#if formData.providerConfig.uploadedFiles?.length}
-						<span>
-							{formData.providerConfig.uploadedFiles.length}
-							{$t('app.components.import_source_form.mbox_messages_ready')}
-						</span>
-					{/if}
-				</div>
-			</div>
-		{/if}
 	{/if}
 	<!-- Merge into existing import — shown only when a merge target exists -->
 	{#if !source && mergeableRootSources.length > 0}
@@ -341,12 +197,7 @@
 						>{$t('app.components.import_source_form.merge_into')}</Label
 					>
 					<span
-						use:tippy={{
-							allowHTML: true,
-							content: $t('app.components.import_source_form.merge_into_tooltip'),
-							interactive: true,
-							delay: 500,
-						}}
+						use:tooltip={$t('app.components.import_source_form.merge_into_tooltip')}
 						class="text-muted-foreground cursor-help"
 					>
 						<Info class="h-4 w-4" />
@@ -384,7 +235,7 @@
 	{/if}
 
 	<Dialog.Footer>
-		<Button type="submit" disabled={isSubmitting || fileUploading}>
+		<Button type="submit" disabled={isSubmitting}>
 			{#if isSubmitting}
 				{$t('app.components.common.submitting')}
 			{:else}

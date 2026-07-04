@@ -1,2270 +1,68 @@
 {
-	"openapi": "3.1.0",
+	"openapi": "3.0.3",
 	"info": {
 		"title": "PEA API",
 		"version": "1.0.0",
-		"description": "The API of PEA (Personal Email Archive). All endpoints are prefixed with `/api/v1` (also served at `/v1`) and require no authentication, the app is single-user and the API is served in-process by the desktop app (`pea://`). To call it over HTTP for scripting or debugging, run the standalone engine: `pea-engine --data-dir ~/.local/share/pea --port 47200` (binds to 127.0.0.1 only).",
+		"description": "HTTP surface of PEA (Personal Email Archive), a single-user local desktop email archive. The Rust axum engine serves this API in-process to the Svelte SPA over the pea:// scheme. All routes live under /api/v1 (carried by the server base URL below). There is no authentication: the app is single-user and binds to localhost only. To call it over HTTP for scripting or debugging, run the standalone engine (binds 127.0.0.1 only).",
 		"license": {
-			"name": "SEE LICENSE IN LICENSE",
-			"url": "https://github.com/LogicLabs-OU/OpenArchiver/blob/main/LICENSE"
-		},
-		"contact": {
-			"name": "Open Archiver",
-			"url": "https://openarchiver.com"
+			"name": "AGPL-3.0-or-later",
+			"url": "https://github.com/glengerbush/PEA/blob/main/LICENSE"
 		}
 	},
 	"servers": [
 		{
-			"url": "http://127.0.0.1:47200",
-			"description": "Standalone engine (pea-engine binary)"
+			"url": "http://127.0.0.1:47200/api/v1",
+			"description": "Standalone engine (pea-engine binary), binds to 127.0.0.1 only. In the desktop app the identical routes are served in-process over the pea:// scheme (no network socket)."
 		}
 	],
-	"components": {
-		"responses": {
-			"Unauthorized": {
-				"description": "Authentication is required or the token is invalid/expired.",
-				"content": {
-					"application/json": {
-						"schema": {
-							"$ref": "#/components/schemas/ErrorMessage"
-						},
-						"example": {
-							"message": "Unauthorized"
-						}
-					}
-				}
-			},
-			"Forbidden": {
-				"description": "The authenticated user is not allowed to perform this action.",
-				"content": {
-					"application/json": {
-						"schema": {
-							"$ref": "#/components/schemas/ErrorMessage"
-						},
-						"example": {
-							"message": "Forbidden"
-						}
-					}
-				}
-			},
-			"NotFound": {
-				"description": "The requested resource was not found.",
-				"content": {
-					"application/json": {
-						"schema": {
-							"$ref": "#/components/schemas/ErrorMessage"
-						},
-						"example": {
-							"message": "Not found"
-						}
-					}
-				}
-			},
-			"InternalServerError": {
-				"description": "An unexpected error occurred on the server.",
-				"content": {
-					"application/json": {
-						"schema": {
-							"$ref": "#/components/schemas/ErrorMessage"
-						},
-						"example": {
-							"message": "Internal server error"
-						}
-					}
-				}
-			}
+	"tags": [
+		{
+			"name": "Archived Emails"
 		},
-		"schemas": {
-			"ErrorMessage": {
-				"type": "object",
-				"properties": {
-					"message": {
-						"type": "string",
-						"description": "Human-readable error description.",
-						"example": "An error occurred."
-					}
-				},
-				"required": [
-					"message"
-				]
-			},
-			"MessageResponse": {
-				"type": "object",
-				"properties": {
-					"message": {
-						"type": "string",
-						"example": "Operation completed successfully."
-					}
-				},
-				"required": [
-					"message"
-				]
-			},
-			"ValidationError": {
-				"type": "object",
-				"properties": {
-					"message": {
-						"type": "string",
-						"example": "Request body is invalid."
-					},
-					"errors": {
-						"type": "string",
-						"description": "Zod validation error details."
-					}
-				},
-				"required": [
-					"message"
-				]
-			},
-			"LoginResponse": {
-				"type": "object",
-				"properties": {
-					"accessToken": {
-						"type": "string",
-						"description": "JWT for authenticating subsequent requests.",
-						"example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-					},
-					"user": {
-						"$ref": "#/components/schemas/User"
-					}
-				},
-				"required": [
-					"accessToken",
-					"user"
-				]
-			},
-			"User": {
-				"type": "object",
-				"properties": {
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"first_name": {
-						"type": "string",
-						"nullable": true,
-						"example": "Jane"
-					},
-					"last_name": {
-						"type": "string",
-						"nullable": true,
-						"example": "Doe"
-					},
-					"email": {
-						"type": "string",
-						"format": "email",
-						"example": "jane.doe@example.com"
-					},
-					"createdAt": {
-						"type": "string",
-						"format": "date-time"
-					}
-				},
-				"required": [
-					"id",
-					"email",
-					"createdAt"
-				]
-			},
-			"ApiKey": {
-				"type": "object",
-				"properties": {
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"name": {
-						"type": "string",
-						"example": "CI/CD Pipeline Key"
-					},
-					"key": {
-						"type": "string",
-						"description": "Partial/masked key, the raw value is only available at creation time.",
-						"example": "oa_live_abc1..."
-					},
-					"expiresAt": {
-						"type": "string",
-						"format": "date-time"
-					},
-					"createdAt": {
-						"type": "string",
-						"format": "date-time"
-					}
-				},
-				"required": [
-					"id",
-					"name",
-					"expiresAt",
-					"createdAt"
-				]
-			},
-			"SafeIngestionSource": {
-				"type": "object",
-				"description": "An ingestion source with sensitive credential fields removed.",
-				"properties": {
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"name": {
-						"type": "string",
-						"example": "Company Google Workspace"
-					},
-					"provider": {
-						"type": "string",
-						"enum": [
-							"google_workspace",
-							"microsoft_365",
-							"generic_imap",
-							"pst_import",
-							"eml_import",
-							"mbox_import"
-						],
-						"example": "google_workspace"
-					},
-					"status": {
-						"type": "string",
-						"enum": [
-							"active",
-							"paused",
-							"error",
-							"pending_auth",
-							"syncing",
-							"importing",
-							"auth_success",
-							"imported"
-						],
-						"example": "active"
-					},
-					"createdAt": {
-						"type": "string",
-						"format": "date-time"
-					},
-					"updatedAt": {
-						"type": "string",
-						"format": "date-time"
-					},
-					"lastSyncStartedAt": {
-						"type": "string",
-						"format": "date-time",
-						"nullable": true
-					},
-					"lastSyncFinishedAt": {
-						"type": "string",
-						"format": "date-time",
-						"nullable": true
-					},
-					"lastSyncStatusMessage": {
-						"type": "string",
-						"nullable": true
-					}
-				},
-				"required": [
-					"id",
-					"name",
-					"provider",
-					"status",
-					"createdAt",
-					"updatedAt"
-				]
-			},
-			"CreateIngestionSourceDto": {
-				"type": "object",
-				"required": [
-					"name",
-					"provider",
-					"providerConfig"
-				],
-				"properties": {
-					"name": {
-						"type": "string",
-						"example": "Company Google Workspace"
-					},
-					"provider": {
-						"type": "string",
-						"enum": [
-							"google_workspace",
-							"microsoft_365",
-							"generic_imap",
-							"pst_import",
-							"eml_import",
-							"mbox_import"
-						]
-					},
-					"providerConfig": {
-						"type": "object",
-						"description": "Provider-specific configuration. See the ingestion source guides for the required fields per provider.",
-						"example": {
-							"serviceAccountKeyJson": "{\"type\":\"service_account\",...}",
-							"impersonatedAdminEmail": "admin@example.com"
-						}
-					}
-				}
-			},
-			"UpdateIngestionSourceDto": {
-				"type": "object",
-				"properties": {
-					"name": {
-						"type": "string"
-					},
-					"provider": {
-						"type": "string",
-						"enum": [
-							"google_workspace",
-							"microsoft_365",
-							"generic_imap",
-							"pst_import",
-							"eml_import",
-							"mbox_import"
-						]
-					},
-					"status": {
-						"type": "string",
-						"enum": [
-							"active",
-							"paused",
-							"error",
-							"pending_auth",
-							"syncing",
-							"importing",
-							"auth_success",
-							"imported"
-						]
-					},
-					"providerConfig": {
-						"type": "object"
-					}
-				}
-			},
-			"Recipient": {
-				"type": "object",
-				"properties": {
-					"name": {
-						"type": "string",
-						"nullable": true,
-						"example": "John Doe"
-					},
-					"email": {
-						"type": "string",
-						"format": "email",
-						"example": "john.doe@example.com"
-					}
-				},
-				"required": [
-					"email"
-				]
-			},
-			"Attachment": {
-				"type": "object",
-				"properties": {
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"filename": {
-						"type": "string",
-						"example": "invoice.pdf"
-					},
-					"mimeType": {
-						"type": "string",
-						"nullable": true,
-						"example": "application/pdf"
-					},
-					"sizeBytes": {
-						"type": "integer",
-						"example": 204800
-					},
-					"storagePath": {
-						"type": "string",
-						"example": "open-archiver/attachments/abc123.pdf"
-					}
-				},
-				"required": [
-					"id",
-					"filename",
-					"sizeBytes",
-					"storagePath"
-				]
-			},
-			"ThreadEmail": {
-				"type": "object",
-				"properties": {
-					"id": {
-						"type": "string",
-						"description": "ArchivedEmail ID.",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"subject": {
-						"type": "string",
-						"nullable": true,
-						"example": "Re: Q4 Invoice"
-					},
-					"sentAt": {
-						"type": "string",
-						"format": "date-time"
-					},
-					"senderEmail": {
-						"type": "string",
-						"format": "email",
-						"example": "finance@vendor.com"
-					}
-				},
-				"required": [
-					"id",
-					"sentAt",
-					"senderEmail"
-				]
-			},
-			"ArchivedEmail": {
-				"type": "object",
-				"properties": {
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"ingestionSourceId": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"userEmail": {
-						"type": "string",
-						"format": "email",
-						"example": "user@company.com"
-					},
-					"messageIdHeader": {
-						"type": "string",
-						"nullable": true
-					},
-					"sentAt": {
-						"type": "string",
-						"format": "date-time"
-					},
-					"subject": {
-						"type": "string",
-						"nullable": true,
-						"example": "Q4 Invoice"
-					},
-					"senderName": {
-						"type": "string",
-						"nullable": true,
-						"example": "Finance Dept"
-					},
-					"senderEmail": {
-						"type": "string",
-						"format": "email",
-						"example": "finance@vendor.com"
-					},
-					"recipients": {
-						"type": "array",
-						"items": {
-							"$ref": "#/components/schemas/Recipient"
-						}
-					},
-					"storagePath": {
-						"type": "string"
-					},
-					"storageHashSha256": {
-						"type": "string",
-						"description": "SHA-256 hash of the raw email file, stored at archival time."
-					},
-					"sizeBytes": {
-						"type": "integer"
-					},
-					"isIndexed": {
-						"type": "boolean"
-					},
-					"hasAttachments": {
-						"type": "boolean"
-					},
-					"isOnLegalHold": {
-						"type": "boolean"
-					},
-					"archivedAt": {
-						"type": "string",
-						"format": "date-time"
-					},
-					"attachments": {
-						"type": "array",
-						"items": {
-							"$ref": "#/components/schemas/Attachment"
-						}
-					},
-					"thread": {
-						"type": "array",
-						"description": "Other emails in the same thread, ordered by sentAt. Only present on single-email GET responses.",
-						"items": {
-							"$ref": "#/components/schemas/ThreadEmail"
-						}
-					},
-					"path": {
-						"type": "string",
-						"nullable": true
-					},
-					"tags": {
-						"type": "array",
-						"items": {
-							"type": "string"
-						},
-						"nullable": true
-					}
-				},
-				"required": [
-					"id",
-					"ingestionSourceId",
-					"userEmail",
-					"sentAt",
-					"senderEmail",
-					"recipients",
-					"storagePath",
-					"storageHashSha256",
-					"sizeBytes",
-					"isIndexed",
-					"hasAttachments",
-					"isOnLegalHold",
-					"archivedAt"
-				]
-			},
-			"PaginatedArchivedEmails": {
-				"type": "object",
-				"properties": {
-					"items": {
-						"type": "array",
-						"items": {
-							"$ref": "#/components/schemas/ArchivedEmail"
-						}
-					},
-					"total": {
-						"type": "integer",
-						"example": 1234
-					},
-					"page": {
-						"type": "integer",
-						"example": 1
-					},
-					"limit": {
-						"type": "integer",
-						"example": 10
-					}
-				},
-				"required": [
-					"items",
-					"total",
-					"page",
-					"limit"
-				]
-			},
-			"SearchResults": {
-				"type": "object",
-				"properties": {
-					"hits": {
-						"type": "array",
-						"description": "Array of matching archived email objects, potentially with highlighted fields.",
-						"items": {
-							"type": "object"
-						}
-					},
-					"total": {
-						"type": "integer",
-						"example": 42
-					},
-					"page": {
-						"type": "integer",
-						"example": 1
-					},
-					"limit": {
-						"type": "integer",
-						"example": 10
-					},
-					"totalPages": {
-						"type": "integer",
-						"example": 5
-					},
-					"processingTimeMs": {
-						"type": "integer",
-						"description": "Meilisearch query processing time in milliseconds.",
-						"example": 12
-					}
-				},
-				"required": [
-					"hits",
-					"total",
-					"page",
-					"limit",
-					"totalPages",
-					"processingTimeMs"
-				]
-			},
-			"IntegrityCheckResult": {
-				"type": "object",
-				"properties": {
-					"type": {
-						"type": "string",
-						"enum": [
-							"email",
-							"attachment"
-						],
-						"description": "Whether this result is for the email itself or one of its attachments."
-					},
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"filename": {
-						"type": "string",
-						"description": "Attachment filename. Only present when `type` is `attachment`.",
-						"example": "invoice.pdf"
-					},
-					"isValid": {
-						"type": "boolean",
-						"description": "True if the stored and computed hashes match."
-					},
-					"reason": {
-						"type": "string",
-						"description": "Human-readable explanation if `isValid` is false."
-					},
-					"storedHash": {
-						"type": "string",
-						"description": "SHA-256 hash stored at archival time.",
-						"example": "a3f1b2c4..."
-					},
-					"computedHash": {
-						"type": "string",
-						"description": "SHA-256 hash computed during this verification run.",
-						"example": "a3f1b2c4..."
-					}
-				},
-				"required": [
-					"type",
-					"id",
-					"isValid",
-					"storedHash",
-					"computedHash"
-				]
-			},
-			"QueueCounts": {
-				"type": "object",
-				"properties": {
-					"active": {
-						"type": "integer",
-						"example": 0
-					},
-					"completed": {
-						"type": "integer",
-						"example": 56
-					},
-					"failed": {
-						"type": "integer",
-						"example": 4
-					},
-					"delayed": {
-						"type": "integer",
-						"example": 0
-					},
-					"waiting": {
-						"type": "integer",
-						"example": 0
-					},
-					"paused": {
-						"type": "integer",
-						"example": 0
-					}
-				},
-				"required": [
-					"active",
-					"completed",
-					"failed",
-					"delayed",
-					"waiting",
-					"paused"
-				]
-			},
-			"QueueOverview": {
-				"type": "object",
-				"properties": {
-					"name": {
-						"type": "string",
-						"example": "ingestion"
-					},
-					"counts": {
-						"$ref": "#/components/schemas/QueueCounts"
-					}
-				},
-				"required": [
-					"name",
-					"counts"
-				]
-			},
-			"Job": {
-				"type": "object",
-				"properties": {
-					"id": {
-						"type": "string",
-						"nullable": true,
-						"example": "1"
-					},
-					"name": {
-						"type": "string",
-						"example": "initial-import"
-					},
-					"data": {
-						"type": "object",
-						"description": "Job payload data.",
-						"example": {
-							"ingestionSourceId": "clx1y2z3a0000b4d2"
-						}
-					},
-					"state": {
-						"type": "string",
-						"enum": [
-							"active",
-							"completed",
-							"failed",
-							"delayed",
-							"waiting",
-							"paused"
-						],
-						"example": "failed"
-					},
-					"failedReason": {
-						"type": "string",
-						"nullable": true,
-						"example": "Error: Connection timed out"
-					},
-					"timestamp": {
-						"type": "integer",
-						"example": 1678886400000
-					},
-					"processedOn": {
-						"type": "integer",
-						"nullable": true,
-						"example": 1678886401000
-					},
-					"finishedOn": {
-						"type": "integer",
-						"nullable": true,
-						"example": 1678886402000
-					},
-					"attemptsMade": {
-						"type": "integer",
-						"example": 5
-					},
-					"stacktrace": {
-						"type": "array",
-						"items": {
-							"type": "string"
-						}
-					},
-					"returnValue": {
-						"nullable": true
-					},
-					"ingestionSourceId": {
-						"type": "string",
-						"nullable": true
-					},
-					"error": {
-						"description": "Shorthand copy of `failedReason` for easier access.",
-						"nullable": true
-					}
-				},
-				"required": [
-					"id",
-					"name",
-					"data",
-					"state",
-					"timestamp",
-					"attemptsMade",
-					"stacktrace"
-				]
-			},
-			"QueueDetails": {
-				"type": "object",
-				"properties": {
-					"name": {
-						"type": "string",
-						"example": "ingestion"
-					},
-					"counts": {
-						"$ref": "#/components/schemas/QueueCounts"
-					},
-					"jobs": {
-						"type": "array",
-						"items": {
-							"$ref": "#/components/schemas/Job"
-						}
-					},
-					"pagination": {
-						"type": "object",
-						"properties": {
-							"currentPage": {
-								"type": "integer",
-								"example": 1
-							},
-							"totalPages": {
-								"type": "integer",
-								"example": 3
-							},
-							"totalJobs": {
-								"type": "integer",
-								"example": 25
-							},
-							"limit": {
-								"type": "integer",
-								"example": 10
-							}
-						},
-						"required": [
-							"currentPage",
-							"totalPages",
-							"totalJobs",
-							"limit"
-						]
-					}
-				},
-				"required": [
-					"name",
-					"counts",
-					"jobs",
-					"pagination"
-				]
-			},
-			"DashboardStats": {
-				"type": "object",
-				"properties": {
-					"totalEmailsArchived": {
-						"type": "integer",
-						"example": 125000
-					},
-					"totalStorageUsed": {
-						"type": "integer",
-						"description": "Total storage used by all archived emails in bytes.",
-						"example": 5368709120
-					},
-					"failedIngestionsLast7Days": {
-						"type": "integer",
-						"description": "Number of ingestion sources in error state updated in the last 7 days.",
-						"example": 2
-					}
-				}
-			},
-			"IngestionSourceStats": {
-				"type": "object",
-				"description": "Summary of an ingestion source including its storage usage.",
-				"properties": {
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"name": {
-						"type": "string",
-						"example": "Company Google Workspace"
-					},
-					"provider": {
-						"type": "string",
-						"example": "google_workspace"
-					},
-					"status": {
-						"type": "string",
-						"example": "active"
-					},
-					"storageUsed": {
-						"type": "integer",
-						"description": "Total bytes stored for emails from this ingestion source.",
-						"example": 1073741824
-					}
-				},
-				"required": [
-					"id",
-					"name",
-					"provider",
-					"status",
-					"storageUsed"
-				]
-			},
-			"RecentSync": {
-				"type": "object",
-				"description": "Summary of a recent sync session.",
-				"properties": {
-					"id": {
-						"type": "string",
-						"example": "clx1y2z3a0000b4d2"
-					},
-					"sourceName": {
-						"type": "string",
-						"example": "Company Google Workspace"
-					},
-					"startTime": {
-						"type": "string",
-						"format": "date-time"
-					},
-					"duration": {
-						"type": "integer",
-						"description": "Duration in milliseconds.",
-						"example": 4500
-					},
-					"emailsProcessed": {
-						"type": "integer",
-						"example": 120
-					},
-					"status": {
-						"type": "string",
-						"example": "completed"
-					}
-				},
-				"required": [
-					"id",
-					"sourceName",
-					"startTime",
-					"duration",
-					"emailsProcessed",
-					"status"
-				]
-			},
-			"IndexedInsights": {
-				"type": "object",
-				"description": "Insights derived from the search index.",
-				"properties": {
-					"topSenders": {
-						"type": "array",
-						"items": {
-							"type": "object",
-							"properties": {
-								"sender": {
-									"type": "string",
-									"example": "finance@vendor.com"
-								},
-								"count": {
-									"type": "integer",
-									"example": 342
-								}
-							},
-							"required": [
-								"sender",
-								"count"
-							]
-						}
-					}
-				},
-				"required": [
-					"topSenders"
-				]
-			},
-			"SystemSettings": {
-				"type": "object",
-				"description": "Non-sensitive system configuration values.",
-				"properties": {
-					"language": {
-						"type": "string",
-						"enum": [
-							"en",
-							"es",
-							"fr",
-							"de",
-							"it",
-							"pt",
-							"nl",
-							"ja",
-							"et",
-							"el"
-						],
-						"example": "en",
-						"description": "Default UI language code."
-					},
-					"theme": {
-						"type": "string",
-						"enum": [
-							"light",
-							"dark",
-							"system"
-						],
-						"example": "system",
-						"description": "Default color theme."
-					},
-					"supportEmail": {
-						"type": "string",
-						"format": "email",
-						"nullable": true,
-						"example": "support@example.com",
-						"description": "Public-facing support email address."
-					}
-				}
-			}
+		{
+			"name": "Duplicates"
+		},
+		{
+			"name": "Remote Content"
+		},
+		{
+			"name": "Dashboard"
+		},
+		{
+			"name": "Ingestion Sources"
+		},
+		{
+			"name": "Settings"
+		},
+		{
+			"name": "Contacts"
+		},
+		{
+			"name": "Storage"
+		},
+		{
+			"name": "Jobs"
 		}
-	},
+	],
 	"paths": {
-		"/v1/users/profile": {
+		"/archived-emails": {
 			"get": {
-				"summary": "Get current user profile",
-				"description": "Returns the profile of the currently authenticated user.",
-				"operationId": "getProfile",
-				"tags": [
-					"Users"
-				],
-				"responses": {
-					"200": {
-						"description": "Current user's profile.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/User"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					}
-				}
-			},
-			"patch": {
-				"summary": "Update current user profile",
-				"description": "Updates the email, first name, or last name of the currently authenticated user. Disabled in demo mode.",
-				"operationId": "updateProfile",
-				"tags": [
-					"Users"
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"type": "object",
-								"properties": {
-									"email": {
-										"type": "string",
-										"format": "email"
-									},
-									"first_name": {
-										"type": "string"
-									},
-									"last_name": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				},
-				"responses": {
-					"200": {
-						"description": "Updated user profile.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/User"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"description": "Disabled in demo mode.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		"/v1/upload": {
-			"post": {
-				"summary": "Upload a file",
-				"description": "Uploads a file (PST, EML, MBOX, or other) to temporary storage for subsequent use in an ingestion source. Returns the storage path, which should be passed as `uploadedFilePath` when creating a file-based ingestion source.\n",
-				"operationId": "uploadFile",
-				"tags": [
-					"Upload"
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"multipart/form-data": {
-							"schema": {
-								"type": "object",
-								"properties": {
-									"file": {
-										"type": "string",
-										"format": "binary",
-										"description": "The file to upload."
-									}
-								}
-							}
-						}
-					}
-				},
-				"responses": {
-					"200": {
-						"description": "File uploaded successfully. Returns the storage path.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"type": "object",
-									"properties": {
-										"filePath": {
-											"type": "string",
-											"description": "The storage path of the uploaded file. Use this as `uploadedFilePath` when creating a file-based ingestion source.",
-											"example": "open-archiver/tmp/uuid-filename.pst"
-										}
-									}
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "Invalid multipart request.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/storage/download": {
-			"get": {
-				"summary": "Download a stored file",
-				"description": "Downloads a file from the configured storage backend (local filesystem or S3-compatible). The path is sanitized to prevent directory traversal attacks.\n",
-				"operationId": "downloadFile",
-				"tags": [
-					"Storage"
-				],
-				"parameters": [
-					{
-						"name": "path",
-						"in": "query",
-						"required": true,
-						"description": "The relative storage path of the file to download.",
-						"schema": {
-							"type": "string",
-							"example": "open-archiver/emails/abc123.eml"
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "The file content as a binary stream. The `Content-Disposition` header is set to trigger a browser download.",
-						"headers": {
-							"Content-Disposition": {
-								"description": "Attachment filename.",
-								"schema": {
-									"type": "string",
-									"example": "attachment; filename=\"abc123.eml\""
-								}
-							}
-						},
-						"content": {
-							"application/octet-stream": {
-								"schema": {
-									"type": "string",
-									"format": "binary"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "File path is required or invalid.",
-						"content": {
-							"text/plain": {
-								"schema": {
-									"type": "string"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"description": "File not found in storage.",
-						"content": {
-							"text/plain": {
-								"schema": {
-									"type": "string"
-								}
-							}
-						}
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/settings/system": {
-			"get": {
-				"summary": "Get system settings",
-				"description": "Returns non-sensitive system settings such as language, timezone, and feature flags. This endpoint is public, no authentication required. Sensitive settings are never exposed.\n",
-				"operationId": "getSystemSettings",
-				"tags": [
-					"Settings"
-				],
-				"responses": {
-					"200": {
-						"description": "Current system settings.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/SystemSettings"
-								}
-							}
-						}
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			},
-			"put": {
-				"summary": "Update system settings",
-				"description": "Updates system settings.",
-				"operationId": "updateSystemSettings",
-				"tags": [
-					"Settings"
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"$ref": "#/components/schemas/SystemSettings"
-							}
-						}
-					}
-				},
-				"responses": {
-					"200": {
-						"description": "Updated system settings.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/SystemSettings"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/search": {
-			"get": {
-				"summary": "Search archived emails",
-				"description": "Performs a full-text search across indexed archived emails using Meilisearch.",
-				"operationId": "searchEmails",
-				"tags": [
-					"Search"
-				],
-				"parameters": [
-					{
-						"name": "keywords",
-						"in": "query",
-						"required": true,
-						"description": "The search query string.",
-						"schema": {
-							"type": "string",
-							"example": "invoice Q4"
-						}
-					},
-					{
-						"name": "page",
-						"in": "query",
-						"required": false,
-						"description": "Page number for pagination.",
-						"schema": {
-							"type": "integer",
-							"default": 1,
-							"example": 1
-						}
-					},
-					{
-						"name": "limit",
-						"in": "query",
-						"required": false,
-						"description": "Number of results per page.",
-						"schema": {
-							"type": "integer",
-							"default": 10,
-							"example": 10
-						}
-					},
-					{
-						"name": "matchingStrategy",
-						"in": "query",
-						"required": false,
-						"description": "Meilisearch matching strategy. `last` returns results containing at least one keyword; `all` requires all keywords; `frequency` sorts by keyword frequency.",
-						"schema": {
-							"type": "string",
-							"enum": [
-								"last",
-								"all",
-								"frequency"
-							],
-							"default": "last"
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "Search results.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/SearchResults"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "Keywords parameter is required.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/jobs/queues": {
-			"get": {
-				"summary": "List all queues",
-				"description": "Returns all BullMQ job queues and their current job counts broken down by status.",
-				"operationId": "getQueues",
-				"tags": [
-					"Jobs"
-				],
-				"responses": {
-					"200": {
-						"description": "List of queue overviews.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"type": "object",
-									"properties": {
-										"queues": {
-											"type": "array",
-											"items": {
-												"$ref": "#/components/schemas/QueueOverview"
-											}
-										}
-									},
-									"example": {
-										"queues": [
-											{
-												"name": "ingestion",
-												"counts": {
-													"active": 0,
-													"completed": 56,
-													"failed": 4,
-													"delayed": 3,
-													"waiting": 0,
-													"paused": 0
-												}
-											},
-											{
-												"name": "indexing",
-												"counts": {
-													"active": 0,
-													"completed": 0,
-													"failed": 0,
-													"delayed": 0,
-													"waiting": 0,
-													"paused": 0
-												}
-											}
-										]
-									}
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/jobs/queues/{queueName}": {
-			"get": {
-				"summary": "Get jobs in a queue",
-				"description": "Returns a paginated list of jobs within a specific queue, filtered by status.",
-				"operationId": "getQueueJobs",
-				"tags": [
-					"Jobs"
-				],
-				"parameters": [
-					{
-						"name": "queueName",
-						"in": "path",
-						"required": true,
-						"description": "The name of the queue (e.g. `ingestion` or `indexing`).",
-						"schema": {
-							"type": "string",
-							"example": "ingestion"
-						}
-					},
-					{
-						"name": "status",
-						"in": "query",
-						"required": false,
-						"description": "Filter jobs by status.",
-						"schema": {
-							"type": "string",
-							"enum": [
-								"active",
-								"completed",
-								"failed",
-								"delayed",
-								"waiting",
-								"paused"
-							],
-							"default": "failed"
-						}
-					},
-					{
-						"name": "page",
-						"in": "query",
-						"required": false,
-						"schema": {
-							"type": "integer",
-							"default": 1
-						}
-					},
-					{
-						"name": "limit",
-						"in": "query",
-						"required": false,
-						"schema": {
-							"type": "integer",
-							"default": 10
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "Detailed view of the queue including paginated jobs.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/QueueDetails"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					},
-					"404": {
-						"description": "Queue not found.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/ingestion-sources": {
-			"post": {
-				"summary": "Create an ingestion source",
-				"description": "Creates a new ingestion source and validates the connection. Returns the created source without credentials.",
-				"operationId": "createIngestionSource",
-				"tags": [
-					"Ingestion"
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"$ref": "#/components/schemas/CreateIngestionSourceDto"
-							}
-						}
-					}
-				},
-				"responses": {
-					"201": {
-						"description": "Ingestion source created successfully.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/SafeIngestionSource"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "Invalid input or connection test failed.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					}
-				}
-			},
-			"get": {
-				"summary": "List ingestion sources",
-				"description": "Returns all ingestion sources accessible to the authenticated user. Credentials are excluded from the response.",
-				"operationId": "listIngestionSources",
-				"tags": [
-					"Ingestion"
-				],
-				"responses": {
-					"200": {
-						"description": "Array of ingestion sources.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"type": "array",
-									"items": {
-										"$ref": "#/components/schemas/SafeIngestionSource"
-									}
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/ingestion-sources/{id}": {
-			"get": {
-				"summary": "Get an ingestion source",
-				"description": "Returns a single ingestion source by ID. Credentials are excluded.",
-				"operationId": "getIngestionSourceById",
-				"tags": [
-					"Ingestion"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "Ingestion source details.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/SafeIngestionSource"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			},
-			"put": {
-				"summary": "Update an ingestion source",
-				"description": "Updates configuration for an existing ingestion source.",
-				"operationId": "updateIngestionSource",
-				"tags": [
-					"Ingestion"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"$ref": "#/components/schemas/UpdateIngestionSourceDto"
-							}
-						}
-					}
-				},
-				"responses": {
-					"200": {
-						"description": "Updated ingestion source.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/SafeIngestionSource"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			},
-			"delete": {
-				"summary": "Delete an ingestion source",
-				"description": "Permanently deletes an ingestion source. Deletion must be enabled in system settings.",
-				"operationId": "deleteIngestionSource",
-				"tags": [
-					"Ingestion"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"204": {
-						"description": "Ingestion source deleted. No content returned."
-					},
-					"400": {
-						"description": "Deletion disabled or constraint error.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/ingestion-sources/{id}/import": {
-			"post": {
-				"summary": "Trigger initial import",
-				"description": "Enqueues an initial import job for the ingestion source. This imports all historical emails.",
-				"operationId": "triggerInitialImport",
-				"tags": [
-					"Ingestion"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"202": {
-						"description": "Initial import job accepted and queued.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/MessageResponse"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/ingestion-sources/{id}/pause": {
-			"post": {
-				"summary": "Pause an ingestion source",
-				"description": "Sets the ingestion source status to `paused`, stopping continuous sync.",
-				"operationId": "pauseIngestionSource",
-				"tags": [
-					"Ingestion"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "Ingestion source paused. Returns the updated source.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/SafeIngestionSource"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/ingestion-sources/{id}/sync": {
-			"post": {
-				"summary": "Force sync",
-				"description": "Triggers an out-of-schedule continuous sync for the ingestion source.",
-				"operationId": "triggerForceSync",
-				"tags": [
-					"Ingestion"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"202": {
-						"description": "Force sync job accepted and queued.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/MessageResponse"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/ingestion-sources/{id}/unmerge": {
-			"post": {
-				"summary": "Unmerge a child ingestion source",
-				"description": "Detaches a child source from its merge group, making it a standalone root source.",
-				"operationId": "unmergeIngestionSource",
-				"tags": [
-					"Ingestion"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string"
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "Source unmerged. Returns the updated source.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/SafeIngestionSource"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "Source is not merged into another source."
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					}
-				}
-			}
-		},
-		"/v1/dashboard/stats": {
-			"get": {
-				"summary": "Get dashboard stats",
-				"description": "Returns high-level statistics including total archived emails, total storage used, and failed ingestions in the last 7 days.",
-				"operationId": "getDashboardStats",
-				"tags": [
-					"Dashboard"
-				],
-				"responses": {
-					"200": {
-						"description": "Dashboard statistics.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/DashboardStats"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					}
-				}
-			}
-		},
-		"/v1/dashboard/ingestion-history": {
-			"get": {
-				"summary": "Get ingestion history",
-				"description": "Returns time-series data of email ingestion counts for the last 30 days.",
-				"operationId": "getIngestionHistory",
-				"tags": [
-					"Dashboard"
-				],
-				"responses": {
-					"200": {
-						"description": "Ingestion history wrapped in a `history` array.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"type": "object",
-									"properties": {
-										"history": {
-											"type": "array",
-											"items": {
-												"type": "object",
-												"properties": {
-													"date": {
-														"type": "string",
-														"format": "date-time",
-														"description": "Truncated to day precision (UTC)."
-													},
-													"count": {
-														"type": "integer"
-													}
-												}
-											}
-										}
-									},
-									"required": [
-										"history"
-									]
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					}
-				}
-			}
-		},
-		"/v1/dashboard/ingestion-sources": {
-			"get": {
-				"summary": "Get ingestion source summaries",
-				"description": "Returns a summary list of ingestion sources with their storage usage.",
-				"operationId": "getDashboardIngestionSources",
-				"tags": [
-					"Dashboard"
-				],
-				"responses": {
-					"200": {
-						"description": "List of ingestion source summaries.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"type": "array",
-									"items": {
-										"$ref": "#/components/schemas/IngestionSourceStats"
-									}
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					}
-				}
-			}
-		},
-		"/v1/dashboard/recent-syncs": {
-			"get": {
-				"summary": "Get recent sync activity",
-				"description": "Returns the most recent sync sessions across all ingestion sources.",
-				"operationId": "getRecentSyncs",
-				"tags": [
-					"Dashboard"
-				],
-				"responses": {
-					"200": {
-						"description": "List of recent sync sessions.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"type": "array",
-									"items": {
-										"$ref": "#/components/schemas/RecentSync"
-									}
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					}
-				}
-			}
-		},
-		"/v1/dashboard/indexed-insights": {
-			"get": {
-				"summary": "Get indexed email insights",
-				"description": "Returns top-sender statistics from the search index.",
-				"operationId": "getIndexedInsights",
-				"tags": [
-					"Dashboard"
-				],
-				"responses": {
-					"200": {
-						"description": "Indexed email insights.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/IndexedInsights"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"403": {
-						"$ref": "#/components/responses/Forbidden"
-					}
-				}
-			}
-		},
-		"/v1/archived-emails/ingestion-source/{ingestionSourceId}": {
-			"get": {
-				"summary": "List archived emails for an ingestion source",
-				"description": "Returns a paginated list of archived emails belonging to the specified ingestion source.",
-				"operationId": "getArchivedEmails",
-				"tags": [
-					"Archived Emails"
-				],
-				"parameters": [
-					{
-						"name": "ingestionSourceId",
-						"in": "path",
-						"required": true,
-						"description": "The ID of the ingestion source to retrieve emails for.",
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					},
-					{
-						"name": "page",
-						"in": "query",
-						"required": false,
-						"description": "Page number for pagination.",
-						"schema": {
-							"type": "integer",
-							"default": 1,
-							"example": 1
-						}
-					},
-					{
-						"name": "limit",
-						"in": "query",
-						"required": false,
-						"description": "Number of items per page.",
-						"schema": {
-							"type": "integer",
-							"default": 10,
-							"example": 10
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "Paginated list of archived emails.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/PaginatedArchivedEmails"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/archived-emails/{id}": {
-			"get": {
-				"summary": "Get a single archived email",
-				"description": "Retrieves the full details of a single archived email by ID, including attachments and thread.",
-				"operationId": "getArchivedEmailById",
-				"tags": [
-					"Archived Emails"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"description": "The ID of the archived email.",
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "Archived email details.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ArchivedEmail"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			},
-			"delete": {
-				"summary": "Delete an archived email",
-				"description": "Permanently deletes an archived email by ID. Deletion must be enabled in system settings and the email must not be on legal hold.",
-				"operationId": "deleteArchivedEmail",
-				"tags": [
-					"Archived Emails"
-				],
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"description": "The ID of the archived email to delete.",
-						"schema": {
-							"type": "string",
-							"example": "clx1y2z3a0000b4d2"
-						}
-					}
-				],
-				"responses": {
-					"204": {
-						"description": "Email deleted successfully. No content returned."
-					},
-					"400": {
-						"description": "Deletion is disabled in system settings, or the email is blocked by a retention policy / legal hold.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorMessage"
-								}
-							}
-						}
-					},
-					"401": {
-						"$ref": "#/components/responses/Unauthorized"
-					},
-					"404": {
-						"$ref": "#/components/responses/NotFound"
-					},
-					"500": {
-						"$ref": "#/components/responses/InternalServerError"
-					}
-				}
-			}
-		},
-		"/v1/archived-emails/": {
-			"get": {
-				"tags": [
-					"Archived Emails"
-				],
-				"summary": "List / search archived emails (FTS5 full-text search with filters)",
-				"responses": {
-					"200": {
-						"description": "Success."
-					}
-				},
+				"tags": ["Archived Emails"],
+				"summary": "List / search archived emails",
+				"description": "FTS5-backed search when `q` is provided, otherwise a plain filtered list. Pagination and filters are shared across both paths.",
 				"parameters": [
 					{
 						"name": "q",
 						"in": "query",
-						"required": false,
-						"description": "Search query",
+						"description": "Full-text query. Alias: `query`. Empty means list mode.",
 						"schema": {
 							"type": "string"
-						}
-					},
-					{
-						"name": "page",
-						"in": "query",
-						"required": false,
-						"description": "Page number",
-						"schema": {
-							"type": "integer"
-						}
-					},
-					{
-						"name": "limit",
-						"in": "query",
-						"required": false,
-						"description": "Page size",
-						"schema": {
-							"type": "integer"
 						}
 					},
 					{
 						"name": "fields",
 						"in": "query",
-						"required": false,
-						"description": "Comma-separated fields to search",
-						"schema": {
-							"type": "string"
-						}
-					},
-					{
-						"name": "sort",
-						"in": "query",
-						"required": false,
-						"description": "sentAt | archivedAt | sender | subject | sizeBytes",
-						"schema": {
-							"type": "string"
-						}
-					},
-					{
-						"name": "direction",
-						"in": "query",
-						"required": false,
-						"description": "asc | desc",
+						"description": "Comma-separated list of fields to match against (e.g. subject,body,from).",
 						"schema": {
 							"type": "string"
 						}
@@ -2272,17 +70,6 @@
 					{
 						"name": "ingestionSourceId",
 						"in": "query",
-						"required": false,
-						"description": "Filter to a source (merge group expanded)",
-						"schema": {
-							"type": "string"
-						}
-					},
-					{
-						"name": "tags",
-						"in": "query",
-						"required": false,
-						"description": "Filter by tag",
 						"schema": {
 							"type": "string"
 						}
@@ -2290,173 +77,332 @@
 					{
 						"name": "hasAttachments",
 						"in": "query",
-						"required": false,
-						"description": "true | false",
+						"schema": {
+							"type": "string",
+							"enum": ["true", "false"]
+						}
+					},
+					{
+						"name": "attachmentExt",
+						"in": "query",
+						"description": "Filter by attachment file extension.",
 						"schema": {
 							"type": "string"
+						}
+					},
+					{
+						"name": "tags",
+						"in": "query",
+						"description": "Comma-separated tag filter.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "page",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"default": 1
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 100,
+							"default": 10
+						}
+					},
+					{
+						"name": "sort",
+						"in": "query",
+						"description": "Sort field (e.g. sentAt, archivedAt, subject).",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "direction",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": ["asc", "desc"],
+							"default": "desc"
 						}
 					},
 					{
 						"name": "matchingStrategy",
 						"in": "query",
-						"required": false,
-						"description": "all = strict AND",
+						"description": "`all` forces strict AND matching and disables the OR fallback.",
 						"schema": {
-							"type": "string"
+							"type": "string",
+							"enum": ["all", "any"]
 						}
 					}
-				]
-			}
-		},
-		"/v1/archived-emails/facets": {
-			"get": {
-				"tags": [
-					"Archived Emails"
 				],
-				"summary": "Facet values (senders, tags) for filter dropdowns",
 				"responses": {
 					"200": {
-						"description": "Success."
+						"description": "Search/list results.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SearchResponse"
+								}
+							}
+						}
 					}
 				}
 			}
 		},
-		"/v1/archived-emails/{id}/preview": {
+		"/archived-emails/facets": {
 			"get": {
-				"tags": [
-					"Archived Emails"
-				],
-				"summary": "Sanitized HTML preview of an email (cid images inlined, remote assets rewritten to archived copies)",
+				"tags": ["Archived Emails"],
+				"summary": "Filter facets",
+				"description": "Distinct tags available for filtering.",
 				"responses": {
 					"200": {
-						"description": "Success."
-					}
-				},
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"description": "Email id",
-						"schema": {
-							"type": "string",
-							"format": "uuid"
+						"description": "Facet values.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"tags": {
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
+										}
+									},
+									"required": ["tags"]
+								}
+							}
 						}
 					}
-				]
+				}
 			}
 		},
-		"/v1/archived-emails/{id}/remote-assets": {
+		"/archived-emails/duplicates/exact": {
 			"get": {
-				"tags": [
-					"Remote Content"
-				],
-				"summary": "List an email's archived remote-content assets",
-				"responses": {
-					"200": {
-						"description": "Success."
-					}
-				},
+				"tags": ["Duplicates"],
+				"summary": "List exact duplicate groups",
 				"parameters": [
 					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"description": "Email id",
+						"name": "page",
+						"in": "query",
 						"schema": {
-							"type": "string",
-							"format": "uuid"
-						}
-					}
-				]
-			}
-		},
-		"/v1/archived-emails/{id}/remote-assets/{assetId}": {
-			"get": {
-				"tags": [
-					"Remote Content"
-				],
-				"summary": "Serve an archived remote asset (image) from storage",
-				"responses": {
-					"200": {
-						"description": "Success."
-					}
-				},
-				"parameters": [
-					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"description": "Email id",
-						"schema": {
-							"type": "string",
-							"format": "uuid"
+							"type": "integer",
+							"minimum": 1,
+							"default": 1
 						}
 					},
 					{
-						"name": "assetId",
-						"in": "path",
-						"required": true,
-						"description": "Asset id",
+						"name": "limit",
+						"in": "query",
 						"schema": {
-							"type": "string",
-							"format": "uuid"
+							"type": "integer",
+							"minimum": 1,
+							"default": 25
 						}
-					}
-				]
-			}
-		},
-		"/v1/archived-emails/{id}/remote-content/archive": {
-			"post": {
-				"tags": [
-					"Remote Content"
-				],
-				"summary": "Queue remote-content archiving for one email",
-				"responses": {
-					"202": {
-						"description": "Job queued."
-					}
-				},
-				"parameters": [
+					},
 					{
-						"name": "id",
-						"in": "path",
-						"required": true,
-						"description": "Email id",
+						"name": "reason",
+						"in": "query",
+						"description": "Restrict to groups matched by a specific duplicate reason.",
 						"schema": {
-							"type": "string",
-							"format": "uuid"
+							"type": "string"
 						}
 					}
-				]
-			}
-		},
-		"/v1/archived-emails/bulk/tags": {
-			"post": {
-				"tags": [
-					"Archived Emails"
 				],
-				"summary": "Add / remove tags on a set of emails",
 				"responses": {
 					"200": {
-						"description": "Success."
+						"description": "Exact duplicate groups.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ExactDuplicateGroupPage"
+								}
+							}
+						}
 					}
-				},
+				}
+			}
+		},
+		"/archived-emails/duplicates/likely": {
+			"get": {
+				"tags": ["Duplicates"],
+				"summary": "List likely-duplicate groups",
+				"parameters": [
+					{
+						"name": "page",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"default": 1
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"default": 25
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Likely-duplicate groups.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/LikelyDuplicateGroupPage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/archived-emails/duplicates/exact/approve": {
+			"post": {
+				"tags": ["Duplicates"],
+				"summary": "Approve exact duplicate groups",
+				"description": "Deletes the non-keeper emails in each supplied group.",
 				"requestBody": {
 					"required": true,
 					"content": {
 						"application/json": {
 							"schema": {
 								"type": "object",
-								"required": [
-									"emailIds"
-								],
+								"properties": {
+									"groups": {
+										"type": "array",
+										"items": {
+											"$ref": "#/components/schemas/ExactApprovalGroup"
+										}
+									}
+								},
+								"required": ["groups"]
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Approval summary.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/DuplicateApprovalResult"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/archived-emails/duplicates/likely/approve": {
+			"post": {
+				"tags": ["Duplicates"],
+				"summary": "Approve likely-duplicate groups",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"groups": {
+										"type": "array",
+										"items": {
+											"$ref": "#/components/schemas/LikelyApprovalGroup"
+										}
+									}
+								},
+								"required": ["groups"]
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Approval summary.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/DuplicateApprovalResult"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/archived-emails/duplicates/likely/ignore": {
+			"post": {
+				"tags": ["Duplicates"],
+				"summary": "Ignore likely-duplicate groups",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"groupKeys": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									}
+								},
+								"required": ["groupKeys"]
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Count of groups marked ignored.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"ignoredGroups": {
+											"type": "integer"
+										}
+									},
+									"required": ["ignoredGroups"]
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/archived-emails/bulk/tags": {
+			"post": {
+				"tags": ["Archived Emails"],
+				"summary": "Add / remove tags on multiple emails",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
 								"properties": {
 									"emailIds": {
 										"type": "array",
 										"items": {
-											"type": "string",
-											"format": "uuid"
+											"type": "string"
 										}
 									},
 									"addTags": {
@@ -2471,41 +417,251 @@
 											"type": "string"
 										}
 									}
+								},
+								"required": ["emailIds"]
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Per-email tag update result.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"requestedCount": {
+											"type": "integer"
+										},
+										"updatedCount": {
+											"type": "integer"
+										},
+										"addedTags": {
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
+										},
+										"removedTags": {
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
+										},
+										"emails": {
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"id": {
+														"type": "string"
+													},
+													"tags": {
+														"type": "array",
+														"items": {
+															"type": "string"
+														}
+													}
+												}
+											}
+										}
+									}
 								}
 							}
 						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
 					}
 				}
 			}
 		},
-		"/v1/archived-emails/bulk/delete": {
+		"/archived-emails/bulk/delete": {
 			"post": {
-				"tags": [
-					"Archived Emails"
-				],
-				"summary": "Delete a set of emails (per-email results reported)",
-				"responses": {
-					"200": {
-						"description": "Success."
-					}
-				},
+				"tags": ["Archived Emails"],
+				"summary": "Bulk delete emails",
 				"requestBody": {
 					"required": true,
 					"content": {
 						"application/json": {
 							"schema": {
 								"type": "object",
-								"required": [
-									"emailIds"
-								],
 								"properties": {
 									"emailIds": {
 										"type": "array",
 										"items": {
-											"type": "string",
-											"format": "uuid"
+											"type": "string"
+										},
+										"minItems": 1
+									}
+								},
+								"required": ["emailIds"]
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Delete summary.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"requestedCount": {
+											"type": "integer"
+										},
+										"deletedCount": {
+											"type": "integer"
+										},
+										"deletedIds": {
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
+										},
+										"failed": {
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"id": {
+														"type": "string"
+													},
+													"reason": {
+														"type": "string"
+													}
+												}
+											}
 										}
 									}
+								}
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					}
+				}
+			}
+		},
+		"/archived-emails/{id}": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/EmailId"
+				}
+			],
+			"get": {
+				"tags": ["Archived Emails"],
+				"summary": "Get full email detail",
+				"description": "Full email record with flattened recipients, the related ingestion source (including its stored provider config), the thread, and attachment metadata. The raw .eml bytes are NOT embedded; fetch them from `/archived-emails/{id}/raw`.",
+				"responses": {
+					"200": {
+						"description": "Email detail.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/EmailDetail"
+								}
+							}
+						}
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
+					}
+				}
+			},
+			"delete": {
+				"tags": ["Archived Emails"],
+				"summary": "Delete an archived email",
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
+					}
+				}
+			}
+		},
+		"/archived-emails/{id}/preview": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/EmailId"
+				}
+			],
+			"get": {
+				"tags": ["Archived Emails"],
+				"summary": "Sanitized HTML preview",
+				"description": "Returns a fully self-contained, CSP-locked HTML document with inlined cid images and archived remote assets, plus remote-content asset counts.",
+				"responses": {
+					"200": {
+						"description": "Preview payload.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"emailId": {
+											"type": "string"
+										},
+										"html": {
+											"type": "string"
+										},
+										"status": {
+											"type": "string"
+										},
+										"remoteUrlCount": {
+											"type": "integer"
+										},
+										"archivedAssetCount": {
+											"type": "integer"
+										},
+										"blockedAssetCount": {
+											"type": "integer"
+										},
+										"failedAssetCount": {
+											"type": "integer"
+										}
+									}
+								}
+							}
+						}
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
+					}
+				}
+			}
+		},
+		"/archived-emails/{id}/attachments/archive": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/EmailId"
+				}
+			],
+			"get": {
+				"tags": ["Archived Emails"],
+				"summary": "Download all attachments as a zip",
+				"responses": {
+					"200": {
+						"description": "Zip archive of the email's attachments.",
+						"content": {
+							"application/zip": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "No attachments found.",
+						"content": {
+							"text/html": {
+								"schema": {
+									"type": "string"
 								}
 							}
 						}
@@ -2513,59 +669,80 @@
 				}
 			}
 		},
-		"/v1/archived-emails/duplicates/exact": {
+		"/archived-emails/{id}/eml": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/EmailId"
+				}
+			],
 			"get": {
-				"tags": [
-					"Duplicates"
-				],
-				"summary": "List exact-duplicate groups (message-id / content hash / attachment set / headers)",
+				"tags": ["Archived Emails"],
+				"summary": "Download the reconstructed .eml",
+				"description": "Rebuilds the original message by splicing hollowed attachment blobs back into the stored copy.",
 				"responses": {
 					"200": {
-						"description": "Success."
-					}
-				},
-				"parameters": [
-					{
-						"name": "page",
-						"in": "query",
-						"required": false,
-						"description": "Page number",
-						"schema": {
-							"type": "integer"
+						"description": "The .eml message.",
+						"content": {
+							"message/rfc822": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
 						}
 					},
-					{
-						"name": "limit",
-						"in": "query",
-						"required": false,
-						"description": "Page size",
-						"schema": {
-							"type": "integer"
-						}
-					},
-					{
-						"name": "reason",
-						"in": "query",
-						"required": false,
-						"description": "Filter by match reason",
-						"schema": {
-							"type": "string"
+					"404": {
+						"description": "File not found.",
+						"content": {
+							"text/html": {
+								"schema": {
+									"type": "string"
+								}
+							}
 						}
 					}
-				]
+				}
 			}
 		},
-		"/v1/archived-emails/duplicates/exact/approve": {
-			"post": {
-				"tags": [
-					"Duplicates"
-				],
-				"summary": "Approve exact-duplicate groups: keep the keeper, delete the copies",
+		"/archived-emails/{id}/raw": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/EmailId"
+				}
+			],
+			"get": {
+				"tags": ["Archived Emails"],
+				"summary": "Download the stored (hollowed) raw bytes",
 				"responses": {
 					"200": {
-						"description": "Success."
+						"description": "Stored raw .eml bytes.",
+						"content": {
+							"application/octet-stream": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "File not found.",
+						"content": {
+							"text/html": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
 					}
-				},
+				}
+			}
+		},
+		"/attachments/quicklook": {
+			"post": {
+				"tags": ["Archived Emails"],
+				"summary": "Open an attachment in the OS quick-look previewer",
+				"description": "Desktop-only. Materializes the attachment in a temp dir and launches the platform previewer (qlmanage / sushi / xdg-open).",
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -2573,12 +750,36 @@
 							"schema": {
 								"type": "object",
 								"properties": {
-									"groups": {
-										"type": "array",
-										"items": {
-											"type": "object"
-										}
+									"path": {
+										"type": "string",
+										"description": "Storage-relative attachment path."
 									}
+								},
+								"required": ["path"]
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "Previewer launched."
+					},
+					"400": {
+						"description": "Missing or invalid path.",
+						"content": {
+							"text/html": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "File not found.",
+						"content": {
+							"text/html": {
+								"schema": {
+									"type": "string"
 								}
 							}
 						}
@@ -2586,89 +787,31 @@
 				}
 			}
 		},
-		"/v1/archived-emails/duplicates/fuzzy": {
-			"get": {
-				"tags": [
-					"Duplicates"
-				],
-				"summary": "List pending fuzzy-duplicate groups",
-				"responses": {
-					"200": {
-						"description": "Success."
-					}
-				},
-				"parameters": [
-					{
-						"name": "page",
-						"in": "query",
-						"required": false,
-						"description": "Page number",
-						"schema": {
-							"type": "integer"
-						}
-					},
-					{
-						"name": "limit",
-						"in": "query",
-						"required": false,
-						"description": "Page size",
-						"schema": {
-							"type": "integer"
-						}
-					}
-				]
-			}
-		},
-		"/v1/archived-emails/duplicates/fuzzy/scan": {
+		"/archived-emails/{id}/remote-content/archive": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/EmailId"
+				}
+			],
 			"post": {
-				"tags": [
-					"Duplicates"
-				],
-				"summary": "Queue a fuzzy-duplicate scan batch",
+				"tags": ["Remote Content"],
+				"summary": "Enqueue remote-content archival for an email",
 				"responses": {
 					"202": {
-						"description": "Scan queued."
-					}
-				},
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"type": "object",
-								"properties": {
-									"batchSize": {
-										"type": "integer"
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		"/v1/archived-emails/duplicates/fuzzy/approve": {
-			"post": {
-				"tags": [
-					"Duplicates"
-				],
-				"summary": "Approve fuzzy groups: keep keepers, delete duplicates",
-				"responses": {
-					"200": {
-						"description": "Success."
-					}
-				},
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"type": "object",
-								"properties": {
-									"groups": {
-										"type": "array",
-										"items": {
-											"type": "object"
+						"description": "Archival job enqueued.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"jobId": {
+											"type": "string"
+										},
+										"emailIds": {
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
 										}
 									}
 								}
@@ -2678,84 +821,395 @@
 				}
 			}
 		},
-		"/v1/archived-emails/duplicates/fuzzy/ignore": {
-			"post": {
-				"tags": [
-					"Duplicates"
-				],
-				"summary": "Mark fuzzy groups as not-duplicates",
-				"responses": {
-					"200": {
-						"description": "Success."
-					}
-				},
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"type": "object",
-								"required": [
-									"groupIds"
-								],
-								"properties": {
-									"groupIds": {
-										"type": "array",
-										"items": {
-											"type": "string",
-											"format": "uuid"
-										}
-									}
-								}
-							}
-						}
-					}
+		"/archived-emails/{id}/remote-assets": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/EmailId"
 				}
-			}
-		},
-		"/v1/contacts/map": {
+			],
 			"get": {
-				"tags": [
-					"Contacts"
-				],
-				"summary": "Email \u2192 display-name map used for sender name resolution",
+				"tags": ["Remote Content"],
+				"summary": "List archived remote assets for an email",
 				"responses": {
 					"200": {
-						"description": "Success."
+						"description": "Remote assets (excluding pending and inlined CSS).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"$ref": "#/components/schemas/RemoteAsset"
+									}
+								}
+							}
+						}
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
 					}
 				}
 			}
 		},
-		"/v1/contacts/import": {
-			"post": {
-				"tags": [
-					"Contacts"
-				],
-				"summary": "Import contacts from CSV or vCard content",
+		"/archived-emails/{id}/remote-assets/{assetId}": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/EmailId"
+				},
+				{
+					"name": "assetId",
+					"in": "path",
+					"required": true,
+					"schema": {
+						"type": "string"
+					}
+				}
+			],
+			"get": {
+				"tags": ["Remote Content"],
+				"summary": "Fetch a single previewable remote asset",
+				"description": "Returns the archived asset bytes with hardened security headers. Only `archived` assets of a safe image type are served.",
 				"responses": {
 					"200": {
-						"description": "Success."
+						"description": "Asset bytes.",
+						"content": {
+							"application/octet-stream": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
 					}
-				},
+				}
+			}
+		},
+		"/dashboard/stats": {
+			"get": {
+				"tags": ["Dashboard"],
+				"summary": "Archive summary statistics",
+				"responses": {
+					"200": {
+						"description": "Summary counters.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"totalEmailsArchived": {
+											"type": "integer"
+										},
+										"totalStorageUsed": {
+											"type": "integer"
+										},
+										"failedIngestionsLast7Days": {
+											"type": "integer"
+										},
+										"remoteContentFailed": {
+											"type": "integer"
+										},
+										"remoteContentPartial": {
+											"type": "integer"
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/dashboard/ingestion-history": {
+			"get": {
+				"tags": ["Dashboard"],
+				"summary": "Daily archived-count history (last 30 days)",
+				"responses": {
+					"200": {
+						"description": "Per-day counts.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"history": {
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"date": {
+														"type": "string"
+													},
+													"count": {
+														"type": "integer"
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/dashboard/ingestion-sources": {
+			"get": {
+				"tags": ["Dashboard"],
+				"summary": "Per-source storage and email counts",
+				"responses": {
+					"200": {
+						"description": "Source usage rows.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"type": "object",
+										"properties": {
+											"id": {
+												"type": "string"
+											},
+											"name": {
+												"type": "string"
+											},
+											"provider": {
+												"type": "string"
+											},
+											"status": {
+												"type": "string"
+											},
+											"storageUsed": {
+												"type": "integer",
+												"nullable": true
+											},
+											"emailCount": {
+												"type": "integer"
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/dashboard/indexed-insights": {
+			"get": {
+				"tags": ["Dashboard"],
+				"summary": "Top senders insight",
+				"responses": {
+					"200": {
+						"description": "Top senders.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"topSenders": {
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"sender": {
+														"type": "string"
+													},
+													"count": {
+														"type": "integer"
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/dashboard/remote-content-issues": {
+			"get": {
+				"tags": ["Dashboard"],
+				"summary": "Emails with failed / partial remote content",
+				"parameters": [
+					{
+						"name": "page",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"default": 1
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 100,
+							"default": 25
+						}
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": ["all", "failed", "partial"],
+							"default": "all"
+						}
+					},
+					{
+						"name": "sort",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": ["archivedAt", "subject", "status"],
+							"default": "archivedAt"
+						}
+					},
+					{
+						"name": "direction",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": ["asc", "desc"],
+							"default": "desc"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Paged issue items.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"items": {
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"emailId": {
+														"type": "string"
+													},
+													"subject": {
+														"type": "string"
+													},
+													"sender": {
+														"type": "string"
+													},
+													"status": {
+														"type": "string"
+													},
+													"archivedAt": {
+														"type": "string",
+														"format": "date-time"
+													},
+													"assets": {
+														"type": "array",
+														"items": {
+															"type": "object",
+															"properties": {
+																"url": {
+																	"type": "string"
+																},
+																"status": {
+																	"type": "string"
+																},
+																"reason": {
+																	"type": "string",
+																	"nullable": true
+																}
+															}
+														}
+													}
+												}
+											}
+										},
+										"total": {
+											"type": "integer"
+										},
+										"page": {
+											"type": "integer"
+										},
+										"limit": {
+											"type": "integer"
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/settings/system": {
+			"get": {
+				"tags": ["Settings"],
+				"summary": "Get system settings",
+				"responses": {
+					"200": {
+						"description": "Merged system settings.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SystemSettings"
+								}
+							}
+						}
+					}
+				}
+			},
+			"put": {
+				"tags": ["Settings"],
+				"summary": "Update system settings",
+				"description": "Merges the supplied fields over the stored settings.",
 				"requestBody": {
 					"required": true,
 					"content": {
 						"application/json": {
 							"schema": {
-								"type": "object",
-								"required": [
-									"format",
-									"content"
-								],
-								"properties": {
-									"format": {
-										"type": "string",
-										"enum": [
-											"csv",
-											"vcf"
-										]
-									},
-									"content": {
+								"$ref": "#/components/schemas/SystemSettings"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Merged settings after update.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SystemSettings"
+								}
+							}
+						}
+					},
+					"500": {
+						"$ref": "#/components/responses/InternalError"
+					}
+				}
+			}
+		},
+		"/contacts/map": {
+			"get": {
+				"tags": ["Contacts"],
+				"summary": "Email-to-display-name map",
+				"responses": {
+					"200": {
+						"description": "Object keyed by contact email with the display name as value.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"additionalProperties": {
 										"type": "string"
 									}
 								}
@@ -2765,105 +1219,1249 @@
 				}
 			}
 		},
-		"/v1/dashboard/remote-content-issues": {
-			"get": {
-				"tags": [
-					"Dashboard"
-				],
-				"summary": "Emails whose remote content failed or partially archived",
-				"responses": {
-					"200": {
-						"description": "Success."
+		"/contacts/import": {
+			"post": {
+				"tags": ["Contacts"],
+				"summary": "Import contacts from CSV or vCard",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"format": {
+										"type": "string",
+										"enum": ["csv", "vcf"]
+									},
+									"content": {
+										"type": "string"
+									}
+								},
+								"required": ["format", "content"]
+							}
+						}
 					}
 				},
+				"responses": {
+					"200": {
+						"description": "Import counters.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"parsed": {
+											"type": "integer"
+										},
+										"imported": {
+											"type": "integer"
+										},
+										"updated": {
+											"type": "integer"
+										},
+										"skipped": {
+											"type": "integer"
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"500": {
+						"$ref": "#/components/responses/InternalError"
+					}
+				}
+			}
+		},
+		"/ingestion-sources": {
+			"get": {
+				"tags": ["Ingestion Sources"],
+				"summary": "List ingestion sources",
+				"responses": {
+					"200": {
+						"description": "Ingestion sources (provider config omitted).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"$ref": "#/components/schemas/IngestionSource"
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"tags": ["Ingestion Sources"],
+				"summary": "Create an ingestion source",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"provider": {
+										"type": "string"
+									},
+									"name": {
+										"type": "string"
+									},
+									"providerConfig": {
+										"type": "object",
+										"additionalProperties": true
+									}
+								},
+								"required": ["provider"]
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "Created source.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/IngestionSource"
+								}
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					}
+				}
+			}
+		},
+		"/ingestion-sources/{id}": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/SourceId"
+				}
+			],
+			"put": {
+				"tags": ["Ingestion Sources"],
+				"summary": "Update an ingestion source",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"status": {
+										"type": "string"
+									},
+									"providerConfig": {
+										"type": "object",
+										"additionalProperties": true
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Updated source.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/IngestionSource"
+								}
+							}
+						}
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
+					}
+				}
+			},
+			"delete": {
+				"tags": ["Ingestion Sources"],
+				"summary": "Delete an ingestion source",
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
+					}
+				}
+			}
+		},
+		"/ingestion-sources/{id}/pause": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/SourceId"
+				}
+			],
+			"post": {
+				"tags": ["Ingestion Sources"],
+				"summary": "Pause an ingestion source",
+				"responses": {
+					"200": {
+						"description": "Paused source.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/IngestionSource"
+								}
+							}
+						}
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
+					}
+				}
+			}
+		},
+		"/ingestion-sources/{id}/reimport": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/SourceId"
+				}
+			],
+			"post": {
+				"tags": ["Ingestion Sources"],
+				"summary": "Trigger a re-import",
+				"responses": {
+					"202": {
+						"description": "Force sync triggered.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
+					}
+				}
+			}
+		},
+		"/ingestion-sources/{id}/unmerge": {
+			"parameters": [
+				{
+					"$ref": "#/components/parameters/SourceId"
+				}
+			],
+			"post": {
+				"tags": ["Ingestion Sources"],
+				"summary": "Unmerge a source from its parent",
+				"responses": {
+					"200": {
+						"description": "Unmerged source.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/IngestionSource"
+								}
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"404": {
+						"$ref": "#/components/responses/NotFound"
+					}
+				}
+			}
+		},
+		"/storage/download": {
+			"get": {
+				"tags": ["Storage"],
+				"summary": "Download a stored file by path",
 				"parameters": [
+					{
+						"name": "path",
+						"in": "query",
+						"required": true,
+						"description": "Storage-relative path to the file.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "File bytes (attachment disposition).",
+						"content": {
+							"application/octet-stream": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Missing or invalid path.",
+						"content": {
+							"text/html": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "File not found.",
+						"content": {
+							"text/html": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/jobs/queues": {
+			"get": {
+				"tags": ["Jobs"],
+				"summary": "Queue overview counts",
+				"responses": {
+					"200": {
+						"description": "Counts for the ingestion, indexing and remote-content queues.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"queues": {
+											"type": "array",
+											"items": {
+												"$ref": "#/components/schemas/QueueSummary"
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/jobs/queues/{queueName}": {
+			"parameters": [
+				{
+					"name": "queueName",
+					"in": "path",
+					"required": true,
+					"schema": {
+						"type": "string",
+						"enum": ["ingestion", "indexing", "remote-content"]
+					}
+				}
+			],
+			"get": {
+				"tags": ["Jobs"],
+				"summary": "Queue detail with paginated jobs",
+				"parameters": [
+					{
+						"name": "status",
+						"in": "query",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"enum": [
+								"active",
+								"completed",
+								"failed",
+								"waiting",
+								"delayed",
+								"paused"
+							]
+						}
+					},
 					{
 						"name": "page",
 						"in": "query",
-						"required": false,
-						"description": "Page number",
 						"schema": {
-							"type": "integer"
+							"type": "integer",
+							"minimum": 1,
+							"default": 1
 						}
 					},
 					{
 						"name": "limit",
 						"in": "query",
-						"required": false,
-						"description": "Page size",
 						"schema": {
-							"type": "integer"
-						}
-					},
-					{
-						"name": "status",
-						"in": "query",
-						"required": false,
-						"description": "all | failed | partial",
-						"schema": {
-							"type": "string"
-						}
-					},
-					{
-						"name": "sort",
-						"in": "query",
-						"required": false,
-						"description": "date | subject | status",
-						"schema": {
-							"type": "string"
-						}
-					},
-					{
-						"name": "direction",
-						"in": "query",
-						"required": false,
-						"description": "asc | desc",
-						"schema": {
-							"type": "string"
+							"type": "integer",
+							"minimum": 1,
+							"default": 10
 						}
 					}
-				]
-			}
-		},
-		"/v1/settings/updates/check": {
-			"get": {
-				"tags": [
-					"Settings"
 				],
-				"summary": "Legacy commit-based update check against the GitHub repo",
 				"responses": {
 					"200": {
-						"description": "Success."
-					}
-				}
-			}
-		},
-		"/v1/settings/search/rebuild": {
-			"post": {
-				"tags": [
-					"Settings"
-				],
-				"summary": "Wipe and rebuild the full-text index from the archive",
-				"responses": {
-					"202": {
-						"description": "Rebuild batches queued."
-					}
-				}
-			}
-		},
-		"/healthz": {
-			"get": {
-				"tags": [
-					"System"
-				],
-				"summary": "Liveness check",
-				"responses": {
-					"200": {
-						"description": "{\"status\":\"ok\"}"
+						"description": "Queue detail.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/QueueDetail"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Unknown queue or status.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"message": {
+											"type": "string"
+										},
+										"error": {
+											"type": "object"
+										}
+									}
+								}
+							}
+						}
 					}
 				}
 			}
 		}
 	},
-	"tags": []
+	"components": {
+		"parameters": {
+			"EmailId": {
+				"name": "id",
+				"in": "path",
+				"required": true,
+				"description": "Archived email id.",
+				"schema": {
+					"type": "string"
+				}
+			},
+			"SourceId": {
+				"name": "id",
+				"in": "path",
+				"required": true,
+				"description": "Ingestion source id.",
+				"schema": {
+					"type": "string"
+				}
+			}
+		},
+		"responses": {
+			"BadRequest": {
+				"description": "The request was invalid.",
+				"content": {
+					"application/json": {
+						"schema": {
+							"$ref": "#/components/schemas/ErrorMessage"
+						}
+					}
+				}
+			},
+			"NotFound": {
+				"description": "The requested resource was not found.",
+				"content": {
+					"application/json": {
+						"schema": {
+							"$ref": "#/components/schemas/ErrorMessage"
+						}
+					}
+				}
+			},
+			"InternalError": {
+				"description": "An internal server error occurred.",
+				"content": {
+					"application/json": {
+						"schema": {
+							"$ref": "#/components/schemas/ErrorMessage"
+						}
+					}
+				}
+			},
+			"BadGateway": {
+				"description": "A required upstream (GitHub) could not be reached.",
+				"content": {
+					"application/json": {
+						"schema": {
+							"$ref": "#/components/schemas/ErrorMessage"
+						}
+					}
+				}
+			}
+		},
+		"schemas": {
+			"ErrorMessage": {
+				"type": "object",
+				"properties": {
+					"message": {
+						"type": "string"
+					}
+				},
+				"required": ["message"]
+			},
+			"Address": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"email": {
+						"type": "string"
+					}
+				}
+			},
+			"EmailDocument": {
+				"type": "object",
+				"description": "Search/list result document (rowToDocument shape).",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"userEmail": {
+						"type": "string"
+					},
+					"from": {
+						"type": "string"
+					},
+					"senderName": {
+						"type": "string"
+					},
+					"to": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Address"
+						}
+					},
+					"cc": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Address"
+						}
+					},
+					"bcc": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Address"
+						}
+					},
+					"subject": {
+						"type": "string"
+					},
+					"body": {
+						"type": "string",
+						"description": "FTS snippet in search mode, empty otherwise."
+					},
+					"attachments": {
+						"type": "array",
+						"items": {},
+						"description": "Always empty in list/search results."
+					},
+					"timestamp": {
+						"type": "integer",
+						"description": "sentAt, epoch ms."
+					},
+					"archivedAt": {
+						"type": "integer",
+						"description": "Epoch ms."
+					},
+					"ingestionSourceId": {
+						"type": "string"
+					},
+					"threadId": {
+						"type": "string",
+						"nullable": true
+					},
+					"messageIdHeader": {
+						"type": "string",
+						"nullable": true
+					},
+					"hasAttachments": {
+						"type": "boolean"
+					},
+					"sourcePath": {
+						"type": "string",
+						"nullable": true
+					},
+					"tags": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"sizeBytes": {
+						"type": "integer"
+					}
+				}
+			},
+			"SearchResponse": {
+				"type": "object",
+				"properties": {
+					"hits": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EmailDocument"
+						}
+					},
+					"total": {
+						"type": "integer"
+					},
+					"page": {
+						"type": "integer"
+					},
+					"limit": {
+						"type": "integer"
+					},
+					"totalPages": {
+						"type": "integer"
+					},
+					"processingTimeMs": {
+						"type": "integer"
+					}
+				}
+			},
+			"EmailAttachment": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"filename": {
+						"type": "string"
+					},
+					"mimeType": {
+						"type": "string",
+						"nullable": true
+					},
+					"sizeBytes": {
+						"type": "integer"
+					},
+					"storagePath": {
+						"type": "string"
+					},
+					"contentDescription": {
+						"type": "string",
+						"nullable": true
+					},
+					"originalCreatedAt": {
+						"type": "string",
+						"nullable": true
+					},
+					"originalModifiedAt": {
+						"type": "string",
+						"nullable": true
+					}
+				}
+			},
+			"ThreadItem": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"subject": {
+						"type": "string",
+						"nullable": true
+					},
+					"sentAt": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"senderEmail": {
+						"type": "string"
+					},
+					"hasAttachments": {
+						"type": "boolean"
+					}
+				}
+			},
+			"EmailDetail": {
+				"type": "object",
+				"description": "Full archived email record with relations.",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"threadId": {
+						"type": "string",
+						"nullable": true
+					},
+					"ingestionSourceId": {
+						"type": "string"
+					},
+					"userEmail": {
+						"type": "string"
+					},
+					"messageIdHeader": {
+						"type": "string",
+						"nullable": true
+					},
+					"providerMessageId": {
+						"type": "string",
+						"nullable": true
+					},
+					"sentAt": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"subject": {
+						"type": "string",
+						"nullable": true
+					},
+					"senderName": {
+						"type": "string",
+						"nullable": true
+					},
+					"senderEmail": {
+						"type": "string"
+					},
+					"recipients": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Address"
+						}
+					},
+					"storagePath": {
+						"type": "string"
+					},
+					"storageHashSha256": {
+						"type": "string"
+					},
+					"sizeBytes": {
+						"type": "integer"
+					},
+					"hasAttachments": {
+						"type": "boolean"
+					},
+					"archivedAt": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"sourcePath": {
+						"type": "string",
+						"nullable": true
+					},
+					"duplicateSubjectHash": {
+						"type": "string",
+						"nullable": true
+					},
+					"duplicateLikelyGroupKey": {
+						"type": "string",
+						"nullable": true
+					},
+					"duplicateBodyHash": {
+						"type": "string",
+						"nullable": true
+					},
+					"duplicateRecipientFingerprint": {
+						"type": "string",
+						"nullable": true
+					},
+					"duplicateAttachmentFingerprint": {
+						"type": "string",
+						"nullable": true
+					},
+					"remoteContentStatus": {
+						"type": "string"
+					},
+					"remoteContentAssetCount": {
+						"type": "integer"
+					},
+					"remoteContentArchivedAt": {
+						"type": "string",
+						"format": "date-time",
+						"nullable": true
+					},
+					"tags": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"nullable": true
+					},
+					"ingestionSource": {
+						"type": "object",
+						"nullable": true,
+						"description": "Related ingestion source, including its stored provider config.",
+						"properties": {
+							"id": {
+								"type": "string"
+							},
+							"name": {
+								"type": "string"
+							},
+							"provider": {
+								"type": "string"
+							},
+							"provider_config": {
+								"type": "string",
+								"nullable": true,
+								"description": "Provider config as a JSON string. For the mbox/eml importers this is just the local file path — no secrets."
+							},
+							"status": {
+								"type": "string"
+							},
+							"lastImportStartedAt": {
+								"type": "string",
+								"format": "date-time",
+								"nullable": true
+							},
+							"lastImportFinishedAt": {
+								"type": "string",
+								"format": "date-time",
+								"nullable": true
+							},
+							"lastImportStatusMessage": {
+								"type": "string",
+								"nullable": true
+							},
+							"mergedIntoId": {
+								"type": "string",
+								"nullable": true
+							},
+							"createdAt": {
+								"type": "string",
+								"format": "date-time"
+							},
+							"updatedAt": {
+								"type": "string",
+								"format": "date-time"
+							}
+						}
+					},
+					"thread": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ThreadItem"
+						}
+					},
+					"attachments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EmailAttachment"
+						},
+						"description": "Present only when hasAttachments is true."
+					}
+				}
+			},
+			"IngestionSource": {
+				"type": "object",
+				"description": "Ingestion source without its provider config (safe shape).",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"provider": {
+						"type": "string"
+					},
+					"status": {
+						"type": "string"
+					},
+					"lastImportStartedAt": {
+						"type": "string",
+						"format": "date-time",
+						"nullable": true
+					},
+					"lastImportFinishedAt": {
+						"type": "string",
+						"format": "date-time",
+						"nullable": true
+					},
+					"lastImportStatusMessage": {
+						"type": "string",
+						"nullable": true
+					},
+					"mergedIntoId": {
+						"type": "string",
+						"nullable": true
+					},
+					"createdAt": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"updatedAt": {
+						"type": "string",
+						"format": "date-time"
+					}
+				}
+			},
+			"RemoteAsset": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"originalUrl": {
+						"type": "string"
+					},
+					"contentType": {
+						"type": "string",
+						"nullable": true
+					},
+					"sizeBytes": {
+						"type": "integer",
+						"nullable": true
+					},
+					"status": {
+						"type": "string",
+						"enum": ["archived", "failed", "blocked"]
+					},
+					"failureReason": {
+						"type": "string",
+						"nullable": true
+					},
+					"previewable": {
+						"type": "boolean"
+					}
+				}
+			},
+			"DuplicateEmail": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"subject": {
+						"type": "string",
+						"nullable": true
+					},
+					"senderName": {
+						"type": "string",
+						"nullable": true
+					},
+					"senderEmail": {
+						"type": "string"
+					},
+					"userEmail": {
+						"type": "string"
+					},
+					"sentAt": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"archivedAt": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"hasAttachments": {
+						"type": "boolean"
+					},
+					"sourcePath": {
+						"type": "string",
+						"nullable": true
+					},
+					"messageIdHeader": {
+						"type": "string",
+						"nullable": true
+					},
+					"storageHashSha256": {
+						"type": "string"
+					}
+				}
+			},
+			"ExactDuplicateGroup": {
+				"type": "object",
+				"properties": {
+					"groupKey": {
+						"type": "string"
+					},
+					"reason": {
+						"type": "string",
+						"nullable": true
+					},
+					"reasons": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"fingerprint": {
+						"type": "integer"
+					},
+					"count": {
+						"type": "integer"
+					},
+					"keeperEmailId": {
+						"type": "string"
+					},
+					"emails": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/DuplicateEmail"
+						}
+					}
+				}
+			},
+			"ExactDuplicateGroupPage": {
+				"type": "object",
+				"properties": {
+					"groups": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ExactDuplicateGroup"
+						}
+					},
+					"totalGroups": {
+						"type": "integer"
+					},
+					"page": {
+						"type": "integer"
+					},
+					"limit": {
+						"type": "integer"
+					}
+				}
+			},
+			"LikelyDuplicateGroup": {
+				"type": "object",
+				"properties": {
+					"groupKey": {
+						"type": "string"
+					},
+					"score": {
+						"type": "number",
+						"nullable": true
+					},
+					"signals": {
+						"type": "object",
+						"additionalProperties": true
+					},
+					"keeperEmailId": {
+						"type": "string"
+					},
+					"emails": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"additionalProperties": true
+						}
+					}
+				}
+			},
+			"LikelyDuplicateGroupPage": {
+				"type": "object",
+				"properties": {
+					"groups": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/LikelyDuplicateGroup"
+						}
+					},
+					"totalGroups": {
+						"type": "integer"
+					},
+					"page": {
+						"type": "integer"
+					},
+					"limit": {
+						"type": "integer"
+					}
+				}
+			},
+			"ExactApprovalGroup": {
+				"type": "object",
+				"properties": {
+					"keeperEmailId": {
+						"type": "string"
+					},
+					"duplicateEmailIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					}
+				},
+				"required": ["keeperEmailId", "duplicateEmailIds"]
+			},
+			"LikelyApprovalGroup": {
+				"type": "object",
+				"properties": {
+					"groupKey": {
+						"type": "string"
+					},
+					"keeperEmailId": {
+						"type": "string"
+					},
+					"duplicateEmailIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					}
+				},
+				"required": ["groupKey", "keeperEmailId", "duplicateEmailIds"]
+			},
+			"DuplicateApprovalResult": {
+				"type": "object",
+				"properties": {
+					"approvedGroups": {
+						"type": "integer"
+					},
+					"deletedEmails": {
+						"type": "integer"
+					},
+					"keeperEmails": {
+						"type": "integer"
+					}
+				}
+			},
+			"SystemSettings": {
+				"type": "object",
+				"properties": {
+					"language": {
+						"type": "string"
+					},
+					"theme": {
+						"type": "string"
+					},
+					"timeZone": {
+						"type": "string",
+						"nullable": true
+					},
+					"clockFormat": {
+						"type": "string",
+						"enum": ["12h", "24h"]
+					}
+				},
+				"additionalProperties": true
+			},
+			"QueueCounts": {
+				"type": "object",
+				"properties": {
+					"active": {
+						"type": "integer"
+					},
+					"completed": {
+						"type": "integer"
+					},
+					"failed": {
+						"type": "integer"
+					},
+					"delayed": {
+						"type": "integer"
+					},
+					"waiting": {
+						"type": "integer"
+					},
+					"paused": {
+						"type": "integer"
+					}
+				}
+			},
+			"QueueSummary": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"counts": {
+						"$ref": "#/components/schemas/QueueCounts"
+					}
+				}
+			},
+			"QueueJob": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"data": {
+						"type": "object",
+						"additionalProperties": true
+					},
+					"state": {
+						"type": "string"
+					},
+					"failedReason": {
+						"type": "string"
+					},
+					"timestamp": {
+						"type": "integer"
+					},
+					"processedOn": {
+						"type": "integer"
+					},
+					"finishedOn": {
+						"type": "integer"
+					},
+					"attemptsMade": {
+						"type": "integer"
+					},
+					"stacktrace": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"returnValue": {
+						"nullable": true
+					},
+					"ingestionSourceId": {
+						"type": "string"
+					},
+					"error": {
+						"type": "string",
+						"nullable": true
+					}
+				}
+			},
+			"QueueDetail": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"counts": {
+						"$ref": "#/components/schemas/QueueCounts"
+					},
+					"jobs": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/QueueJob"
+						}
+					},
+					"pagination": {
+						"type": "object",
+						"properties": {
+							"currentPage": {
+								"type": "integer"
+							},
+							"totalPages": {
+								"type": "integer"
+							},
+							"totalJobs": {
+								"type": "integer"
+							},
+							"limit": {
+								"type": "integer"
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }

@@ -1,27 +1,22 @@
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig } from 'vite';
-import dotenv from 'dotenv';
+import { defineConfig, loadEnv } from 'vite';
 
-dotenv.config();
-
-export default defineConfig({
-	plugins: [tailwindcss(), sveltekit()],
-	define: {
-		// This will be 'true' only during the enterprise build process
-		'import.meta.env.VITE_ENTERPRISE_MODE': process.env.VITE_ENTERPRISE_MODE === 'true',
-	},
-	server: {
-		port: Number(process.env.PORT_FRONTEND) || 3000,
-		proxy: {
-			'/api': {
-				target: `http://localhost:${process.env.PORT_BACKEND || 4000}`,
-				changeOrigin: true,
-				rewrite: (path) => path.replace(/^\/api/, ''),
+// The dev server is a convenience only (the shipping app serves the SPA over
+// pea://). Vite loads .env itself via loadEnv, so no dotenv dependency.
+export default defineConfig(({ mode }) => {
+	const env = loadEnv(mode, process.cwd(), '');
+	return {
+		plugins: [tailwindcss(), sveltekit()],
+		server: {
+			port: Number(env.PORT_FRONTEND) || 3000,
+			proxy: {
+				'/api': {
+					target: `http://localhost:${env.PORT_BACKEND || 4000}`,
+					changeOrigin: true,
+					rewrite: (path) => path.replace(/^\/api/, ''),
+				},
 			},
 		},
-	},
-	ssr: {
-		noExternal: ['layerchart'],
-	},
+	};
 });

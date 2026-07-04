@@ -1,5 +1,5 @@
-//! Port of SyncSessionService — per-sync bookkeeping rows that let the last
-//! process-mailbox job trigger finalization, plus stale-session cleanup.
+//! Per-import-run bookkeeping rows (import_sessions) that let the last
+//! process-mailbox job trigger finalization, plus stale-run cleanup.
 
 use rusqlite::Connection;
 use serde_json::Value;
@@ -25,7 +25,7 @@ pub fn create(
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO sync_sessions (id, ingestion_source_id, is_initial_import, total_mailboxes, \
+        "INSERT INTO import_sessions (id, ingestion_source_id, is_initial_import, total_mailboxes, \
          completed_mailboxes, failed_mailboxes, error_messages) VALUES (?, ?, ?, ?, 0, 0, '[]')",
         rusqlite::params![id, ingestion_source_id, is_initial_import, total_mailboxes],
     )
@@ -36,7 +36,7 @@ pub fn create(
 pub fn find_by_id(conn: &Connection, session_id: &str) -> Result<SessionRecord, String> {
     conn.query_row(
         "SELECT ingestion_source_id, is_initial_import, total_mailboxes, completed_mailboxes, \
-         failed_mailboxes, error_messages FROM sync_sessions WHERE id = ?",
+         failed_mailboxes, error_messages FROM import_sessions WHERE id = ?",
         [session_id],
         |row| {
             Ok(SessionRecord {
@@ -50,58 +50,52 @@ pub fn find_by_id(conn: &Connection, session_id: &str) -> Result<SessionRecord, 
             })
         },
     )
-    .map_err(|_| format!("Sync session {session_id} not found."))
+    .map_err(|_| format!("Import session {session_id} not found."))
 }
 
-/// recordMailboxResult — atomic counters + optional syncState json_patch merge.
+/// recordMailboxResult — atomic counters + optional state json_patch merge.
 pub fn record_mailbox_result(
     conn: &Connection,
     session_id: &str,
-    result: Result<&Value, &str>, // Ok(syncState) | Err(errorMessage)
+    result: Result<&Value, &str>, // Ok(state) | Err(errorMessage)
 ) -> Result<MailboxResultOutcome, String> {
     let now = crate::search::now_ms();
-    match result {
-        Ok(_) => conn.execute(
-            "UPDATE sync_sessions SET completed_mailboxes = completed_mailboxes + 1, \
-             last_activity_at = ? WHERE id = ?",
+    // Increment and read the post-increment counters in ONE statement (RETURNING)
+    // so that, under concurrent mailbox completions, exactly one worker observes
+    // is_last — SQLite serializes writers, so each sees its own incremented value.
+    let (completed, failed, total): (i64, i64, i64) = match result {
+        Ok(_) => conn.query_row(
+            "UPDATE import_sessions SET completed_mailboxes = completed_mailboxes + 1, \
+             last_activity_at = ? WHERE id = ? \
+             RETURNING completed_mailboxes, failed_mailboxes, total_mailboxes",
             rusqlite::params![now, session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ),
-        Err(message) => conn.execute(
-            "UPDATE sync_sessions SET failed_mailboxes = failed_mailboxes + 1, \
+        Err(message) => conn.query_row(
+            "UPDATE import_sessions SET failed_mailboxes = failed_mailboxes + 1, \
              error_messages = json_insert(error_messages, '$[#]', ?), last_activity_at = ? \
-             WHERE id = ?",
+             WHERE id = ? \
+             RETURNING completed_mailboxes, failed_mailboxes, total_mailboxes",
             rusqlite::params![message, now, session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ),
     }
     .map_err(|e| e.to_string())?;
 
-    let session = find_by_id(conn, session_id)?;
-
-    if let Ok(sync_state) = result {
-        if sync_state.as_object().map_or(false, |o| !o.is_empty()) {
-            conn.execute(
-                "UPDATE ingestion_sources SET sync_state = \
-                 json_patch(COALESCE(sync_state, '{}'), ?) WHERE id = ?",
-                rusqlite::params![sync_state.to_string(), session.ingestion_source_id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
-
-    let processed = session.completed_mailboxes + session.failed_mailboxes;
-    Ok(MailboxResultOutcome { is_last: processed >= session.total_mailboxes })
+    let processed = completed + failed;
+    Ok(MailboxResultOutcome { is_last: processed >= total })
 }
 
 pub fn heartbeat(conn: &Connection, session_id: &str) {
     conn.execute(
-        "UPDATE sync_sessions SET last_activity_at = ? WHERE id = ?",
+        "UPDATE import_sessions SET last_activity_at = ? WHERE id = ?",
         rusqlite::params![crate::search::now_ms(), session_id],
     )
     .ok();
 }
 
 pub fn finalize(conn: &Connection, session_id: &str) {
-    conn.execute("DELETE FROM sync_sessions WHERE id = ?", [session_id]).ok();
+    conn.execute("DELETE FROM import_sessions WHERE id = ?", [session_id]).ok();
 }
 
 /// cleanStaleSessions — sessions silent for 30min: finished ones are removed
@@ -110,7 +104,7 @@ pub fn clean_stale_sessions(conn: &Connection) {
     let cutoff = crate::search::now_ms() - 30 * 60 * 1000;
     let mut stmt = match conn.prepare(
         "SELECT id, ingestion_source_id, total_mailboxes, completed_mailboxes, failed_mailboxes \
-         FROM sync_sessions WHERE last_activity_at < ?",
+         FROM import_sessions WHERE last_activity_at < ?",
     ) {
         Ok(s) => s,
         Err(_) => return,
@@ -125,12 +119,12 @@ pub fn clean_stale_sessions(conn: &Connection) {
         if completed + failed < total {
             conn.execute(
                 "UPDATE ingestion_sources SET status = 'error', \
-                 last_sync_status_message = 'Sync session stalled and was cleaned up.', \
+                 last_import_status_message = 'Import run stalled and was cleaned up.', \
                  updated_at = ? WHERE id = ?",
                 rusqlite::params![crate::search::now_ms(), source_id],
             )
             .ok();
         }
-        conn.execute("DELETE FROM sync_sessions WHERE id = ?", [id]).ok();
+        conn.execute("DELETE FROM import_sessions WHERE id = ?", [id]).ok();
     }
 }

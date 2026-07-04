@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Combobox } from 'bits-ui';
-	import { Check, ChevronsUpDown } from 'lucide-svelte';
+	import Check from '@lucide/svelte/icons/check';
+	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
 	import { cn } from '$lib/utils.js';
 
 	type Option = { value: string; label: string };

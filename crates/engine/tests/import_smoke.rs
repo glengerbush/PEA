@@ -53,19 +53,43 @@ fn imports_the_golden_mbox() {
     // The source finished in the imported state.
     let (status, message): (String, String) = conn
         .query_row(
-            "SELECT status, last_sync_status_message FROM ingestion_sources",
+            "SELECT status, last_import_status_message FROM ingestion_sources",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
     assert_eq!(status, "imported");
     assert_eq!(message, "Import finished. Archived 1 mailbox(es).");
-    // Stored emails are encrypted at rest (storage key was provisioned).
+    // Stored emails are plain files.
     let storage_path: String = conn
         .query_row("SELECT storage_path FROM archived_emails LIMIT 1", [], |r| r.get(0))
         .unwrap();
     let raw = std::fs::read(state.storage_root().join(&storage_path)).unwrap();
-    assert!(raw.starts_with(b"oa_enc_idf_v1::"), "storage is encrypted");
+    assert!(
+        raw.windows(5).any(|w| w == b"From:"),
+        "stored .eml is directly readable"
+    );
+
+    // Deleting a source that owns emails-with-attachments must fully tear down
+    // (regression: the ON DELETE restrict on email_attachments.attachment_id
+    // used to abort the cascade AFTER files/FTS were already wiped).
+    assert!(count("SELECT count(*) FROM attachments") > 0, "fixture has attachments");
+    let wstate = pea_engine::state_for_dir(&tmp, false).expect("writable state");
+    let wconn = wstate.pool.get().unwrap();
+    let source_id: String = wconn
+        .query_row("SELECT id FROM ingestion_sources LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    pea_engine::sources::delete_source(&wstate, &wconn, &source_id).expect("delete_source");
+    let wcount = |sql: &str| -> i64 { wconn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(wcount("SELECT count(*) FROM archived_emails"), 0, "emails gone");
+    assert_eq!(wcount("SELECT count(*) FROM attachments"), 0, "attachments gone");
+    assert_eq!(wcount("SELECT count(*) FROM email_attachments"), 0, "junction gone");
+    assert_eq!(wcount("SELECT count(*) FROM email_fts"), 0, "fts gone");
+    assert_eq!(wcount("SELECT count(*) FROM ingestion_sources"), 0, "source gone");
+    assert!(
+        !wstate.storage_root().join(&storage_path).exists(),
+        "stored .eml blob removed"
+    );
 
     std::fs::remove_dir_all(&tmp).ok();
 }

@@ -1,28 +1,22 @@
-export interface UpdateCommit {
-	sha: string;
-	/** First line of the commit message. */
-	message: string;
-}
-
-export type UpdateStatus = 'up_to_date' | 'behind' | 'unknown' | 'error';
-
-export interface UpdateCheckResult {
-	/** Full git SHA baked into the running build ('unknown' if the image wasn't stamped). */
-	currentSha: string;
-	/** Latest commit SHA on the tracked branch, or null if it couldn't be resolved. */
-	latestSha: string | null;
-	updateAvailable: boolean;
-	/** How many commits the deployed build is behind the branch tip. */
-	behindBy: number;
-	/** New commits between the deployed build and the branch tip (oldest first). */
-	commits: UpdateCommit[];
-	/** GitHub compare URL (current...latest), or null. */
-	compareUrl: string | null;
-	/** ISO timestamp of when the check ran. */
-	checkedAt: string;
-	status: UpdateStatus;
-	/** Human-readable note, e.g. why the status is 'unknown'. */
-	message?: string;
-	/** The command the user runs on the host to apply the update. */
-	updateCommand: string;
+/**
+ * Result of the desktop app's Tauri release-updater check
+ * (`GET /api/v1/native/update-check`). This reflects the actual installable,
+ * signed build on GitHub Releases — the mechanism that can self-install.
+ */
+export interface NativeUpdateInfo {
+	/** A newer signed release is available to install. */
+	available: boolean;
+	/** The version the app is currently running. */
+	currentVersion: string;
+	/** The available release version, when `available` is true. */
+	version?: string | null;
+	/** Release notes (the GitHub release body), when provided. */
+	notes?: string | null;
+	/** Link to the project's releases page. */
+	releasesUrl?: string;
+	/**
+	 * Present when the check couldn't run — e.g. the updater is unavailable
+	 * outside the packaged desktop app, or the network request failed.
+	 */
+	error?: string;
 }

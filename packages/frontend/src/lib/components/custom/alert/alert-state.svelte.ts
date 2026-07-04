@@ -14,14 +14,6 @@ export type AlertItem = {
 	duration: number;
 };
 
-export const initialAlertState: AlertType = {
-	type: 'success',
-	title: '',
-	message: '',
-	duration: 0,
-	show: false,
-};
-
 let alerts = $state<AlertItem[]>([]);
 let nextId = 0;
 
@@ -31,8 +23,8 @@ let nextId = 0;
  * in quick succession now shows one toast per action.
  */
 export function setAlert(alert: AlertType) {
-	// Legacy callers used `setAlert(initialAlertState)` (show: false) to clear the
-	// single alert; with a stack that's a no-op — dismissal is per-item now.
+	// Callers that pass `show: false` (an explicit "clear") are a no-op with a
+	// stack — dismissal is per-item now.
 	if (alert.show === false) return;
 	const id = ++nextId;
 	alerts.push({

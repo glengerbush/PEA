@@ -1,7 +1,7 @@
 <script lang="ts">
 	import * as Pagination from '$lib/components/ui/pagination/index.js';
-	import ChevronLeft from 'lucide-svelte/icons/chevron-left';
-	import ChevronRight from 'lucide-svelte/icons/chevron-right';
+	import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
 	let {
 		count,

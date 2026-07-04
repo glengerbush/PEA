@@ -21,15 +21,7 @@ export interface IngestionSourceStats {
 	provider: string;
 	status: string;
 	storageUsed: number;
-}
-
-export interface RecentSync {
-	id: string;
-	sourceName: string;
-	startTime: string;
-	duration: number;
-	emailsProcessed: number;
-	status: string;
+	emailCount: number;
 }
 
 export interface TopSender {

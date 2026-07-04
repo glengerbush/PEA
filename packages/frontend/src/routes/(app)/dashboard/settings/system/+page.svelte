@@ -5,8 +5,9 @@
 	import * as Label from '$lib/components/ui/label';
 	import * as RadioGroup from '$lib/components/ui/radio-group';
 	import * as Select from '$lib/components/ui/select';
+	import { Switch } from '$lib/components/ui/switch';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
-	import type { SupportedLanguage, UpdateCheckResult } from '@pea/types';
+	import type { SupportedLanguage, NativeUpdateInfo } from '@pea/types';
 	import { t } from '$lib/translations';
 	import { api } from '$lib/api.client';
 
@@ -14,10 +15,10 @@
 	let settings = $state(data.systemSettings);
 	let isSaving = $state(false);
 	let isCheckingUpdates = $state(false);
-	let updateResult = $state<UpdateCheckResult | null>(null);
+	let isInstalling = $state(false);
+	let installStarted = $state(false);
+	let updateInfo = $state<NativeUpdateInfo | null>(null);
 	let updateError = $state<string | null>(null);
-
-	const shortSha = (sha: string) => (sha && sha !== 'unknown' ? sha.slice(0, 7) : 'unknown');
 
 	const languageOptions: { value: SupportedLanguage; label: string }[] = [
 		{ value: 'en', label: '🇬🇧 English' },
@@ -72,21 +73,77 @@
 		}
 	}
 
+	// The updates toggle lives outside the main settings form, so it saves on its
+	// own. Optimistic: flip immediately, revert if the write fails.
+	async function saveAutoCheck(value: boolean) {
+		const previous = settings.autoCheckUpdates;
+		settings.autoCheckUpdates = value;
+		try {
+			const response = await api('/settings/system', {
+				method: 'PUT',
+				body: JSON.stringify({ autoCheckUpdates: value }),
+			});
+			const body = await response.json();
+			if (response.ok) {
+				settings = body;
+			} else {
+				settings.autoCheckUpdates = previous;
+				setAlert({
+					type: 'error',
+					title: $t('app.system_settings.save_failed_title'),
+					message: body.message || 'Failed to update settings',
+					duration: 5000,
+					show: true,
+				});
+			}
+		} catch {
+			settings.autoCheckUpdates = previous;
+			setAlert({
+				type: 'error',
+				title: $t('app.system_settings.save_failed_title'),
+				message: 'Failed to update settings',
+				duration: 5000,
+				show: true,
+			});
+		}
+	}
+
 	async function checkUpdates() {
 		isCheckingUpdates = true;
 		updateError = null;
+		installStarted = false;
+		updateInfo = null;
 		try {
-			const response = await api('/settings/updates/check');
+			const response = await api('/native/update-check');
 			if (response.ok) {
-				updateResult = await response.json();
+				updateInfo = await response.json();
 			} else {
-				const body = await response.json().catch(() => ({}) as { message?: string });
-				updateError = body.message || 'Update check failed';
+				// The signed updater lives in the desktop shell; outside the packaged
+				// app that native route isn't served.
+				updateError = $t('app.system_settings.updates.desktop_only');
 			}
 		} catch {
-			updateError = 'Update check failed';
+			updateError = $t('app.system_settings.updates.desktop_only');
 		} finally {
 			isCheckingUpdates = false;
+		}
+	}
+
+	async function installUpdate() {
+		isInstalling = true;
+		updateError = null;
+		try {
+			const response = await api('/native/update-install', { method: 'POST' });
+			if (response.ok) {
+				// The shell downloads + installs in the background, then relaunches.
+				installStarted = true;
+			} else {
+				updateError = $t('app.system_settings.updates.check_failed');
+			}
+		} catch {
+			updateError = $t('app.system_settings.updates.check_failed');
+		} finally {
+			isInstalling = false;
 		}
 	}
 </script>
@@ -162,62 +219,79 @@
 				{$t('app.system_settings.updates.description')}
 			</Card.Description>
 		</Card.Header>
-		<Card.Content class="space-y-3 text-sm">
-			{#if updateResult}
-				<div class="flex justify-between">
-					<span class="text-muted-foreground">{$t('app.system_settings.updates.current_build')}</span>
-					<span class="font-mono">{shortSha(updateResult.currentSha)}</span>
+		<Card.Content class="space-y-4 text-sm">
+			<div class="flex items-center justify-between gap-4">
+				<div class="space-y-1">
+					<Label.Root for="auto-check-updates"
+						>{$t('app.system_settings.updates.auto_check')}</Label.Root
+					>
+					<p class="text-muted-foreground text-xs">
+						{$t('app.system_settings.updates.auto_check_description')}
+					</p>
 				</div>
+				<Switch
+					id="auto-check-updates"
+					checked={settings.autoCheckUpdates}
+					onCheckedChange={saveAutoCheck}
+				/>
+			</div>
 
-				{#if updateResult.status === 'up_to_date'}
-					<p class="font-medium text-green-600">
-						✓ {$t('app.system_settings.updates.up_to_date')}
-					</p>
-				{:else if updateResult.status === 'behind'}
-					<p class="font-medium text-yellow-600">
-						{$t('app.system_settings.updates.available', {
-							count: updateResult.behindBy,
-						} as any)}
-					</p>
-					{#if updateResult.commits.length}
-						<ul class="text-muted-foreground list-disc space-y-1 pl-5">
-							{#each updateResult.commits.slice(0, 10) as commit}
-								<li>
-									<span class="font-mono">{shortSha(commit.sha)}</span>
-									{commit.message}
-								</li>
-							{/each}
-						</ul>
-					{/if}
-					<div>
-						<p class="text-muted-foreground">
-							{$t('app.system_settings.updates.run_command')}
-						</p>
-						<pre
-							class="bg-muted mt-1 overflow-x-auto rounded p-2 font-mono text-xs">{updateResult.updateCommand}</pre>
-					</div>
-					{#if updateResult.compareUrl}
-						<a
-							href={updateResult.compareUrl}
-							target="_blank"
-							rel="noopener noreferrer"
-							class="text-primary underline"
-							>{$t('app.system_settings.updates.view_on_github')}</a
+			{#if updateInfo}
+				<div class="space-y-3 border-t pt-4">
+					<div class="flex justify-between">
+						<span class="text-muted-foreground"
+							>{$t('app.system_settings.updates.current_version')}</span
 						>
-					{/if}
-				{:else}
-					<p class="text-muted-foreground">
-						{updateResult.message ?? $t('app.system_settings.updates.status_unknown')}
-					</p>
-				{/if}
+						<span class="font-mono">{updateInfo.currentVersion}</span>
+					</div>
 
-				<p class="text-muted-foreground text-xs">
-					{$t('app.system_settings.updates.last_checked', {
-						date: new Date(updateResult.checkedAt).toLocaleString(),
-					} as any)}
-				</p>
-			{:else}
-				<p class="text-muted-foreground">{$t('app.system_settings.updates.prompt')}</p>
+					{#if updateInfo.error}
+						<p class="text-muted-foreground">
+							{$t('app.system_settings.updates.check_failed')}
+						</p>
+					{:else if updateInfo.available}
+						<p class="font-medium text-yellow-600">
+							{$t('app.system_settings.updates.available', {
+								version: updateInfo.version ?? '',
+							} as any)}
+						</p>
+						{#if updateInfo.notes}
+							<div>
+								<p class="text-muted-foreground">
+									{$t('app.system_settings.updates.release_notes')}
+								</p>
+								<pre
+									class="bg-muted mt-1 max-h-40 overflow-auto rounded p-2 font-mono text-xs whitespace-pre-wrap">{updateInfo.notes}</pre>
+							</div>
+						{/if}
+						{#if updateInfo.releasesUrl}
+							<a
+								href={updateInfo.releasesUrl}
+								target="_blank"
+								rel="noopener noreferrer"
+								class="text-primary underline"
+								>{$t('app.system_settings.updates.view_releases')}</a
+							>
+						{/if}
+						{#if installStarted}
+							<p class="text-muted-foreground">
+								{$t('app.system_settings.updates.install_started')}
+							</p>
+						{:else}
+							<div>
+								<Button type="button" disabled={isInstalling} onclick={installUpdate}>
+									{isInstalling
+										? $t('app.system_settings.updates.installing')
+										: $t('app.system_settings.updates.install')}
+								</Button>
+							</div>
+						{/if}
+					{:else}
+						<p class="font-medium text-green-600">
+							✓ {$t('app.system_settings.updates.up_to_date')}
+						</p>
+					{/if}
+				</div>
 			{/if}
 
 			{#if updateError}

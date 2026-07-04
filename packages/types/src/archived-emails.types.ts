@@ -15,6 +15,11 @@ export interface Attachment {
 	mimeType: string | null;
 	sizeBytes: number;
 	storagePath: string;
+	/** Content-Description header, when the sender included one. */
+	contentDescription?: string | null;
+	/** RFC 2183 file timestamps from Content-Disposition, as sent. */
+	originalCreatedAt?: string | null;
+	originalModifiedAt?: string | null;
 }
 
 export interface ThreadEmail {
@@ -25,22 +30,12 @@ export interface ThreadEmail {
 	hasAttachments: boolean;
 }
 
-export interface BulkDeleteArchivedEmailsDto {
-	emailIds: string[];
-}
-
 export interface BulkDeleteArchivedEmailsResult {
 	requestedCount: number;
 	deletedCount: number;
 	deletedIds: string[];
 	/** Emails that could not be deleted (e.g. legal hold / retention policy). */
 	failed: { id: string; reason: string }[];
-}
-
-export interface UpdateArchivedEmailTagsDto {
-	emailIds: string[];
-	addTags?: string[];
-	removeTags?: string[];
 }
 
 export interface UpdatedArchivedEmailTags {
@@ -101,10 +96,6 @@ export interface ApproveExactDuplicateGroupDto {
 	duplicateEmailIds: string[];
 }
 
-export interface ApproveExactDuplicatesDto {
-	groups: ApproveExactDuplicateGroupDto[];
-}
-
 export interface ApproveExactDuplicatesResult {
 	approvedGroups: number;
 	/** Duplicate copies permanently deleted (the keeper of each group is preserved). */
@@ -112,7 +103,7 @@ export interface ApproveExactDuplicatesResult {
 	keeperEmails: number;
 }
 
-export interface FuzzyDuplicateSignals {
+export interface LikelyDuplicateSignals {
 	senderEmail: string;
 	subjectHash: string;
 	matchingBodyHash: boolean;
@@ -121,66 +112,42 @@ export interface FuzzyDuplicateSignals {
 	sentSpreadHours: number | null;
 }
 
-export interface FuzzyDuplicateEmail extends ExactDuplicateEmail {
+export interface LikelyDuplicateEmail extends ExactDuplicateEmail {
 	suggestedKeeper: boolean;
 }
 
-export interface FuzzyDuplicateGroup {
-	id: string;
+/** A likely-duplicate group, computed live and identified by its group key.
+ *  There is no persisted row: approving deletes the duplicates (the group then
+ *  self-resolves) and ignoring records the key so it drops out of the listing. */
+export interface LikelyDuplicateGroup {
 	groupKey: string;
-	status: 'pending' | 'approved' | 'ignored';
 	score: number;
-	signals: FuzzyDuplicateSignals;
-	createdAt: Date;
-	updatedAt: Date;
+	signals: LikelyDuplicateSignals;
 	keeperEmailId: string;
-	emails: FuzzyDuplicateEmail[];
+	emails: LikelyDuplicateEmail[];
 }
 
-export interface FuzzyDuplicateGroupsResult {
-	groups: FuzzyDuplicateGroup[];
+export interface LikelyDuplicateGroupsResult {
+	groups: LikelyDuplicateGroup[];
 	totalGroups: number;
 	page: number;
 	limit: number;
 }
 
-export interface ScanFuzzyDuplicatesDto {
-	batchSize?: number;
-}
-
-export interface ScanFuzzyDuplicatesResult {
-	jobId: string | number;
-	batchSize: number;
-}
-
-export interface FuzzyDuplicateScanResult {
-	scannedGroups: number;
-	insertedGroups: number;
-	linkedEmails: number;
-}
-
-export interface ApproveFuzzyDuplicateGroupDto {
-	groupId: string;
+export interface ApproveLikelyDuplicateGroupDto {
+	groupKey: string;
 	keeperEmailId: string;
 	duplicateEmailIds: string[];
 }
 
-export interface ApproveFuzzyDuplicatesDto {
-	groups: ApproveFuzzyDuplicateGroupDto[];
-}
-
-export interface ApproveFuzzyDuplicatesResult {
+export interface ApproveLikelyDuplicatesResult {
 	approvedGroups: number;
 	/** Duplicate copies permanently deleted (the keeper of each group is preserved). */
 	deletedEmails: number;
 	keeperEmails: number;
 }
 
-export interface IgnoreFuzzyDuplicateGroupsDto {
-	groupIds: string[];
-}
-
-export interface IgnoreFuzzyDuplicateGroupsResult {
+export interface IgnoreLikelyDuplicateGroupsResult {
 	ignoredGroups: number;
 }
 
@@ -194,22 +161,6 @@ export type RemoteContentStatus =
 
 export type RemoteContentAssetStatus = 'pending' | 'archived' | 'blocked' | 'failed';
 
-export interface RemoteContentAsset {
-	id: string;
-	emailId: string;
-	originalUrl: string;
-	finalUrl: string | null;
-	urlHash: string;
-	status: RemoteContentAssetStatus;
-	contentType: string | null;
-	sizeBytes: number | null;
-	contentHashSha256: string | null;
-	storagePath: string | null;
-	failureReason: string | null;
-	createdAt: Date;
-	updatedAt: Date;
-}
-
 export interface RemoteContentPreview {
 	emailId: string;
 	html: string;
@@ -218,11 +169,6 @@ export interface RemoteContentPreview {
 	archivedAssetCount: number;
 	blockedAssetCount: number;
 	failedAssetCount: number;
-}
-
-export interface ArchiveRemoteContentResult {
-	jobId: string | number;
-	emailIds: string[];
 }
 
 /** Slim, client-facing view of a remote-content asset for the detail-page list. */
@@ -255,13 +201,11 @@ export interface ArchivedEmail {
 	storagePath: string;
 	storageHashSha256: string;
 	sizeBytes: number;
-	isIndexed: boolean;
 	hasAttachments: boolean;
 	archivedAt: Date;
 	sourcePath: string | null;
-	sourceLabels: string[] | null;
 	duplicateSubjectHash: string | null;
-	duplicateFuzzyGroupKey: string | null;
+	duplicateLikelyGroupKey: string | null;
 	duplicateBodyHash: string | null;
 	duplicateRecipientFingerprint: string | null;
 	duplicateAttachmentFingerprint: string | null;
@@ -269,18 +213,6 @@ export interface ArchivedEmail {
 	remoteContentAssetCount: number;
 	remoteContentArchivedAt: Date | null;
 	attachments?: Attachment[];
-	raw?: Buffer;
 	thread?: ThreadEmail[];
-	path: string | null;
 	tags: string[] | null;
-}
-
-/**
- * Represents a paginated list of archived emails.
- */
-export interface PaginatedArchivedEmails {
-	items: ArchivedEmail[];
-	total: number;
-	page: number;
-	limit: number;
 }

@@ -18,17 +18,18 @@
 	import { t } from '$lib/translations';
 	import { Badge } from '$lib/components/ui/badge';
 	import * as HoverCard from '$lib/components/ui/hover-card';
-	import {
-		Clock,
-		Trash2,
-		CalendarClock,
-		AlertCircle,
-		Shield,
-		CircleAlert,
-		Archive,
-		ArrowLeft,
-		X,
-	} from 'lucide-svelte';
+	import Clock from '@lucide/svelte/icons/clock';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import CalendarClock from '@lucide/svelte/icons/calendar-clock';
+	import AlertCircle from '@lucide/svelte/icons/alert-circle';
+	import Shield from '@lucide/svelte/icons/shield';
+	import CircleAlert from '@lucide/svelte/icons/circle-alert';
+	import Archive from '@lucide/svelte/icons/archive';
+	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import Download from '@lucide/svelte/icons/download';
+	import Reply from '@lucide/svelte/icons/reply';
+	import ScrollText from '@lucide/svelte/icons/scroll-text';
+	import X from '@lucide/svelte/icons/x';
 	import { get } from 'svelte/store';
 	import { lastMailboxListUrl } from '$lib/stores/mailbox-nav';
 	import { page } from '$app/state';
@@ -40,7 +41,7 @@
 		UpdateArchivedEmailTagsResult,
 	} from '@pea/types';
 	import PostalMime, { type Attachment as PostalAttachment } from 'postal-mime';
-	import { Paperclip } from 'lucide-svelte';
+	import Paperclip from '@lucide/svelte/icons/paperclip';
 
 	let { data }: { data: PageData } = $props();
 	let email = $derived(data.email);
@@ -142,8 +143,21 @@
 	// --- Embedded attachment state (parsed from raw EML) ---
 	/** Non-inline attachments parsed from the raw EML via postal-mime */
 	let embeddedAttachments = $state<PostalAttachment[]>([]);
-	let isEmbeddedAttachmentDialogOpen = $state(false);
-	let selectedEmbeddedFilename = $state('');
+
+	// The raw .eml is fetched lazily from /raw (not embedded in the detail JSON)
+	// and cached per email so the three consumers below share one download.
+	let rawBytesCache = $state<{ id: string; bytes: Uint8Array } | null>(null);
+	async function getRawBytes(): Promise<Uint8Array | null> {
+		const id = email?.id;
+		if (!id) return null;
+		if (rawBytesCache?.id === id) return rawBytesCache.bytes;
+		const response = await api(`/archived-emails/${id}/raw`);
+		if (!response.ok) return null;
+		const bytes = new Uint8Array(await response.arrayBuffer());
+		if (email?.id !== id) return null; // navigated away mid-fetch
+		rawBytesCache = { id, bytes };
+		return bytes;
+	}
 
 	/** Parse raw EML to extract non-inline attachments for display */
 	$effect(() => {
@@ -153,20 +167,11 @@
 		embeddedAttachments = [];
 
 		async function parseEmlAttachments() {
-			const raw = email?.raw;
-			if (!raw) return;
+			const bytes = await getRawBytes();
+			if (!bytes || email?.id !== currentId) return;
 
 			try {
-				let buffer: Uint8Array;
-				if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'Buffer') {
-					buffer = new Uint8Array(
-						(raw as unknown as { type: 'Buffer'; data: number[] }).data
-					);
-				} else {
-					buffer = new Uint8Array(raw as unknown as ArrayLike<number>);
-				}
-
-				const parsed = await new PostalMime().parse(buffer);
+				const parsed = await new PostalMime().parse(bytes);
 				// Ignore a stale parse that resolved after the user navigated to a
 				// different email — otherwise its attachments render under the wrong one.
 				if (email?.id !== currentId) return;
@@ -200,9 +205,13 @@
 	async function loadRemoteAssets(id: string): Promise<void> {
 		try {
 			const response = await api(`/archived-emails/${id}/remote-assets`);
-			remoteAssets = response.ok ? ((await response.json()) as RemoteContentAssetSummary[]) : [];
+			const assets = response.ok ? ((await response.json()) as RemoteContentAssetSummary[]) : [];
+			// Ignore a response that resolved after the user navigated away, or
+			// it would show email A's assets under email B (and 404 on click).
+			if (email?.id !== id) return;
+			remoteAssets = assets;
 		} catch {
-			remoteAssets = [];
+			if (email?.id === id) remoteAssets = [];
 		}
 	}
 
@@ -235,15 +244,6 @@
 		}
 	}
 
-	/**
-	 * Opens the confirmation dialog when a user tries to download an
-	 * embedded attachment. Since embedded attachments are not stored
-	 * separately, the user must download the entire EML file.
-	 */
-	function handleEmbeddedAttachmentDownload(filename: string) {
-		selectedEmbeddedFilename = filename;
-		isEmbeddedAttachmentDialogOpen = true;
-	}
 
 
 	async function download(path: string, filename: string) {
@@ -267,6 +267,269 @@
 			a.remove();
 		} catch (error) {
 			console.error('Download failed:', error);
+		}
+	}
+
+	/** Downloads the .eml reconstructed from storage (attachments spliced back). */
+	async function downloadEml() {
+		if (!email || !browser) return;
+		try {
+			const response = await api(`/archived-emails/${email.id}/eml`);
+			if (!response.ok) {
+				throw new Error(`HTTP error! status: ${response.status}`);
+			}
+			const blob = await response.blob();
+			const url = window.URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${email.subject || 'email'}.eml`;
+			document.body.appendChild(a);
+			a.click();
+			window.URL.revokeObjectURL(url);
+			a.remove();
+		} catch (error) {
+			setAlert({
+				type: 'error',
+				title: 'Download failed',
+				message: error instanceof Error ? error.message : 'Failed to download email',
+				duration: 5000,
+				show: true,
+			});
+		}
+	}
+
+	// --- Download all attachments as a zip ---
+	let isDownloadingAll = $state(false);
+	async function downloadAllAttachments() {
+		if (!email || !browser) return;
+		isDownloadingAll = true;
+		try {
+			const response = await api(`/archived-emails/${email.id}/attachments/archive`);
+			if (!response.ok) {
+				throw new Error(`HTTP error! status: ${response.status}`);
+			}
+			const blob = await response.blob();
+			const url = window.URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${email.subject || 'email'} - attachments.zip`;
+			document.body.appendChild(a);
+			a.click();
+			window.URL.revokeObjectURL(url);
+			a.remove();
+		} catch (error) {
+			setAlert({
+				type: 'error',
+				title: 'Download failed',
+				message: error instanceof Error ? error.message : 'Failed to download attachments',
+				duration: 5000,
+				show: true,
+			});
+		} finally {
+			isDownloadingAll = false;
+		}
+	}
+
+	/** Opens an attachment in the OS quick-look previewer (qlmanage / sushi). */
+	async function quickLook(storagePath: string) {
+		try {
+			const response = await api('/attachments/quicklook', {
+				method: 'POST',
+				body: JSON.stringify({ path: storagePath }),
+			});
+			if (!response.ok) {
+				throw new Error((await response.text()) || 'Failed to open preview');
+			}
+		} catch (error) {
+			setAlert({
+				type: 'error',
+				title: 'Quick Look failed',
+				message: error instanceof Error ? error.message : 'Failed to open preview',
+				duration: 5000,
+				show: true,
+			});
+		}
+	}
+
+	// --- Copy a quoted reply for pasting into an email client ---
+	let isCopyingReply = $state(false);
+
+	function escapeHtml(value: string): string {
+		return value
+			.replaceAll('&', '&amp;')
+			.replaceAll('<', '&lt;')
+			.replaceAll('>', '&gt;')
+			.replaceAll('"', '&quot;');
+	}
+
+	/** Plain-text rendering of an html fragment, keeping line breaks. */
+	function htmlToPlainText(html: string): string {
+		const withBreaks = html
+			.replace(/<\s*br[^>]*>/gi, '\n')
+			.replace(/<\/(p|div|tr|li|h[1-6]|blockquote)\s*>/gi, '\n');
+		const doc = new DOMParser().parseFromString(withBreaks, 'text/html');
+		return (doc.body.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim();
+	}
+
+	async function buildReply(): Promise<{ text: string; html: string }> {
+		const current = email;
+		if (!current) return { text: '', html: '' };
+
+		let text = '';
+		let html = '';
+		const rawBytes = await getRawBytes();
+		if (rawBytes) {
+			try {
+				const parsed = await new PostalMime().parse(rawBytes);
+				text = parsed.text ?? '';
+			} catch {
+				// fall through to the preview below
+			}
+		}
+		// The rendered preview is what the reader actually sees (sanitized html,
+		// inline images as data URIs) — quote that, not the raw mime parts.
+		try {
+			const response = await api(`/archived-emails/${current.id}/preview`);
+			if (response.ok) {
+				const preview = (await response.json()) as RemoteContentPreview;
+				const match = /<body>([\s\S]*)<\/body>/i.exec(preview.html ?? '');
+				html = (match ? match[1] : '').trim();
+			}
+		} catch {
+			// keep whatever the raw parse produced
+		}
+		if (!text.trim() && html) text = htmlToPlainText(html);
+		if (!text.trim() && !html) text = current.subject || '';
+
+		const attribution = `On ${formatDateTime(current.sentAt)}, ${identityLabel(
+			current.senderEmail,
+			current.senderName
+		)} wrote:`;
+		const quotedText =
+			`${attribution}\n\n` +
+			text
+				.trimEnd()
+				.split('\n')
+				.map((line) => `> ${line}`)
+				.join('\n');
+		const htmlBody = html || escapeHtml(text).replaceAll('\n', '<br>');
+		const quotedHtml =
+			`<p>${escapeHtml(attribution)}</p>` +
+			`<blockquote type="cite" style="margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex">${htmlBody}</blockquote>`;
+		return { text: quotedText, html: quotedHtml };
+	}
+
+	async function copyReplyToClipboard() {
+		if (!email) return;
+		isCopyingReply = true;
+		try {
+			const { text, html } = await buildReply();
+			// The desktop shell writes both clipboard flavors natively — the
+			// WebKitGTK webview rejects the async Clipboard API outside a strict
+			// user-gesture window, so it can't be relied on here.
+			const response = await api('/native/clipboard', {
+				method: 'POST',
+				body: JSON.stringify({ text, html }),
+			});
+			if (!response.ok) {
+				// Dev in a plain browser: no shell endpoint — try the web API.
+				if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+					await navigator.clipboard.write([
+						new ClipboardItem({
+							'text/plain': new Blob([text], { type: 'text/plain' }),
+							'text/html': new Blob([html], { type: 'text/html' }),
+						}),
+					]);
+				} else {
+					await navigator.clipboard.writeText(text);
+				}
+			}
+			setAlert({
+				type: 'success',
+				title: 'Reply copied',
+				message: 'Paste it into a new email in your mail client.',
+				duration: 4000,
+				show: true,
+			});
+		} catch (error) {
+			setAlert({
+				type: 'error',
+				title: 'Copy failed',
+				message: error instanceof Error ? error.message : 'Failed to copy reply',
+				duration: 5000,
+				show: true,
+			});
+		} finally {
+			isCopyingReply = false;
+		}
+	}
+
+	// --- Raw header viewer ---
+	let isHeadersDialogOpen = $state(false);
+	let emailHeaders = $state('');
+
+	async function showHeaders() {
+		const bytes = await getRawBytes();
+		if (!bytes) {
+			setAlert({
+				type: 'error',
+				title: 'Headers unavailable',
+				message: 'The stored email could not be loaded.',
+				duration: 5000,
+				show: true,
+			});
+			return;
+		}
+		// The header block is everything before the first blank line.
+		const decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+		const end = decoded.search(/\r?\n\r?\n/);
+		emailHeaders = (end === -1 ? decoded : decoded.slice(0, end)).trimEnd();
+		isHeadersDialogOpen = true;
+	}
+
+	async function copyHeaders() {
+		try {
+			const response = await api('/native/clipboard', {
+				method: 'POST',
+				body: JSON.stringify({ text: emailHeaders }),
+			});
+			if (!response.ok) {
+				await navigator.clipboard.writeText(emailHeaders);
+			}
+			setAlert({
+				type: 'success',
+				title: 'Headers copied',
+				message: 'The raw headers are on your clipboard.',
+				duration: 3000,
+				show: true,
+			});
+		} catch (error) {
+			setAlert({
+				type: 'error',
+				title: 'Copy failed',
+				message: error instanceof Error ? error.message : 'Failed to copy headers',
+				duration: 5000,
+				show: true,
+			});
+		}
+	}
+
+	// --- Two-finger (horizontal) swipe returns to the mailbox list ---
+	let swipeAccum = 0;
+	let swipeResetTimer: ReturnType<typeof setTimeout> | null = null;
+	let swipeCooldownUntil = 0;
+	function handleWheel(event: WheelEvent) {
+		// Only count clearly-horizontal movement so vertical scrolling never triggers.
+		if (Math.abs(event.deltaX) <= Math.abs(event.deltaY) * 1.5) return;
+		const now = Date.now();
+		if (now < swipeCooldownUntil) return;
+		swipeAccum += event.deltaX;
+		if (swipeResetTimer) clearTimeout(swipeResetTimer);
+		swipeResetTimer = setTimeout(() => (swipeAccum = 0), 400);
+		if (Math.abs(swipeAccum) >= 300) {
+			swipeAccum = 0;
+			swipeCooldownUntil = now + 1000;
+			goBack();
 		}
 	}
 
@@ -437,6 +700,8 @@
 	<title>{email?.subject} | {$t('app.archive.title')} - PEA</title>
 </svelte:head>
 
+<svelte:window onwheel={handleWheel} />
+
 {#if email}
 	<div class="mb-4">
 		<Button variant="ghost" size="sm" class="gap-2" onclick={goBack}>
@@ -448,12 +713,59 @@
 		<div class="col-span-3 md:col-span-2">
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{email.subject || $t('app.archive.no_subject')}</Card.Title>
-					<Card.Description>
-						{$t('app.archive.from')}: {identityLabel(email.senderEmail, email.senderName)} | {$t(
-							'app.archive.sent'
-						)}: {formatDateTime(email.sentAt)}
-					</Card.Description>
+					<div class="flex flex-wrap items-start justify-between gap-4">
+						<div class="min-w-0 space-y-1.5">
+							<Card.Title>{email.subject || $t('app.archive.no_subject')}</Card.Title>
+							<Card.Description>
+								{$t('app.archive.from')}: {identityLabel(
+									email.senderEmail,
+									email.senderName
+								)} | {$t('app.archive.sent')}: {formatDateTime(email.sentAt)}
+							</Card.Description>
+						</div>
+						<div class="flex flex-shrink-0 flex-col items-stretch gap-2">
+							<div class="flex gap-2">
+								<Button
+									size="sm"
+									class="flex-1"
+									title={$t('app.archive.download_eml')}
+									aria-label={$t('app.archive.download_eml')}
+									onclick={downloadEml}
+								>
+									<Download class="h-4 w-4" />
+								</Button>
+								<Button
+									variant="destructive"
+									size="sm"
+									class="flex-1"
+									title={$t('app.archive.delete_email')}
+									aria-label={$t('app.archive.delete_email')}
+									onclick={() => (isDeleteDialogOpen = true)}
+								>
+									<Trash2 class="h-4 w-4" />
+								</Button>
+							</div>
+							<Button
+								variant="outline"
+								size="sm"
+								class="justify-start gap-2 text-xs"
+								onclick={showHeaders}
+							>
+								<ScrollText class="h-3.5 w-3.5" />
+								{$t('app.archive.view_headers')}
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								class="justify-start gap-2 text-xs"
+								disabled={isCopyingReply}
+								onclick={copyReplyToClipboard}
+							>
+								<Reply class="h-3.5 w-3.5" />
+								{$t('app.archive.copy_reply')}
+							</Button>
+						</div>
+					</div>
 				</Card.Header>
 				<Card.Content>
 					<div class="space-y-4">
@@ -548,33 +860,25 @@
 			</Card.Root>
 		</div>
 		<div class="col-span-3 space-y-6 md:col-span-1">
-			<Card.Root>
-				<Card.Header>
-					<Card.Title>{$t('app.archive.actions')}</Card.Title>
-				</Card.Header>
-				<Card.Content class="space-y-2">
-					<Button
-						class="text-xs"
-						onclick={() =>
-							download(email.storagePath, `${email.subject || 'email'}.eml`)}
-						>{$t('app.archive.download_eml')}</Button
-					>
-					<Button
-						variant="destructive"
-						class="text-xs"
-						onclick={() => (isDeleteDialogOpen = true)}
-					>
-						{$t('app.archive.delete_email')}
-					</Button>
-				</Card.Content>
-			</Card.Root>
-
-
 			<!-- Attachments (collapsed, with inline preview where possible) -->
 			{#if email.attachments && email.attachments.length > 0}
 				<Card.Root>
 					<Card.Header>
-						<Card.Title>{$t('app.archive.attachments')}</Card.Title>
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<Card.Title>{$t('app.archive.attachments')}</Card.Title>
+							{#if email.attachments.length > 1}
+								<Button
+									variant="outline"
+									size="sm"
+									class="gap-1 text-xs"
+									disabled={isDownloadingAll}
+									onclick={downloadAllAttachments}
+								>
+									<Download class="h-3.5 w-3.5" />
+									{$t('app.archive.download_all_attachments')}
+								</Button>
+							{/if}
+						</div>
 					</Card.Header>
 					<Card.Content class="space-y-2">
 						{#each email.attachments as attachment (attachment.id)}
@@ -582,7 +886,11 @@
 								title={attachment.filename}
 								sizeBytes={attachment.sizeBytes}
 								mimeType={attachment.mimeType}
+								description={attachment.contentDescription}
+								createdAt={attachment.originalCreatedAt}
+								modifiedAt={attachment.originalModifiedAt}
 								fetchBlob={() => fetchAttachmentBlob(attachment.storagePath)}
+								onQuickLook={() => quickLook(attachment.storagePath)}
 							/>
 						{/each}
 					</Card.Content>
@@ -708,37 +1016,26 @@
 		</Dialog.Content>
 	</Dialog.Root>
 
-	<!-- Embedded attachment download confirmation modal -->
-	<Dialog.Root bind:open={isEmbeddedAttachmentDialogOpen}>
-		<Dialog.Content class="sm:max-w-lg">
+	<!-- Raw header viewer -->
+	<Dialog.Root bind:open={isHeadersDialogOpen}>
+		<Dialog.Content class="sm:max-w-3xl">
 			<Dialog.Header>
-				<Dialog.Title>
-					{$t('app.archive.embedded_attachment_title')}
-				</Dialog.Title>
-				<Dialog.Description>
-					<span class="font-medium">{selectedEmbeddedFilename}</span>
-					<br /><br />
-					{$t('app.archive.embedded_attachment_description')}
-				</Dialog.Description>
+				<Dialog.Title>{$t('app.archive.view_headers')}</Dialog.Title>
+				<Dialog.Description>{email.subject || $t('app.archive.no_subject')}</Dialog.Description>
 			</Dialog.Header>
+			<pre
+				class="bg-muted max-h-[60vh] overflow-auto whitespace-pre-wrap break-all rounded-md p-3 font-mono text-xs">{emailHeaders}</pre>
 			<Dialog.Footer class="sm:justify-start">
-				<Button
-					type="button"
-					onclick={() => {
-						download(email.storagePath, `${email.subject || 'email'}.eml`);
-						isEmbeddedAttachmentDialogOpen = false;
-					}}
-				>
-					{$t('app.archive.download_eml')}
+				<Button type="button" variant="outline" onclick={copyHeaders}>
+					{$t('app.archive.copy_headers')}
 				</Button>
 				<Dialog.Close>
-					<Button type="button" variant="secondary">
-						{$t('app.archive.cancel')}
-					</Button>
+					<Button type="button" variant="secondary">{$t('app.archive.cancel')}</Button>
 				</Dialog.Close>
 			</Dialog.Footer>
 		</Dialog.Content>
 	</Dialog.Root>
+
 {:else}
 	<p>{$t('app.archive.not_found')}</p>
 {/if}

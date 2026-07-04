@@ -7,24 +7,26 @@
 	import * as Select from '$lib/components/ui/select';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import SearchableSelect from '$lib/components/custom/SearchableSelect.svelte';
+	import AttachmentTypeFilter from '$lib/components/custom/AttachmentTypeFilter.svelte';
 	import EmailIdentity from '$lib/components/custom/EmailIdentity.svelte';
 	import { formatDateTime } from '$lib/stores/datetime.svelte';
 	import { goto } from '$app/navigation';
+	import { onDestroy } from 'svelte';
 	import { page as appPage } from '$app/state';
 	import { lastMailboxListUrl } from '$lib/stores/mailbox-nav';
 	import { api } from '$lib/api.client';
 	import { t } from '$lib/translations';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
-	import Paperclip from 'lucide-svelte/icons/paperclip';
-	import Search from 'lucide-svelte/icons/search';
-	import Filter from 'lucide-svelte/icons/filter';
-	import ArrowUp from 'lucide-svelte/icons/arrow-up';
-	import ArrowDown from 'lucide-svelte/icons/arrow-down';
-	import ChevronsUpDown from 'lucide-svelte/icons/chevrons-up-down';
-	import TagsIcon from 'lucide-svelte/icons/tags';
-	import Trash2 from 'lucide-svelte/icons/trash-2';
-	import X from 'lucide-svelte/icons/x';
+	import Paperclip from '@lucide/svelte/icons/paperclip';
+	import Search from '@lucide/svelte/icons/search';
+	import Filter from '@lucide/svelte/icons/filter';
+	import ArrowUp from '@lucide/svelte/icons/arrow-up';
+	import ArrowDown from '@lucide/svelte/icons/arrow-down';
+	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
+	import TagsIcon from '@lucide/svelte/icons/tags';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import X from '@lucide/svelte/icons/x';
 	import type {
 		ArchiveSortField,
 		BulkDeleteArchivedEmailsResult,
@@ -49,6 +51,7 @@
 	let fields = $derived(filters.fields);
 	let ingestionSourceId = $derived(filters.ingestionSourceId);
 	let hasAttachments = $derived(filters.hasAttachments);
+	let attachmentExt = $derived(filters.attachmentExt);
 	let tags = $derived(filters.tags);
 	let sort: ArchiveSortField = $derived(filters.sort);
 	let direction: SortDirection = $derived(filters.direction);
@@ -74,6 +77,7 @@
 	let showFilters = $state(
 		data.filters.ingestionSourceId !== 'all' ||
 			data.filters.hasAttachments !== 'any' ||
+			Boolean(data.filters.attachmentExt) ||
 			Boolean(data.filters.tags)
 	);
 	let selectedIds = $state<string[]>([]);
@@ -96,7 +100,7 @@
 		{ value: 'from,senderName', label: 'Sender' },
 		{ value: 'to,cc,bcc', label: 'Recipients' },
 		{ value: 'attachments.filename,attachments.content', label: 'Attachments' },
-		{ value: 'sourcePath,sourceLabels,tags', label: 'Tags' },
+		{ value: 'sourcePath,tags', label: 'Tags' },
 	];
 
 	const attachmentOptions: SelectOption[] = [
@@ -113,8 +117,7 @@
 
 	const matchingOptions: SelectOption[] = [
 		{ value: 'last', label: 'Fuzzy' },
-		{ value: 'all', label: 'Verbatim' },
-		{ value: 'frequency', label: 'Frequency' },
+		{ value: 'all', label: 'Exact Match' },
 	];
 
 	let sourceOptions = $derived([
@@ -131,7 +134,10 @@
 
 	// Count of active result filters (the ones in the panel), shown as a badge.
 	const advancedActiveCount = $derived(
-		(ingestionSourceId !== 'all' ? 1 : 0) + (hasAttachments !== 'any' ? 1 : 0) + (tags ? 1 : 0)
+		(ingestionSourceId !== 'all' ? 1 : 0) +
+			(hasAttachments !== 'any' ? 1 : 0) +
+			(attachmentExt ? 1 : 0) +
+			(tags ? 1 : 0)
 	);
 
 	// Column-header sorting: clicking a sortable header sets/toggles sort+direction
@@ -159,11 +165,15 @@
 		{ value: '', label: 'Any tag' },
 		...filterFacets.tags.map((tag) => ({ value: tag, label: tag })),
 	]);
+	// Derive the range from the actual hits so an out-of-range page (e.g. a
+	// stale /mailbox?page=999 deep link) shows 0-0, never an inverted "24951-30".
 	const resultStart = $derived(
-		searchResult.total === 0 ? 0 : (searchResult.page - 1) * searchResult.limit + 1
+		searchResult.hits.length === 0 ? 0 : (searchResult.page - 1) * searchResult.limit + 1
 	);
 	const resultEnd = $derived(
-		Math.min(searchResult.page * searchResult.limit, searchResult.total)
+		searchResult.hits.length === 0
+			? 0
+			: (searchResult.page - 1) * searchResult.limit + searchResult.hits.length
 	);
 	const visibleIds = $derived(searchResult.hits.map((email) => email.id));
 	const selectedVisibleIds = $derived(selectedIds.filter((id) => visibleIds.includes(id)));
@@ -207,6 +217,7 @@
 		setParam(params, 'fields', fields, 'all');
 		setParam(params, 'ingestionSourceId', ingestionSourceId, 'all');
 		setParam(params, 'hasAttachments', hasAttachments, 'any');
+		setParam(params, 'attachmentExt', attachmentExt);
 		setParam(params, 'tags', tags);
 		setParam(params, 'sort', sort, 'sentAt');
 		setParam(params, 'direction', direction, 'desc');
@@ -233,6 +244,11 @@
 		if (searchDebounce) clearTimeout(searchDebounce);
 		searchDebounce = setTimeout(applyNow, 250);
 	}
+	// Clear a pending debounce on unmount, or a keystroke-then-navigate within
+	// 250ms fires applyNow() after we've left, bouncing back to /mailbox.
+	onDestroy(() => {
+		if (searchDebounce) clearTimeout(searchDebounce);
+	});
 	// Select bindings update after their change callbacks fire — defer one tick
 	// so buildArchiveUrl() sees the new value.
 	function applyAfterUpdate() {
@@ -343,14 +359,20 @@
 			}
 
 			const result = body as BulkDeleteArchivedEmailsResult;
-			const deleted = new Set(result.deletedIds);
-			searchResult = {
-				...searchResult,
-				hits: searchResult.hits.filter((email) => !deleted.has(email.id)),
-				total: Math.max(0, searchResult.total - result.deletedCount),
-			};
-			selectedIds = selectedIds.filter((id) => !deleted.has(id));
+			selectedIds = [];
 			isDeleteDialogOpen = false;
+
+			// Re-run the loader so the page refills from the remaining emails.
+			// Deleting can empty the current page entirely, so clamp to the
+			// last page that still exists.
+			const remaining = Math.max(0, searchResult.total - result.deletedCount);
+			const totalPages = Math.max(1, Math.ceil(remaining / Number(limit || '25')));
+			const targetPage = Math.min(filters.page, totalPages);
+			await goto(buildArchiveUrl(targetPage), {
+				invalidateAll: true,
+				keepFocus: true,
+				replaceState: true,
+			});
 
 			if (result.failed.length > 0) {
 				setAlert({
@@ -505,6 +527,11 @@
 					placeholder="Any tag"
 					onValueChange={applyAfterUpdate}
 				/>
+			</label>
+
+			<label class="flex min-w-[12rem] flex-col gap-1 text-sm font-medium">
+				<span>Attachment types</span>
+				<AttachmentTypeFilter bind:value={attachmentExt} onValueChange={applyAfterUpdate} />
 			</label>
 
 			<div class="flex h-9 items-center gap-2">

@@ -1,0 +1,1 @@
+ALTER TABLE `ingestion_sources` RENAME COLUMN `credentials` TO `provider_config`;

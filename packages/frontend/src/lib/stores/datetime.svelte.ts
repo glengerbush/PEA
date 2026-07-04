@@ -47,26 +47,3 @@ export function formatDate(value: DateInput, options: Intl.DateTimeFormatOptions
 	});
 }
 
-const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
-	['year', 1000 * 60 * 60 * 24 * 365],
-	['month', 1000 * 60 * 60 * 24 * 30],
-	['week', 1000 * 60 * 60 * 24 * 7],
-	['day', 1000 * 60 * 60 * 24],
-	['hour', 1000 * 60 * 60],
-	['minute', 1000 * 60],
-	['second', 1000]
-];
-
-/** Human relative distance from now, with suffix ("in 3 months", "2 days ago"). */
-export function formatRelativeToNow(value: DateInput): string {
-	const date = toDate(value);
-	if (!date) return '';
-	const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-	const diffMs = date.getTime() - Date.now();
-	for (const [unit, ms] of RELATIVE_UNITS) {
-		if (Math.abs(diffMs) >= ms || unit === 'second') {
-			return rtf.format(Math.round(diffMs / ms), unit);
-		}
-	}
-	return rtf.format(0, 'second');
-}

@@ -1,6 +1,6 @@
 {
 	"name": "@pea/types",
-	"version": "0.1.4",
+	"version": "1.0.0",
 	"license": "MIT License",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
@@ -15,7 +15,6 @@
 		"dev": "tsc --watch"
 	},
 	"devDependencies": {
-		"@types/node": "^24.0.13",
 		"typescript": "^5.0.0"
 	}
 }

@@ -3,7 +3,7 @@
 //! Every shape mirrors the Node engine byte-for-byte (key order aside).
 
 use crate::state::AppState;
-use crate::{crypto, iso, search};
+use crate::{iso, search};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
@@ -82,20 +82,12 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
         json!(row.get::<_, String>("storage_hash_sha256")?),
     );
     doc.insert("sizeBytes".into(), json!(row.get::<_, i64>("size_bytes")?));
-    doc.insert("isIndexed".into(), json!(row.get::<_, i64>("is_indexed")? != 0));
     doc.insert("hasAttachments".into(), json!(row.get::<_, i64>("has_attachments")? != 0));
     doc.insert("archivedAt".into(), json!(iso(row.get::<_, i64>("archived_at")?)));
     doc.insert("sourcePath".into(), json!(row.get::<_, Option<String>>("source_path")?));
-    // (parsed as string[] | null) || null — a parsed empty array stays [].
-    doc.insert(
-        "sourceLabels".into(),
-        row.get::<_, Option<String>>("source_labels")?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(Value::Null),
-    );
     for (js, col) in [
         ("duplicateSubjectHash", "duplicate_subject_hash"),
-        ("duplicateFuzzyGroupKey", "duplicate_fuzzy_group_key"),
+        ("duplicateLikelyGroupKey", "duplicate_likely_group_key"),
         ("duplicateBodyHash", "duplicate_body_hash"),
         ("duplicateRecipientFingerprint", "duplicate_recipient_fingerprint"),
         ("duplicateAttachmentFingerprint", "duplicate_attachment_fingerprint"),
@@ -114,14 +106,6 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
         "remoteContentArchivedAt".into(),
         json!(row.get::<_, Option<i64>>("remote_content_archived_at")?.map(iso)),
     );
-    // item.path || null — empty string is falsy.
-    doc.insert(
-        "path".into(),
-        match row.get::<_, Option<String>>("path")? {
-            Some(p) if !p.is_empty() => json!(p),
-            _ => Value::Null,
-        },
-    );
     doc.insert(
         "tags".into(),
         row.get::<_, Option<String>>("tags")?
@@ -131,41 +115,31 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
     Ok(Some(doc))
 }
 
-/// Full ingestion_sources row (drizzle mapping) — includes `credentials`,
+/// Full ingestion_sources row (drizzle mapping) — includes `provider_config`,
 /// exactly like the relation spread in the Node email-detail response.
 fn source_full_row(conn: &Connection, id: &str) -> Option<Value> {
     conn.query_row(
-        "SELECT id, user_id, name, provider, credentials, status, last_sync_started_at, \
-         last_sync_finished_at, last_sync_status_message, sync_state, merged_into_id, \
+        "SELECT id, name, provider, provider_config, status, last_import_started_at, \
+         last_import_finished_at, last_import_status_message, merged_into_id, \
          created_at, updated_at FROM ingestion_sources WHERE id = ?",
         [id],
         |row| {
-            let sync_state: Option<String> = row.get(9)?;
             Ok(json!({
                 "id": row.get::<_, String>(0)?,
-                "userId": row.get::<_, Option<String>>(1)?,
-                "name": row.get::<_, String>(2)?,
-                "provider": row.get::<_, String>(3)?,
-                "credentials": row.get::<_, Option<String>>(4)?,
-                "status": row.get::<_, String>(5)?,
-                "lastSyncStartedAt": row.get::<_, Option<i64>>(6)?.map(iso),
-                "lastSyncFinishedAt": row.get::<_, Option<i64>>(7)?.map(iso),
-                "lastSyncStatusMessage": row.get::<_, Option<String>>(8)?,
-                "syncState": sync_state.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
-                "mergedIntoId": row.get::<_, Option<String>>(10)?,
-                "createdAt": iso(row.get::<_, i64>(11)?),
-                "updatedAt": iso(row.get::<_, i64>(12)?),
+                "name": row.get::<_, String>(1)?,
+                "provider": row.get::<_, String>(2)?,
+                "provider_config": row.get::<_, Option<String>>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "lastImportStartedAt": row.get::<_, Option<i64>>(5)?.map(iso),
+                "lastImportFinishedAt": row.get::<_, Option<i64>>(6)?.map(iso),
+                "lastImportStatusMessage": row.get::<_, Option<String>>(7)?,
+                "mergedIntoId": row.get::<_, Option<String>>(8)?,
+                "createdAt": iso(row.get::<_, i64>(9)?),
+                "updatedAt": iso(row.get::<_, i64>(10)?),
             }))
         },
     )
     .ok()
-}
-
-/// toSafeIngestionSource — the same row without credentials.
-fn source_safe_row(conn: &Connection, id: &str) -> Option<Value> {
-    let mut value = source_full_row(conn, id)?;
-    value.as_object_mut()?.remove("credentials");
-    Some(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +170,7 @@ pub async fn email_detail(
     };
     let mut doc = doc;
 
-    // Relation: full ingestion source row (credentials included, as in Node).
+    // Relation: full ingestion source row (provider_config included, as in Node).
     let source_id = doc["ingestionSourceId"].as_str().unwrap_or_default().to_string();
     doc.insert(
         "ingestionSource".into(),
@@ -232,20 +206,17 @@ pub async fn email_detail(
             .collect();
     }
 
-    // raw .eml — read + decrypt, serialized like a Node Buffer.
-    let storage_path = doc["storagePath"].as_str().unwrap_or_default().to_string();
-    let file = app.storage_root().join(&storage_path);
-    let raw = match std::fs::read(&file).map(|c| crypto::decrypt_storage(c, &app.storage_key)) {
-        Ok(Ok(plain)) => plain,
-        _ => return internal_error(), // Node's storage.get throws → 500
-    };
-    doc.insert("raw".into(), json!({ "type": "Buffer", "data": raw }));
+    // The raw .eml is NOT embedded here — encoding it as a JSON byte-array
+    // costs ~3.5 bytes/byte on every open. The three consumers (attachment
+    // parsing, copy-reply, view-headers) fetch it lazily from the dedicated
+    // binary endpoint GET /archived-emails/:id/raw instead.
     doc.insert("thread".into(), Value::Array(thread));
 
     if doc["hasAttachments"] == Value::Bool(true) {
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.filename, a.mime_type, a.size_bytes, a.storage_path \
+                "SELECT a.id, a.filename, a.mime_type, a.size_bytes, a.storage_path, \
+                 a.content_description, a.original_created_at, a.original_modified_at \
                  FROM email_attachments ea \
                  INNER JOIN attachments a ON ea.attachment_id = a.id \
                  WHERE ea.email_id = ?",
@@ -259,6 +230,9 @@ pub async fn email_detail(
                     "mimeType": row.get::<_, Option<String>>(2)?,
                     "sizeBytes": row.get::<_, i64>(3)?,
                     "storagePath": row.get::<_, String>(4)?,
+                    "contentDescription": row.get::<_, Option<String>>(5)?,
+                    "originalCreatedAt": row.get::<_, Option<String>>(6)?,
+                    "originalModifiedAt": row.get::<_, Option<String>>(7)?,
                 }))
             })
             .unwrap()
@@ -274,71 +248,8 @@ pub async fn email_detail(
 // GET /archived-emails/ingestion-source/:ingestionSourceId
 // ---------------------------------------------------------------------------
 
-pub async fn emails_by_source(
-    State(app): State<AppState>,
-    AxumPath(source_id): AxumPath<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Response {
-    let conn = app.pool.get().unwrap();
-    let page = params
-        .get("page")
-        .and_then(|p| p.parse::<i64>().ok())
-        .filter(|p| *p != 0)
-        .unwrap_or(1);
-    let limit = params
-        .get("limit")
-        .and_then(|p| p.parse::<i64>().ok())
-        .filter(|p| *p != 0)
-        .unwrap_or(10);
-    let offset = (page - 1) * limit;
-
-    // findGroupSourceIds throws for unknown sources → Node responds 500.
-    let Some(group_ids) = search::group_source_ids(&conn, &source_id) else {
-        return internal_error();
-    };
-    let placeholders = vec!["?"; group_ids.len()].join(", ");
-
-    let total: i64 = {
-        let sql = format!(
-            "SELECT count(archived_emails.id) FROM archived_emails \
-             LEFT JOIN ingestion_sources ON archived_emails.ingestion_source_id = ingestion_sources.id \
-             WHERE archived_emails.ingestion_source_id IN ({placeholders})"
-        );
-        conn.query_row(&sql, rusqlite::params_from_iter(group_ids.iter()), |r| r.get(0))
-            .unwrap_or(0)
-    };
-
-    let sql = format!(
-        "SELECT archived_emails.* FROM archived_emails \
-         LEFT JOIN ingestion_sources ON archived_emails.ingestion_source_id = ingestion_sources.id \
-         WHERE archived_emails.ingestion_source_id IN ({placeholders}) \
-         ORDER BY archived_emails.sent_at DESC LIMIT ? OFFSET ?"
-    );
-    let mut stmt = conn.prepare(&sql).unwrap();
-    let mut params_vec: Vec<rusqlite::types::Value> = group_ids
-        .iter()
-        .map(|s| rusqlite::types::Value::from(s.clone()))
-        .collect();
-    params_vec.push(limit.into());
-    params_vec.push(offset.into());
-    let rows: Vec<Option<Map<String, Value>>> = stmt
-        .query_map(rusqlite::params_from_iter(params_vec.iter()), |row| email_full_row(row))
-        .unwrap()
-        .filter_map(Result::ok)
-        .collect();
-    let mut items: Vec<Value> = Vec::with_capacity(rows.len());
-    for row in rows {
-        match row {
-            Some(doc) => items.push(Value::Object(doc)),
-            None => return internal_error(), // null recipients → Node throws
-        }
-    }
-
-    Json(json!({ "items": items, "total": total, "page": page, "limit": limit })).into_response()
-}
-
 // ---------------------------------------------------------------------------
-// Dashboard: ingestion-sources, recent-syncs, remote-content-issues
+// Dashboard: ingestion-sources, remote-content-issues
 // ---------------------------------------------------------------------------
 
 pub async fn dashboard_sources(State(app): State<AppState>) -> Json<Value> {
@@ -346,7 +257,8 @@ pub async fn dashboard_sources(State(app): State<AppState>) -> Json<Value> {
     let mut stmt = conn
         .prepare(
             "SELECT ingestion_sources.id, ingestion_sources.name, ingestion_sources.provider, \
-             ingestion_sources.status, sum(archived_emails.size_bytes) \
+             ingestion_sources.status, sum(archived_emails.size_bytes), \
+             count(archived_emails.id) \
              FROM ingestion_sources \
              LEFT JOIN archived_emails ON ingestion_sources.id = archived_emails.ingestion_source_id \
              GROUP BY ingestion_sources.id",
@@ -362,17 +274,13 @@ pub async fn dashboard_sources(State(app): State<AppState>) -> Json<Value> {
                 "provider": row.get::<_, String>(2)?,
                 "status": row.get::<_, String>(3)?,
                 "storageUsed": storage_used,
+                "emailCount": row.get::<_, i64>(5)?,
             }))
         })
         .unwrap()
         .filter_map(Result::ok)
         .collect();
     Json(Value::Array(rows))
-}
-
-pub async fn recent_syncs() -> Json<Value> {
-    // Placeholder in Node too — no sync-session table yet.
-    Json(json!([]))
 }
 
 pub async fn remote_content_issues(
@@ -432,7 +340,7 @@ pub async fn remote_content_issues(
         .map(|s| rusqlite::types::Value::from(s.to_string()))
         .collect();
     qparams.push(limit.into());
-    qparams.push(((page - 1) * limit).into());
+    qparams.push((page - 1).saturating_mul(limit).into());
     struct EmailRow {
         id: String,
         subject: Option<String>,
@@ -544,12 +452,14 @@ pub async fn jobs_queue_details(
     let page = params
         .get("page")
         .and_then(|p| p.parse::<i64>().ok())
-        .filter(|p| *p != 0)
+        .filter(|p| *p >= 1)
         .unwrap_or(1);
+    // Clamp to a positive range — a negative limit is `LIMIT -1` in SQLite,
+    // which disables the limit and dumps every job.
     let limit = params
         .get("limit")
         .and_then(|p| p.parse::<i64>().ok())
-        .filter(|p| *p != 0)
+        .map(|l| l.clamp(1, 100))
         .unwrap_or(10);
 
     // Counts come from the same overview query as GET /jobs/queues.
@@ -579,7 +489,7 @@ pub async fn jobs_queue_details(
         "SELECT id, name, payload, attempts, error, created_at, started_at, finished_at \
          FROM jobs WHERE queue = ? AND ({predicate}) \
          ORDER BY created_at ASC LIMIT {limit} OFFSET {}",
-        (page - 1) * limit
+        (page - 1).saturating_mul(limit)
     );
     let mut stmt = conn.prepare(&sql).unwrap();
     let jobs: Vec<Value> = stmt
@@ -660,40 +570,9 @@ pub async fn jobs_queue_details(
 // GET /ingestion-sources/:id
 // ---------------------------------------------------------------------------
 
-pub async fn ingestion_source_detail(
-    State(app): State<AppState>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
-    let conn = app.pool.get().unwrap();
-    match source_safe_row(&conn, &id) {
-        Some(source) => Json(source).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "message": "Ingestion source not found" })),
-        )
-            .into_response(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // GET /storage/download?path=...
 // ---------------------------------------------------------------------------
-
-/// Lexical normalize + strip of leading `../` — the combined effect of Node's
-/// path.normalize + the traversal-stripping regex + path.relative round-trip.
-fn sanitize_storage_path(unsafe_path: &str) -> String {
-    let mut stack: Vec<&str> = Vec::new();
-    for seg in unsafe_path.split(['/', '\\']) {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                stack.pop(); // leading ..s vanish (regex), inner ..s resolve
-            }
-            s => stack.push(s),
-        }
-    }
-    stack.join("/")
-}
 
 /// Express res.send(string) responds text/html — match it on error bodies.
 fn text_response(status: StatusCode, body: &'static str) -> Response {
@@ -705,6 +584,249 @@ fn text_response(status: StatusCode, body: &'static str) -> Response {
         .into_response()
 }
 
+/// POST /attachments/quicklook {path} — opens the attachment in the
+/// OS quick-look previewer (qlmanage on macOS, sushi/xdg-open on Linux).
+/// Desktop-only by nature: the file is materialized in the OS temp dir for
+/// the previewer and removed again a few minutes later.
+pub async fn quicklook_attachment(
+    State(app): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(unsafe_path) = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())
+    else {
+        return text_response(StatusCode::BAD_REQUEST, "File path is required");
+    };
+    let file = match app.storage_abs(unsafe_path) {
+        Ok(file) => file,
+        Err(_) => return text_response(StatusCode::BAD_REQUEST, "Invalid file path"),
+    };
+    if !file.is_file() {
+        return text_response(StatusCode::NOT_FOUND, "File not found");
+    }
+    let content = match std::fs::read(&file) {
+        Ok(content) => content,
+        _ => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "Error reading file"),
+    };
+
+    // The storage basename is already `<hash7>-<sanitized original name>`, so
+    // it is collision-free and keeps the extension the previewer needs.
+    let name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("attachment")
+        .to_string();
+    let dir = std::env::temp_dir().join("pea-quicklook");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return internal_error();
+    }
+    let target = dir.join(name);
+    if std::fs::write(&target, &content).is_err() {
+        return internal_error();
+    }
+
+    let quiet = |mut cmd: std::process::Command| {
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    };
+    let spawned = if cfg!(target_os = "macos") {
+        let mut cmd = std::process::Command::new("qlmanage");
+        cmd.arg("-p").arg(&target);
+        quiet(cmd)
+    } else {
+        let mut cmd = std::process::Command::new("sushi");
+        cmd.arg(&target);
+        quiet(cmd).or_else(|_| {
+            let mut cmd = std::process::Command::new("xdg-open");
+            cmd.arg(&target);
+            quiet(cmd)
+        })
+    };
+    if spawned.is_err() {
+        let _ = std::fs::remove_file(&target);
+        return text_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No preview application available",
+        );
+    }
+
+    // Best-effort cleanup once the previewer has had time to read it.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(600));
+        let _ = std::fs::remove_file(&target);
+    });
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// GET /archived-emails/:id/eml — the downloadable .eml, reconstructed from
+/// the hollowed stored copy by splicing each attachment blob back in place.
+/// Pre-hollowing emails have no markers and download exactly as stored.
+pub async fn download_email_eml(
+    State(app): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let stored_path = match conn_email_storage_path(&app, &id) {
+        Ok(p) => p,
+        Err(StatusCode::NOT_FOUND) => return text_response(StatusCode::NOT_FOUND, "File not found"),
+        Err(code) => return text_response(code, "Error reading email"),
+    };
+    let Ok(stored) = app.storage_get(&stored_path) else {
+        return text_response(StatusCode::INTERNAL_SERVER_ERROR, "Error downloading file");
+    };
+
+    // sha-256 → blob storage path for this email's attachments.
+    let conn = app.pool.get().unwrap();
+    let mut blob_paths: HashMap<String, String> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT a.content_hash_sha256, a.storage_path FROM email_attachments ea \
+         INNER JOIN attachments a ON ea.attachment_id = a.id WHERE ea.email_id = ?",
+    ) {
+        let rows = stmt
+            .query_map([&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for (hash, path) in rows {
+            blob_paths.insert(hash, path);
+        }
+    }
+
+    let rebuilt = crate::ingest::rebuild_eml(&stored, &|hash| {
+        blob_paths.get(hash).and_then(|path| app.storage_get(path).ok())
+    });
+    (
+        [
+            (header::CONTENT_TYPE, "message/rfc822".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"email.eml\"".to_string(),
+            ),
+        ],
+        rebuilt,
+    )
+        .into_response()
+}
+
+/// Ok(path), Err(NOT_FOUND) when the email doesn't exist, Err(INTERNAL...) for a
+/// real failure (pool exhausted, DB error) — so callers don't turn a 500 into 404.
+fn conn_email_storage_path(app: &AppState, email_id: &str) -> Result<String, StatusCode> {
+    let conn = app.pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    match conn.query_row(
+        "SELECT storage_path FROM archived_emails WHERE id = ?",
+        [email_id],
+        |r| r.get::<_, String>(0),
+    ) {
+        Ok(p) => Ok(p),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// GET /archived-emails/:id/raw — the stored (hollowed) .eml bytes, fetched
+/// lazily by the detail page instead of being embedded in the JSON response.
+pub async fn download_email_raw(
+    State(app): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let storage_path = match conn_email_storage_path(&app, &id) {
+        Ok(p) => p,
+        Err(StatusCode::NOT_FOUND) => return text_response(StatusCode::NOT_FOUND, "File not found"),
+        Err(code) => return text_response(code, "Error reading email"),
+    };
+    match app.storage_get(&storage_path) {
+        Ok(bytes) => (
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => text_response(StatusCode::INTERNAL_SERVER_ERROR, "Error reading file"),
+    }
+}
+
+/// Reduces an attacker-controlled attachment name to a safe zip entry name:
+/// basename only, with separators and `..` neutralised (anti Zip Slip).
+fn zip_entry_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    if base.is_empty() || base == "." || base == ".." {
+        "attachment".to_string()
+    } else {
+        base.to_string()
+    }
+}
+
+/// GET /archived-emails/:id/attachments/archive — all of an email's
+/// attachments bundled into one zip.
+pub async fn download_all_attachments(
+    State(app): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let conn = app.pool.get().unwrap();
+    let mut stmt = match conn.prepare(
+        "SELECT a.filename, a.storage_path FROM email_attachments ea \
+         INNER JOIN attachments a ON ea.attachment_id = a.id WHERE ea.email_id = ?",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return internal_error(),
+    };
+    let attachments: Vec<(String, String)> = stmt
+        .query_map([&id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    if attachments.is_empty() {
+        return text_response(StatusCode::NOT_FOUND, "File not found");
+    }
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(&mut cursor);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (raw_filename, storage_path) in attachments {
+        let Ok(content) = app.storage_get(&storage_path) else {
+            return text_response(StatusCode::INTERNAL_SERVER_ERROR, "Error downloading file");
+        };
+        // The DB filename is the raw MIME attachment name (attacker-controlled),
+        // so reduce it to a bare basename before it becomes a zip entry — a
+        // path like `../../evil` would otherwise plant files on extraction.
+        let base = zip_entry_name(&raw_filename);
+        // Suffix before the extension until the ACTUAL emitted name is unused,
+        // so a generated `a-2.pdf` can't collide with a real `a-2.pdf`.
+        let mut entry_name = base.clone();
+        let mut n = 1;
+        while used_names.contains(&entry_name) {
+            n += 1;
+            entry_name = match base.rsplit_once('.') {
+                Some((stem, ext)) => format!("{stem}-{n}.{ext}"),
+                None => format!("{base}-{n}"),
+            };
+        }
+        used_names.insert(entry_name.clone());
+        if writer.start_file(entry_name, options).is_err() {
+            return internal_error();
+        }
+        if std::io::Write::write_all(&mut writer, &content).is_err() {
+            return internal_error();
+        }
+    }
+    if writer.finish().is_err() {
+        return internal_error();
+    }
+
+    (
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"attachments.zip\"".to_string(),
+            ),
+        ],
+        cursor.into_inner(),
+    )
+        .into_response()
+}
+
 pub async fn storage_download(
     State(app): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -712,16 +834,22 @@ pub async fn storage_download(
     let Some(unsafe_path) = params.get("path").filter(|p| !p.is_empty()) else {
         return text_response(StatusCode::BAD_REQUEST, "File path is required");
     };
-    let safe_path = sanitize_storage_path(unsafe_path);
-    let file = app.storage_root().join(&safe_path);
+    let file = match app.storage_abs(unsafe_path) {
+        Ok(file) => file,
+        Err(_) => return text_response(StatusCode::BAD_REQUEST, "Invalid file path"),
+    };
     if !file.is_file() {
         return text_response(StatusCode::NOT_FOUND, "File not found");
     }
-    let content = match std::fs::read(&file).map(|c| crypto::decrypt_storage(c, &app.storage_key)) {
-        Ok(Ok(plain)) => plain,
+    let content = match std::fs::read(&file) {
+        Ok(content) => content,
         _ => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "Error downloading file"),
     };
-    let filename = safe_path.rsplit('/').next().unwrap_or("").to_string();
+    let filename = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
     (
         [(
             header::CONTENT_DISPOSITION,
@@ -730,4 +858,18 @@ pub async fn storage_download(
         content,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zip_entry_name_basenames_and_defaults() {
+        assert_eq!(zip_entry_name("../../evil.sh"), "evil.sh");
+        assert_eq!(zip_entry_name("a/b/c.pdf"), "c.pdf");
+        assert_eq!(zip_entry_name("plain.txt"), "plain.txt");
+        assert_eq!(zip_entry_name(""), "attachment");
+        assert_eq!(zip_entry_name(".."), "attachment");
+    }
 }

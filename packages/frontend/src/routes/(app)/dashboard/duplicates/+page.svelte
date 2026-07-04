@@ -5,31 +5,30 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
 	import { api } from '$lib/api.client';
+	import { goto } from '$app/navigation';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
-	import Check from 'lucide-svelte/icons/check';
-	import CheckCheck from 'lucide-svelte/icons/check-check';
+	import Check from '@lucide/svelte/icons/check';
+	import CheckCheck from '@lucide/svelte/icons/check-check';
 	import type {
 		ApproveExactDuplicateGroupDto,
 		ApproveExactDuplicatesResult,
-		ApproveFuzzyDuplicateGroupDto,
-		ApproveFuzzyDuplicatesResult,
+		ApproveLikelyDuplicateGroupDto,
+		ApproveLikelyDuplicatesResult,
 		ExactDuplicateGroup,
 		ExactDuplicateReason,
-		FuzzyDuplicateGroup,
-		IgnoreFuzzyDuplicateGroupsResult,
-		ScanFuzzyDuplicatesResult,
+		LikelyDuplicateGroup,
+		IgnoreLikelyDuplicateGroupsResult,
 	} from '@pea/types';
 
 	let { data }: { data: PageData } = $props();
 
 	let duplicateGroups = $derived(data.duplicateGroups);
-	let fuzzyDuplicateGroups = $derived(data.fuzzyDuplicateGroups);
+	let likelyDuplicateGroups = $derived(data.likelyDuplicateGroups);
 	let activeReason = $derived(data.activeReason || '');
-	let activeTab = $state<'exact' | 'fuzzy'>('exact');
+	let activeTab = $state<'exact' | 'likely'>('exact');
 	let keeperOverrides = $state<Record<string, string>>({});
-	let fuzzyKeeperOverrides = $state<Record<string, string>>({});
+	let likelyKeeperOverrides = $state<Record<string, string>>({});
 	let approvingKey = $state<string | null>(null);
-	let scanningFuzzy = $state(false);
 
 	const reasonFilters: { value: string; label: string }[] = [
 		{ value: '', label: 'All' },
@@ -52,7 +51,8 @@
 		}
 	}
 
-	function shortFingerprint(fingerprint: string): string {
+	function shortFingerprint(fingerprint: string | null | undefined): string {
+		if (!fingerprint) return '';
 		return fingerprint.length > 96 ? `${fingerprint.slice(0, 96)}...` : fingerprint;
 	}
 
@@ -65,6 +65,20 @@
 			...keeperOverrides,
 			[groupKey]: emailId,
 		};
+	}
+
+	/** Re-runs the loader after groups are removed so the page refills from
+	 *  the remaining ones, clamped to the last page that still exists. */
+	async function reloadGroups(
+		kind: 'exact' | 'likely',
+		result: { totalGroups: number; page: number; limit: number },
+		removedGroups: number
+	) {
+		const remaining = Math.max(0, result.totalGroups - removedGroups);
+		const totalPages = Math.max(1, Math.ceil(remaining / Math.max(1, result.limit)));
+		const target = Math.min(result.page, totalPages);
+		const url = kind === 'exact' ? buildExactPageUrl(target) : buildLikelyPageUrl(target);
+		await goto(url, { invalidateAll: true, keepFocus: true, replaceState: true });
 	}
 
 	function buildDecision(group: ExactDuplicateGroup): ApproveExactDuplicateGroupDto | null {
@@ -84,15 +98,15 @@
 		};
 	}
 
-	function setFuzzyKeeper(groupId: string, emailId: string) {
-		fuzzyKeeperOverrides = {
-			...fuzzyKeeperOverrides,
+	function setLikelyKeeper(groupId: string, emailId: string) {
+		likelyKeeperOverrides = {
+			...likelyKeeperOverrides,
 			[groupId]: emailId,
 		};
 	}
 
-	function buildFuzzyDecision(group: FuzzyDuplicateGroup): ApproveFuzzyDuplicateGroupDto | null {
-		const keeperEmailId = fuzzyKeeperOverrides[group.id] || group.keeperEmailId;
+	function buildLikelyDecision(group: LikelyDuplicateGroup): ApproveLikelyDuplicateGroupDto | null {
+		const keeperEmailId = likelyKeeperOverrides[group.groupKey] || group.keeperEmailId;
 		const duplicateEmailIds = group.emails
 			.map((email) => email.id)
 			.filter((emailId) => emailId !== keeperEmailId);
@@ -102,7 +116,7 @@
 		}
 
 		return {
-			groupId: group.id,
+			groupKey: group.groupKey,
 			keeperEmailId,
 			duplicateEmailIds,
 		};
@@ -126,12 +140,7 @@
 			}
 
 			const result = body as ApproveExactDuplicatesResult;
-			const approvedKeys = new Set(decisions.map((decision) => decision.groupKey));
-			duplicateGroups = {
-				...duplicateGroups,
-				groups: duplicateGroups.groups.filter((group) => !approvedKeys.has(group.groupKey)),
-				totalGroups: Math.max(0, duplicateGroups.totalGroups - result.approvedGroups),
-			};
+			await reloadGroups('exact', duplicateGroups, result.approvedGroups);
 			setAlert({
 				type: 'success',
 				title: 'Duplicates deleted',
@@ -152,33 +161,28 @@
 		}
 	}
 
-	async function approveFuzzyGroups(groups: FuzzyDuplicateGroup[], actionKey: string) {
+	async function approveLikelyGroups(groups: LikelyDuplicateGroup[], actionKey: string) {
 		const decisions = groups
-			.map(buildFuzzyDecision)
-			.filter((decision): decision is ApproveFuzzyDuplicateGroupDto => Boolean(decision));
+			.map(buildLikelyDecision)
+			.filter((decision): decision is ApproveLikelyDuplicateGroupDto => Boolean(decision));
 		if (decisions.length === 0) return;
 
 		approvingKey = actionKey;
 		try {
-			const response = await api('/archived-emails/duplicates/fuzzy/approve', {
+			const response = await api('/archived-emails/duplicates/likely/approve', {
 				method: 'POST',
 				body: JSON.stringify({ groups: decisions }),
 			});
 			const body = await response.json();
 			if (!response.ok) {
-				throw new Error(body.message || 'Failed to approve fuzzy duplicates');
+				throw new Error(body.message || 'Failed to approve likely duplicates');
 			}
 
-			const result = body as ApproveFuzzyDuplicatesResult;
-			const approvedIds = new Set(decisions.map((decision) => decision.groupId));
-			fuzzyDuplicateGroups = {
-				...fuzzyDuplicateGroups,
-				groups: fuzzyDuplicateGroups.groups.filter((group) => !approvedIds.has(group.id)),
-				totalGroups: Math.max(0, fuzzyDuplicateGroups.totalGroups - result.approvedGroups),
-			};
+			const result = body as ApproveLikelyDuplicatesResult;
+			await reloadGroups('likely', likelyDuplicateGroups, result.approvedGroups);
 			setAlert({
 				type: 'success',
-				title: 'Fuzzy duplicates deleted',
+				title: 'Likely duplicates deleted',
 				message: `${result.deletedEmails} duplicate email${result.deletedEmails === 1 ? '' : 's'} deleted`,
 				duration: 3000,
 				show: true,
@@ -188,7 +192,7 @@
 				type: 'error',
 				title: 'Approval failed',
 				message:
-					error instanceof Error ? error.message : 'Failed to approve fuzzy duplicates',
+					error instanceof Error ? error.message : 'Failed to approve likely duplicates',
 				duration: 5000,
 				show: true,
 			});
@@ -197,29 +201,25 @@
 		}
 	}
 
-	async function ignoreFuzzyGroup(groupId: string) {
-		approvingKey = `ignore-${groupId}`;
+	async function ignoreLikelyGroup(groupKey: string) {
+		approvingKey = `ignore-${groupKey}`;
 		try {
-			const response = await api('/archived-emails/duplicates/fuzzy/ignore', {
+			const response = await api('/archived-emails/duplicates/likely/ignore', {
 				method: 'POST',
-				body: JSON.stringify({ groupIds: [groupId] }),
+				body: JSON.stringify({ groupKeys: [groupKey] }),
 			});
 			const body = await response.json();
 			if (!response.ok) {
-				throw new Error(body.message || 'Failed to ignore fuzzy group');
+				throw new Error(body.message || 'Failed to ignore group');
 			}
 
-			const result = body as IgnoreFuzzyDuplicateGroupsResult;
-			fuzzyDuplicateGroups = {
-				...fuzzyDuplicateGroups,
-				groups: fuzzyDuplicateGroups.groups.filter((group) => group.id !== groupId),
-				totalGroups: Math.max(0, fuzzyDuplicateGroups.totalGroups - result.ignoredGroups),
-			};
+			const result = body as IgnoreLikelyDuplicateGroupsResult;
+			await reloadGroups('likely', likelyDuplicateGroups, result.ignoredGroups);
 		} catch (error) {
 			setAlert({
 				type: 'error',
 				title: 'Ignore failed',
-				message: error instanceof Error ? error.message : 'Failed to ignore fuzzy group',
+				message: error instanceof Error ? error.message : 'Failed to ignore group',
 				duration: 5000,
 				show: true,
 			});
@@ -228,38 +228,6 @@
 		}
 	}
 
-	async function scanFuzzyBatch() {
-		scanningFuzzy = true;
-		try {
-			const response = await api('/archived-emails/duplicates/fuzzy/scan', {
-				method: 'POST',
-				body: JSON.stringify({ batchSize: 100 }),
-			});
-			const body = await response.json();
-			if (!response.ok) {
-				throw new Error(body.message || 'Failed to enqueue fuzzy scan');
-			}
-
-			const result = body as ScanFuzzyDuplicatesResult;
-			setAlert({
-				type: 'success',
-				title: 'Fuzzy scan queued',
-				message: `Indexing job ${result.jobId} will scan up to ${result.batchSize} groups.`,
-				duration: 5000,
-				show: true,
-			});
-		} catch (error) {
-			setAlert({
-				type: 'error',
-				title: 'Scan failed',
-				message: error instanceof Error ? error.message : 'Failed to enqueue fuzzy scan',
-				duration: 5000,
-				show: true,
-			});
-		} finally {
-			scanningFuzzy = false;
-		}
-	}
 
 	function buildExactPageUrl(page: number): string {
 		const params = new URLSearchParams();
@@ -269,10 +237,10 @@
 		return `/dashboard/duplicates${query ? `?${query}` : ''}`;
 	}
 
-	function buildFuzzyPageUrl(page: number): string {
+	function buildLikelyPageUrl(page: number): string {
 		const params = new URLSearchParams();
 		if (activeReason) params.set('reason', activeReason);
-		if (page > 1) params.set('fuzzyPage', String(page));
+		if (page > 1) params.set('likelyPage', String(page));
 		const query = params.toString();
 		return `/dashboard/duplicates${query ? `?${query}` : ''}`;
 	}
@@ -291,11 +259,11 @@
 <div class="mb-4">
 	<h1 class="text-2xl font-bold">Duplicate Review</h1>
 	<p class="text-muted-foreground text-sm">
-		{duplicateGroups.totalGroups} exact groups, {fuzzyDuplicateGroups.totalGroups} fuzzy groups
+		{duplicateGroups.totalGroups} exact, {likelyDuplicateGroups.totalGroups} likely
 	</p>
 </div>
 
-<!-- Tabs: exact vs fuzzy -->
+<!-- Tabs: exact vs likely -->
 <div class="mb-4 flex gap-4 border-b">
 	<button
 		type="button"
@@ -308,12 +276,12 @@
 	</button>
 	<button
 		type="button"
-		class="border-b-2 px-1 pb-2 text-sm font-medium {activeTab === 'fuzzy'
+		class="border-b-2 px-1 pb-2 text-sm font-medium {activeTab === 'likely'
 			? 'border-primary text-foreground'
 			: 'text-muted-foreground border-transparent'}"
-		onclick={() => (activeTab = 'fuzzy')}
+		onclick={() => (activeTab = 'likely')}
 	>
-		Fuzzy matches ({fuzzyDuplicateGroups.totalGroups})
+		Likely duplicates ({likelyDuplicateGroups.totalGroups})
 	</button>
 </div>
 
@@ -456,25 +424,22 @@
 	/>
 {:else}
 	<div class="mb-3 flex flex-wrap items-center justify-end gap-2">
-		<Button type="button" variant="outline" disabled={scanningFuzzy} onclick={scanFuzzyBatch}>
-			{scanningFuzzy ? 'Queueing...' : 'Scan Fuzzy Batch'}
-		</Button>
-		{#if fuzzyDuplicateGroups.groups.length > 0}
+		{#if likelyDuplicateGroups.groups.length > 0}
 			<Button
 				type="button"
 				class="gap-2"
 				disabled={approvingKey !== null}
-				onclick={() => approveFuzzyGroups(fuzzyDuplicateGroups.groups, 'fuzzy-page')}
+				onclick={() => approveLikelyGroups(likelyDuplicateGroups.groups, 'likely-page')}
 			>
 				<CheckCheck class="h-4 w-4" />
-				{approvingKey === 'fuzzy-page' ? 'Deleting…' : 'Delete all duplicates on this page'}
+				{approvingKey === 'likely-page' ? 'Deleting…' : 'Delete all duplicates on this page'}
 			</Button>
 		{/if}
 	</div>
 
-	{#if fuzzyDuplicateGroups.groups.length > 0}
+	{#if likelyDuplicateGroups.groups.length > 0}
 	<div class="space-y-4">
-		{#each fuzzyDuplicateGroups.groups as group (group.id)}
+		{#each likelyDuplicateGroups.groups as group (group.groupKey)}
 			<section class="rounded-md border">
 				<div
 					class="flex flex-col gap-2 border-b p-3 lg:flex-row lg:items-center lg:justify-between"
@@ -507,18 +472,18 @@
 							variant="outline"
 							class="gap-2"
 							disabled={approvingKey !== null}
-							onclick={() => approveFuzzyGroups([group], group.id)}
+							onclick={() => approveLikelyGroups([group], group.groupKey)}
 						>
 							<Check class="h-4 w-4" />
-							{approvingKey === group.id ? 'Deleting…' : 'Delete duplicates'}
+							{approvingKey === group.groupKey ? 'Deleting…' : 'Delete duplicates'}
 						</Button>
 						<Button
 							type="button"
 							variant="outline"
 							disabled={approvingKey !== null}
-							onclick={() => ignoreFuzzyGroup(group.id)}
+							onclick={() => ignoreLikelyGroup(group.groupKey)}
 						>
-							{approvingKey === `ignore-${group.id}` ? 'Ignoring...' : 'Ignore'}
+							{approvingKey === `ignore-${group.groupKey}` ? 'Ignoring...' : 'Ignore'}
 						</Button>
 					</div>
 				</div>
@@ -541,10 +506,10 @@
 								<Table.Cell>
 									<input
 										type="radio"
-										name={`fuzzy-keeper-${group.id}`}
-										checked={(fuzzyKeeperOverrides[group.id] ||
+										name={`likely-keeper-${group.groupKey}`}
+										checked={(likelyKeeperOverrides[group.groupKey] ||
 											group.keeperEmailId) === email.id}
-										onchange={() => setFuzzyKeeper(group.id, email.id)}
+										onchange={() => setLikelyKeeper(group.groupKey, email.id)}
 										aria-label={`Keep ${email.subject || 'email'}`}
 									/>
 								</Table.Cell>
@@ -587,15 +552,15 @@
 	</div>
 	{:else}
 		<div class="rounded-md border p-8 text-center text-sm">
-			No fuzzy candidates yet. Queue a scan to build the next bounded batch.
+			No likely duplicates found.
 		</div>
 	{/if}
 
 	<TablePagination
-		count={fuzzyDuplicateGroups.totalGroups}
-		perPage={fuzzyDuplicateGroups.limit}
-		page={fuzzyDuplicateGroups.page}
-		buildHref={buildFuzzyPageUrl}
+		count={likelyDuplicateGroups.totalGroups}
+		perPage={likelyDuplicateGroups.limit}
+		page={likelyDuplicateGroups.page}
+		buildHref={buildLikelyPageUrl}
 		prevLabel="Prev"
 		nextLabel="Next"
 	/>

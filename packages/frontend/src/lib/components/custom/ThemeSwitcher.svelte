@@ -2,7 +2,9 @@
 	import { theme } from '$lib/stores/theme.store';
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import { Sun, Moon, Laptop } from 'lucide-svelte';
+	import Sun from '@lucide/svelte/icons/sun';
+	import Moon from '@lucide/svelte/icons/moon';
+	import Laptop from '@lucide/svelte/icons/laptop';
 	import { t } from '$lib/translations';
 </script>
 

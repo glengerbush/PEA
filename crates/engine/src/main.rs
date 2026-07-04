@@ -1,6 +1,6 @@
-//! Open Archiver engine (Rust) — R1: read-API parity with the Node engine,
+//! PEA engine (Rust) — headless CLI/server entry point,
 //! operating on the same archive.db. Run standalone for golden-diffing:
-//!   pea-engine --data-dir ~/.local/share/open-archiver --port 47200 [--read-only]
+//!   pea-engine --data-dir ~/.local/share/pea --port 47200 [--read-only]
 
 use pea_engine::{ingest, provision, queue, state_for_dir};
 use pea_engine::api::router;

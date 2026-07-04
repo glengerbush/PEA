@@ -1,6 +1,7 @@
-//! Port of DuplicateReviewService (read side): exact-duplicate clustering via
-//! union-find over four signals, and pending fuzzy-group listing. Must produce
-//! byte-identical JSON to the Node implementation.
+//! Duplicate review, read side: exact-duplicate clustering via union-find over
+//! four signals, and live likely-duplicate ("fuzzy") listing. Both are computed
+//! on demand from archived_emails — nothing about the candidate set is
+//! materialized; only a user's *ignore* decisions persist (likely_duplicate_ignores).
 
 use crate::iso;
 use rusqlite::Connection;
@@ -83,7 +84,8 @@ pub fn list_exact_groups(
 ) -> Value {
     let normalized_page = clamp_positive(page, 1, i64::MAX);
     let normalized_limit = clamp_positive(limit, DEFAULT_LIMIT, MAX_LIMIT);
-    let offset = ((normalized_page - 1) * normalized_limit) as usize;
+    // saturating_mul: a huge page number must yield an empty page, not overflow.
+    let offset = (normalized_page - 1).saturating_mul(normalized_limit) as usize;
 
     let allowed: [&str; 4] = [
         "message_id",
@@ -263,65 +265,126 @@ pub fn list_exact_groups(
     })
 }
 
-pub fn list_fuzzy_groups(conn: &Connection, page: Option<&str>, limit: Option<&str>) -> Value {
+/// Live likely-duplicate detection (formerly the materialized "fuzzy" scan):
+/// cluster archived_emails by their precomputed likely-group key, score each
+/// cluster, and page over the ones scoring >= 55, excluding keys the user has
+/// ignored. Nothing is persisted and there is no scan/batch step — the list is
+/// recomputed on each request, exactly like the exact-duplicate view.
+pub fn list_likely_duplicates(conn: &Connection, page: Option<&str>, limit: Option<&str>) -> Value {
     let normalized_page = clamp_positive(page, 1, i64::MAX);
     let normalized_limit = clamp_positive(limit, DEFAULT_LIMIT, MAX_LIMIT);
-    let offset = (normalized_page - 1) * normalized_limit;
+    let offset = (normalized_page - 1).saturating_mul(normalized_limit);
+
+    let window_ms: i64 = 48 * 3600 * 1000;
+    let score_expr = format!(
+        "(45 \
+         + CASE WHEN body_present = email_count AND body_distinct = 1 THEN 20 ELSE 0 END \
+         + CASE WHEN rcpt_present = email_count AND rcpt_distinct = 1 THEN 15 ELSE 0 END \
+         + CASE WHEN att_present = email_count AND att_distinct = 1 THEN 10 ELSE 0 END \
+         + CASE WHEN max_sent_at - min_sent_at <= {window_ms} THEN 10 ELSE 0 END)"
+    );
+    let candidate_cte = "\
+        WITH candidate AS ( \
+            SELECT ae.duplicate_likely_group_key AS group_key, \
+                min(lower(ae.sender_email)) AS sender_email, \
+                min(ae.duplicate_subject_hash) AS subject_hash, \
+                count(*) AS email_count, \
+                min(ae.sent_at) AS min_sent_at, max(ae.sent_at) AS max_sent_at, \
+                count(ae.duplicate_body_hash) AS body_present, \
+                count(DISTINCT ae.duplicate_body_hash) AS body_distinct, \
+                count(ae.duplicate_recipient_fingerprint) AS rcpt_present, \
+                count(DISTINCT ae.duplicate_recipient_fingerprint) AS rcpt_distinct, \
+                count(ae.duplicate_attachment_fingerprint) AS att_present, \
+                count(DISTINCT ae.duplicate_attachment_fingerprint) AS att_distinct \
+            FROM archived_emails ae \
+            WHERE ae.duplicate_likely_group_key IS NOT NULL \
+                AND NOT EXISTS ( \
+                    SELECT 1 FROM likely_duplicate_ignores i \
+                    WHERE i.group_key = ae.duplicate_likely_group_key) \
+            GROUP BY ae.duplicate_likely_group_key \
+            HAVING count(*) > 1 \
+        )";
 
     let total_groups: i64 = conn
         .query_row(
-            "SELECT count(*) FROM fuzzy_duplicate_groups WHERE status = 'pending'",
+            &format!("{candidate_cte} SELECT count(*) FROM candidate WHERE {score_expr} >= 55"),
             [],
             |r| r.get(0),
         )
         .unwrap_or(0);
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, group_key, status, score, signals, created_at, updated_at \
-             FROM fuzzy_duplicate_groups WHERE status = 'pending' \
-             ORDER BY score DESC, updated_at DESC, group_key ASC LIMIT ? OFFSET ?",
-        )
-        .unwrap();
-    let group_rows: Vec<(String, String, String, i64, Option<String>, i64, i64)> = stmt
+    let select_sql = format!(
+        "{candidate_cte} \
+         SELECT group_key, sender_email, subject_hash, email_count, min_sent_at, max_sent_at, \
+                body_present, body_distinct, rcpt_present, rcpt_distinct, att_present, att_distinct, \
+                {score_expr} AS score \
+         FROM candidate WHERE {score_expr} >= 55 \
+         ORDER BY score DESC, email_count DESC, group_key ASC LIMIT ? OFFSET ?"
+    );
+    struct Cand {
+        group_key: String,
+        sender_email: Option<String>,
+        subject_hash: Option<String>,
+        max_sent_at: i64,
+        min_sent_at: i64,
+        body_all: bool,
+        recipients_all: bool,
+        attachments_all: bool,
+        score: i64,
+    }
+    let mut stmt = conn.prepare(&select_sql).unwrap();
+    let cands: Vec<Cand> = stmt
         .query_map([normalized_limit, offset], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-            ))
+            let email_count: i64 = row.get("email_count")?;
+            let body_present: i64 = row.get("body_present")?;
+            let body_distinct: i64 = row.get("body_distinct")?;
+            let rcpt_present: i64 = row.get("rcpt_present")?;
+            let rcpt_distinct: i64 = row.get("rcpt_distinct")?;
+            let att_present: i64 = row.get("att_present")?;
+            let att_distinct: i64 = row.get("att_distinct")?;
+            Ok(Cand {
+                group_key: row.get("group_key")?,
+                sender_email: row.get("sender_email")?,
+                subject_hash: row.get("subject_hash")?,
+                max_sent_at: row.get("max_sent_at")?,
+                min_sent_at: row.get("min_sent_at")?,
+                body_all: body_present == email_count && body_distinct == 1,
+                recipients_all: rcpt_present == email_count && rcpt_distinct == 1,
+                attachments_all: att_present == email_count && att_distinct == 1,
+                score: row.get("score")?,
+            })
         })
         .unwrap()
         .filter_map(Result::ok)
         .collect();
 
     let mut groups: Vec<Value> = Vec::new();
-    for (id, group_key, status, score, signals, created_at, updated_at) in group_rows {
-        let emails = find_emails_for_fuzzy_group(conn, &id);
+    for c in &cands {
+        let emails = find_emails_for_likely_group(conn, &c.group_key);
+        if emails.len() <= 1 {
+            continue;
+        }
         let keeper = emails
-            .iter()
-            .find(|e| e.get("suggestedKeeper") == Some(&Value::Bool(true)))
-            .or_else(|| emails.first())
+            .first()
             .and_then(|e| e.get("id"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        if emails.len() <= 1 || keeper.is_empty() {
+        if keeper.is_empty() {
             continue;
         }
-        // Raw db.all() row: `signals` stays a JSON *string* in Node's response.
+        let signals = json!({
+            "senderEmail": c.sender_email,
+            "subjectHash": c.subject_hash,
+            "matchingBodyHash": c.body_all,
+            "matchingRecipients": c.recipients_all,
+            "matchingAttachments": c.attachments_all,
+            "sentSpreadHours": (c.max_sent_at - c.min_sent_at) as f64 / 3_600_000.0,
+        });
         groups.push(json!({
-            "id": id,
-            "groupKey": group_key,
-            "status": status,
-            "score": score,
+            "groupKey": c.group_key,
+            "score": c.score,
             "signals": signals,
-            "createdAt": iso(created_at),
-            "updatedAt": iso(updated_at),
             "keeperEmailId": keeper,
             "emails": emails,
         }));
@@ -335,27 +398,34 @@ pub fn list_fuzzy_groups(conn: &Connection, page: Option<&str>, limit: Option<&s
     })
 }
 
-fn find_emails_for_fuzzy_group(conn: &Connection, group_id: &str) -> Vec<Value> {
+/// Members of a likely-duplicate group, earliest first; the first row is the
+/// suggested keeper. Computed live from the shared group key.
+fn find_emails_for_likely_group(conn: &Connection, group_key: &str) -> Vec<Value> {
     let mut stmt = conn
         .prepare(
             "SELECT ae.id, ae.subject, ae.sender_name, ae.sender_email, ae.user_email, \
              ae.sent_at, ae.archived_at, ae.has_attachments, ae.source_path, \
-             ae.message_id_header, ae.storage_hash_sha256, fge.suggested_keeper \
-             FROM fuzzy_duplicate_group_emails fge \
-             JOIN archived_emails ae ON ae.id = fge.email_id \
-             WHERE fge.group_id = ? \
-             ORDER BY fge.suggested_keeper DESC, ae.sent_at ASC, ae.archived_at ASC, ae.id ASC",
+             ae.message_id_header, ae.storage_hash_sha256 \
+             FROM archived_emails ae \
+             WHERE ae.duplicate_likely_group_key = ? \
+             ORDER BY ae.sent_at ASC, ae.archived_at ASC, ae.id ASC",
         )
         .unwrap();
-    stmt.query_map([group_id], |row| {
+    stmt.query_map([group_key], |row| {
         let mut doc = map_email(row)?;
-        doc.insert(
-            "suggestedKeeper".into(),
-            json!(row.get::<_, i64>("suggested_keeper")? != 0),
-        );
+        doc.insert("suggestedKeeper".into(), json!(false));
         Ok(Value::Object(doc))
     })
     .unwrap()
     .filter_map(Result::ok)
+    .enumerate()
+    .map(|(i, mut v)| {
+        if i == 0 {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("suggestedKeeper".into(), json!(true));
+            }
+        }
+        v
+    })
     .collect()
 }

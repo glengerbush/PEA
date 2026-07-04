@@ -1,47 +1,42 @@
 <script lang="ts">
-	import * as Chart from '$lib/components/ui/chart/index.js';
-	import { BarChart } from 'layerchart';
 	import type { TopSender } from '@pea/types';
-	import type { ChartConfig } from '$lib/components/ui/chart';
-	import { t } from '$lib/translations';
 
-	export let data: TopSender[];
-	export let onSelect: (sender: string) => void = () => {};
+	let {
+		data,
+		onSelect = () => {}
+	}: {
+		data: TopSender[];
+		onSelect?: (sender: string) => void;
+	} = $props();
 
-	const chartConfig = {
-		count: {
-			label: $t('app.components.charts.emails'),
-		},
-	} satisfies ChartConfig;
+	const max = $derived(Math.max(1, ...data.map((d) => d.count)));
 </script>
 
-<Chart.Container config={chartConfig} class="min-h-[300px] w-full">
-	<BarChart
-		{data}
-		x="count"
-		y="sender"
-		orientation="horizontal"
-		onBarClick={(_e, detail) => onSelect((detail.data as TopSender).sender)}
-		xDomain={[0, Math.max(...data.map((d) => d.count)) * 1.1]}
-		axis={'x'}
-		legend={false}
-		series={[
-			{
-				key: 'count',
-				...chartConfig.count,
-			},
-		]}
-		cRange={[
-			'var(--color-chart-1)',
-			'var(--color-chart-2)',
-			'var(--color-chart-3)',
-			'var(--color-chart-4)',
-			'var(--color-chart-5)',
-		]}
-		labels={{}}
-	>
-		{#snippet tooltip()}
-			<Chart.Tooltip />
-		{/snippet}
-	</BarChart>
-</Chart.Container>
+{#if data.length === 0}
+	<div class="text-muted-foreground flex min-h-[300px] items-center justify-center text-sm">
+		No sender data yet
+	</div>
+{:else}
+	<div class="flex w-full flex-col gap-2">
+		{#each data as d (d.sender)}
+			<button
+				type="button"
+				class="group flex flex-col gap-1 text-left"
+				onclick={() => onSelect(d.sender)}
+				title={`${d.sender}: ${d.count}`}
+			>
+				<div class="flex items-center justify-between gap-2 text-xs">
+					<span class="truncate group-hover:underline">{d.sender}</span>
+					<span class="text-muted-foreground flex-shrink-0">{d.count}</span>
+				</div>
+				<div class="bg-muted h-2.5 w-full overflow-hidden rounded-full">
+					<div
+						class="h-full rounded-full transition-all group-hover:opacity-80"
+						style:width={`${(d.count / max) * 100}%`}
+						style:background="var(--color-chart-1)"
+					></div>
+				</div>
+			</button>
+		{/each}
+	</div>
+{/if}

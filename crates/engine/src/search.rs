@@ -14,12 +14,12 @@ fn field_to_column(field: &str) -> Option<&'static str> {
         "from" | "senderName" => Some("sender"),
         "to" | "cc" | "bcc" => Some("recipients"),
         "attachments.filename" | "attachments.content" => Some("attachments"),
-        "userEmail" | "sourcePath" | "sourceLabels" | "tags" => Some("meta"),
+        "userEmail" | "sourcePath" | "tags" => Some("meta"),
         _ => None,
     }
 }
 
-const DEFAULT_FIELDS: [&str; 13] = [
+const DEFAULT_FIELDS: [&str; 12] = [
     "subject",
     "body",
     "from",
@@ -31,7 +31,6 @@ const DEFAULT_FIELDS: [&str; 13] = [
     "attachments.content",
     "userEmail",
     "sourcePath",
-    "sourceLabels",
     "tags",
 ];
 
@@ -122,12 +121,70 @@ pub struct FilterSql {
 }
 
 fn to_timestamp(value: Option<&str>) -> Option<i64> {
-    let value = value?;
+    let value = value?.trim();
     if let Ok(n) = value.parse::<i64>() {
         return Some(n);
     }
-    // ISO date strings — parse with SQLite itself to avoid a chrono dependency here.
-    None
+    parse_iso8601_ms(value)
+}
+
+/// Parse an API timestamp input (epoch-ms integer string or ISO-8601 date) to
+/// epoch-ms. Public wrapper over the filter parser.
+pub fn parse_timestamp(value: &str) -> Option<i64> {
+    to_timestamp(Some(value))
+}
+
+/// Minimal ISO-8601 → epoch-milliseconds (UTC). Accepts "YYYY-MM-DD" and
+/// "YYYY-MM-DD[T ]HH:MM[:SS]" with an optional trailing 'Z' / `+HH:MM` offset
+/// (offsets and fractional seconds are treated as UTC — enough for the date
+/// range filters). Returns None when the date is not a valid calendar date.
+fn parse_iso8601_ms(s: &str) -> Option<i64> {
+    let (date, time) = match s.split_once(['T', ' ']) {
+        Some((d, t)) => (d, Some(t)),
+        None => (s, None),
+    };
+    let mut dp = date.split('-');
+    let year: i64 = dp.next()?.parse().ok()?;
+    let month: i64 = dp.next()?.parse().ok()?;
+    let day: i64 = dp.next()?.parse().ok()?;
+    // Bound the year to a sane range so the epoch arithmetic below can't overflow
+    // on adversarial input (e.g. "300000000-01-01").
+    if dp.next().is_some() || !(1..=12).contains(&month) || !(1..=9999).contains(&year) {
+        return None;
+    }
+    let (mut hh, mut mm, mut ss) = (0i64, 0i64, 0i64);
+    if let Some(t) = time {
+        // drop trailing 'Z', a +/- timezone offset, and fractional seconds
+        // (the HH:MM[:SS] portion has no '-' except in an offset).
+        let t = t.trim_end_matches('Z');
+        let t = &t[..t.find(['+', '-']).unwrap_or(t.len())];
+        let t = t.split('.').next().unwrap_or(t);
+        let mut tp = t.split(':');
+        hh = tp.next().unwrap_or("0").parse().ok()?;
+        mm = tp.next().unwrap_or("0").parse().ok()?;
+        ss = tp.next().unwrap_or("0").parse().ok()?;
+    }
+    if hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day)?;
+    Some((days * 86_400 + hh * 3_600 + mm * 60 + ss) * 1_000)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Hinnant's algorithm),
+/// validating the day-of-month. None for an impossible date (e.g. Feb 30).
+fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if d < 1 || d > mdays[(m - 1) as usize] {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
 }
 
 /// Port of IngestionService.findGroupSourceIds — root = mergedIntoId ?? id,
@@ -160,10 +217,17 @@ pub fn build_filter_sql(conn: &Connection, q: &dyn Fn(&str) -> Option<String>) -
     let mut params: Vec<SqlValue> = Vec::new();
 
     if let Some(source_id) = q("ingestionSourceId") {
-        if let Some(ids) = group_source_ids(conn, &source_id) {
-            let placeholders = vec!["?"; ids.len()].join(", ");
-            parts.push(format!("ae.ingestion_source_id IN ({placeholders})"));
-            params.extend(ids.into_iter().map(SqlValue::from));
+        if !source_id.is_empty() {
+            match group_source_ids(conn, &source_id) {
+                Some(ids) => {
+                    let placeholders = vec!["?"; ids.len()].join(", ");
+                    parts.push(format!("ae.ingestion_source_id IN ({placeholders})"));
+                    params.extend(ids.into_iter().map(SqlValue::from));
+                }
+                // A provided-but-unknown source scopes to nothing — it must not
+                // fall through to "no filter" and return every email.
+                None => parts.push("1 = 0".to_string()),
+            }
         }
     }
     for (key, column) in [
@@ -196,14 +260,30 @@ pub fn build_filter_sql(conn: &Connection, q: &dyn Fn(&str) -> Option<String>) -
             params.push(SqlValue::from(if value == "true" { 1i64 } else { 0 }));
         }
     }
-    for (key, column) in [("sourceLabels", "ae.source_labels"), ("tags", "ae.tags")] {
-        if let Some(value) = q(key) {
-            if !value.is_empty() {
-                parts.push(format!(
-                    "EXISTS (SELECT 1 FROM json_each(COALESCE({column}, '[]')) j WHERE j.value = ?)"
-                ));
-                params.push(SqlValue::from(value));
-            }
+    if let Some(value) = q("tags") {
+        if !value.is_empty() {
+            parts.push(
+                "EXISTS (SELECT 1 FROM json_each(COALESCE(ae.tags, '[]')) j WHERE j.value = ?)"
+                    .to_string(),
+            );
+            params.push(SqlValue::from(value));
+        }
+    }
+    // Comma-separated attachment filename extensions (any-of).
+    if let Some(value) = q("attachmentExt") {
+        let exts: Vec<String> = value
+            .split(',')
+            .map(|e| e.trim().trim_start_matches('.').to_lowercase())
+            .filter(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric()))
+            .collect();
+        if !exts.is_empty() {
+            let likes = vec!["a2.filename LIKE ?"; exts.len()].join(" OR ");
+            parts.push(format!(
+                "EXISTS (SELECT 1 FROM email_attachments ea2 \
+                 INNER JOIN attachments a2 ON ea2.attachment_id = a2.id \
+                 WHERE ea2.email_id = ae.id AND ({likes}))"
+            ));
+            params.extend(exts.into_iter().map(|e| SqlValue::from(format!("%.{e}"))));
         }
     }
     for (key, clause) in [
@@ -312,10 +392,6 @@ pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Valu
         json!(row.get::<_, Option<String>>("source_path").unwrap_or(None)),
     );
     doc.insert(
-        "sourceLabels".into(),
-        parse_json_or(row.get::<_, Option<String>>("source_labels").unwrap_or(None), json!([])),
-    );
-    doc.insert(
         "tags".into(),
         parse_json_or(row.get::<_, Option<String>>("tags").unwrap_or(None), json!([])),
     );
@@ -351,6 +427,12 @@ pub fn query_archived_emails(
                 "FROM email_fts f JOIN archived_emails ae ON ae.rowid = f.rowid WHERE email_fts MATCH ?{}",
                 filter.clause
             );
+            // The total is a SEPARATE count query. A window function
+            // (COUNT(*) OVER ()) cannot share a SELECT with the FTS5 auxiliary
+            // functions bm25()/snippet() — SQLite raises "unable to use function
+            // bm25 in the requested context", which (swallowed by the row-level
+            // filter_map below) silently zeroed every page-1 search. The count
+            // is JOIN-free when unfiltered, so it only walks the FTS doclist.
             let sql = format!(
                 "SELECT ae.*, snippet(email_fts, 2, '', '', '…', 24) AS snippet {base} \
                  ORDER BY {sort_col} {direction}, bm25(email_fts, {BM25_WEIGHTS}) ASC LIMIT ? OFFSET ?"
@@ -359,7 +441,7 @@ pub fn query_archived_emails(
             let mut params: Vec<SqlValue> = vec![SqlValue::from(expr.to_string())];
             params.extend(filter.params.iter().cloned());
             params.push(SqlValue::from(limit));
-            params.push(SqlValue::from((page - 1) * limit));
+            params.push(SqlValue::from((page - 1).saturating_mul(limit)));
             let hits: Vec<Value> = stmt
                 .query_map(rusqlite::params_from_iter(params), |row| {
                     let snippet: Option<String> = row.get("snippet").ok();
@@ -368,7 +450,12 @@ pub fn query_archived_emails(
                 .unwrap()
                 .filter_map(Result::ok)
                 .collect();
-            let count_sql = format!("SELECT count(*) {base}");
+            let count_base = if filter.clause.is_empty() {
+                "FROM email_fts WHERE email_fts MATCH ?".to_string()
+            } else {
+                base.clone()
+            };
+            let count_sql = format!("SELECT count(*) {count_base}");
             let mut count_params: Vec<SqlValue> = vec![SqlValue::from(expr.to_string())];
             count_params.extend(filter.params.iter().cloned());
             let total: i64 = conn
@@ -383,7 +470,7 @@ pub fn query_archived_emails(
             let mut stmt = conn.prepare(&sql).unwrap();
             let mut params: Vec<SqlValue> = filter.params.clone();
             params.push(SqlValue::from(limit));
-            params.push(SqlValue::from((page - 1) * limit));
+            params.push(SqlValue::from((page - 1).saturating_mul(limit)));
             let hits: Vec<Value> = stmt
                 .query_map(rusqlite::params_from_iter(params), |row| {
                     Ok(row_to_document(row, None))
@@ -471,4 +558,75 @@ pub fn filter_facets(conn: &Connection) -> Value {
         .filter_map(Result::ok)
         .collect();
     json!({ "tags": tags })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iso_dates_parse_to_epoch_ms() {
+        assert_eq!(parse_iso8601_ms("2024-01-01"), Some(1_704_067_200_000));
+        assert_eq!(parse_iso8601_ms("2024-01-01T00:00:00Z"), Some(1_704_067_200_000));
+        assert_eq!(parse_iso8601_ms("1970-01-01"), Some(0));
+        assert_eq!(parse_iso8601_ms("2024-01-01T01:00:00"), Some(1_704_070_800_000));
+        assert_eq!(parse_iso8601_ms("2024-13-01"), None);
+        assert_eq!(parse_iso8601_ms("2024-02-30"), None);
+        assert_eq!(parse_iso8601_ms("notadate"), None);
+    }
+
+    #[test]
+    fn to_timestamp_accepts_epoch_and_iso() {
+        assert_eq!(to_timestamp(Some("1704067200000")), Some(1_704_067_200_000));
+        assert_eq!(to_timestamp(Some("2024-01-01")), Some(1_704_067_200_000));
+        assert_eq!(to_timestamp(Some("")), None);
+        assert_eq!(to_timestamp(None), None);
+    }
+
+    #[test]
+    fn days_from_civil_validity() {
+        assert_eq!(days_from_civil(1970, 1, 1), Some(0));
+        assert_eq!(days_from_civil(1970, 1, 2), Some(1));
+        assert!(days_from_civil(2000, 2, 29).is_some());
+        assert_eq!(days_from_civil(2001, 2, 29), None);
+        assert_eq!(days_from_civil(2024, 4, 31), None);
+    }
+
+    #[test]
+    fn build_match_prefixes_and_scopes() {
+        let all = normalize_fields(None);
+        assert_eq!(build_match("hello", &all, false).as_deref(), Some("\"hello\"*"));
+        assert_eq!(build_match("foo bar", &all, false).as_deref(), Some("\"foo\" \"bar\"*"));
+        assert_eq!(build_match("foo bar", &all, true).as_deref(), Some("\"foo\" OR \"bar\"*"));
+        assert_eq!(
+            build_match("hi", &vec!["subject".to_string()], false).as_deref(),
+            Some("{subject} : (\"hi\"*)")
+        );
+        assert_eq!(build_match("   ", &all, false), None);
+    }
+
+    #[test]
+    fn normalize_fields_defaults_and_filters() {
+        assert_eq!(normalize_fields(None).len(), 12);
+        assert_eq!(normalize_fields(Some("subject,body")), vec!["subject", "body"]);
+        assert_eq!(normalize_fields(Some("bogus")).len(), 12);
+    }
+
+    #[test]
+    fn clamp_positive_bounds() {
+        assert_eq!(clamp_positive(Some("5"), 1, 100), 5);
+        assert_eq!(clamp_positive(Some("0"), 1, 100), 1);
+        assert_eq!(clamp_positive(Some("999"), 1, 100), 100);
+        assert_eq!(clamp_positive(None, 7, 100), 7);
+        assert_eq!(clamp_positive(Some("abc"), 3, 100), 3);
+    }
+
+    #[test]
+    fn sort_and_field_column_mapping() {
+        assert_eq!(sort_column(Some("subject")), "ae.subject");
+        assert_eq!(sort_column(Some("bogus")), "ae.sent_at");
+        assert_eq!(field_to_column("from"), Some("sender"));
+        assert_eq!(field_to_column("tags"), Some("meta"));
+        assert_eq!(field_to_column("bogus"), None);
+    }
 }

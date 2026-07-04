@@ -2,11 +2,11 @@
 	import * as NavigationMenu from '$lib/components/ui/navigation-menu/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import Button from '$lib/components/ui/button/button.svelte';
-	import { Ellipsis, Menu } from 'lucide-svelte';
+	import Ellipsis from '@lucide/svelte/icons/ellipsis';
+	import Menu from '@lucide/svelte/icons/menu';
 	import { page } from '$app/state';
 	import ThemeSwitcher from '$lib/components/custom/ThemeSwitcher.svelte';
 	import { t } from '$lib/translations';
-	import Badge from '$lib/components/ui/badge/badge.svelte';
 	import { setContacts } from '$lib/stores/contacts.svelte';
 	let { data, children } = $props();
 
@@ -37,10 +37,6 @@
 				{
 					href: '/dashboard/settings/system',
 					label: $t('app.layout.system'),
-				},
-				{
-					href: '/dashboard/settings/account',
-					label: $t('app.layout.account'),
 				},
 				{
 					href: '/dashboard/settings/contacts',
@@ -105,14 +101,14 @@
 		<a href="/mailbox" class="flex shrink-0 flex-row items-center gap-2 font-bold">
 			<img src="/logos/logo-sq.svg" alt="PEA Logo" class="h-8 w-8" />
 			<span class="hidden sm:inline-block">PEA</span>
-			{#if data.enterpriseMode}
-				<Badge class="px-1 py-0.5 text-[8px] font-bold">Enterprise</Badge>
-			{/if}
 		</a>
 
-		<!-- Navigation: as many items as fit, the rest behind the more-menu -->
+		<!-- Navigation: as many items as fit, the rest behind the more-menu.
+		     Spacing must be margin, not padding: the fit check measures this
+		     element's offsetWidth, and padding would inflate it — letting the
+		     centered list bleed over the brand at certain widths. -->
 		<div
-			class="flex min-w-0 flex-1 justify-center px-4"
+			class="mx-4 flex min-w-0 flex-1 justify-center overflow-x-clip"
 			{@attach observeWidth((w) => (available = w))}
 		>
 			<NavigationMenu.Root viewport={false}>

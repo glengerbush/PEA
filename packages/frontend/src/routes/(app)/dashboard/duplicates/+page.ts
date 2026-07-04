@@ -1,7 +1,7 @@
 import { api } from '$lib/api.load';
 import { error } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
-import type { ExactDuplicateGroupsResult, FuzzyDuplicateGroupsResult } from '@pea/types';
+import type { ExactDuplicateGroupsResult, LikelyDuplicateGroupsResult } from '@pea/types';
 
 function getPositiveInteger(value: string | null, fallback: number): number {
 	const parsed = Number(value);
@@ -19,7 +19,7 @@ export const load: PageLoad = async (event) => {
 	const limit = Math.min(getPositiveInteger(event.url.searchParams.get('limit'), 25), 100);
 	// Independent pagination per tab.
 	const exactPage = getPositiveInteger(event.url.searchParams.get('exactPage'), 1);
-	const fuzzyPage = getPositiveInteger(event.url.searchParams.get('fuzzyPage'), 1);
+	const likelyPage = getPositiveInteger(event.url.searchParams.get('likelyPage'), 1);
 	const reasonParam = event.url.searchParams.get('reason') || '';
 	const reason = ALLOWED_REASONS.has(reasonParam) ? reasonParam : '';
 
@@ -32,21 +32,21 @@ export const load: PageLoad = async (event) => {
 		return error(response.status, body.message || 'Failed to load duplicate groups.');
 	}
 
-	const fuzzyResponse = await api(
-		`/archived-emails/duplicates/fuzzy?page=${fuzzyPage}&limit=${limit}`,
+	const likelyResponse = await api(
+		`/archived-emails/duplicates/likely?page=${likelyPage}&limit=${limit}`,
 		event
 	);
-	const fuzzyBody = await fuzzyResponse.json();
-	if (!fuzzyResponse.ok) {
+	const likelyBody = await likelyResponse.json();
+	if (!likelyResponse.ok) {
 		return error(
-			fuzzyResponse.status,
-			fuzzyBody.message || 'Failed to load fuzzy duplicate groups.'
+			likelyResponse.status,
+			likelyBody.message || 'Failed to load likely duplicate groups.'
 		);
 	}
 
 	return {
 		duplicateGroups: body as ExactDuplicateGroupsResult,
-		fuzzyDuplicateGroups: fuzzyBody as FuzzyDuplicateGroupsResult,
+		likelyDuplicateGroups: likelyBody as LikelyDuplicateGroupsResult,
 		activeReason: reason,
 	};
 };

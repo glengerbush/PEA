@@ -5,7 +5,6 @@ import type {
 	DashboardStats,
 	IngestionHistory,
 	IngestionSourceStats,
-	RecentSync,
 	IndexedInsights,
 } from '@pea/types';
 
@@ -43,15 +42,6 @@ export const load: PageLoad = async (event) => {
 		return responseText;
 	};
 
-	const fetchRecentSyncs = async (): Promise<RecentSync[] | null> => {
-		const response = await api('/dashboard/recent-syncs', event);
-		const responseText = await response.json();
-		if (!response.ok) {
-			return error(response.status, responseText.message || 'Failed to fetch recent syncs');
-		}
-		return responseText;
-	};
-
 	const fetchIndexedInsights = async (): Promise<IndexedInsights | null> => {
 		const response = await api('/dashboard/indexed-insights', event);
 		const responseText = await response.json();
@@ -64,12 +54,11 @@ export const load: PageLoad = async (event) => {
 		return responseText;
 	};
 
-	const [stats, ingestionHistory, ingestionSources, recentSyncs, indexedInsights] =
+	const [stats, ingestionHistory, ingestionSources, indexedInsights] =
 		await Promise.all([
 			fetchStats(),
 			fetchIngestionHistory(),
 			fetchIngestionSources(),
-			fetchRecentSyncs(),
 			fetchIndexedInsights(),
 		]);
 
@@ -77,7 +66,6 @@ export const load: PageLoad = async (event) => {
 		stats,
 		ingestionHistory,
 		ingestionSources,
-		recentSyncs,
 		indexedInsights,
 	};
 };

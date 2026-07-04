@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { Download, FileText, ChevronRight } from 'lucide-svelte';
+	import Download from '@lucide/svelte/icons/download';
+	import Eye from '@lucide/svelte/icons/eye';
+	import FileText from '@lucide/svelte/icons/file-text';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { formatBytes } from '$lib/utils';
 
 	let {
@@ -8,7 +11,11 @@
 		sizeBytes = null,
 		mimeType = null,
 		canPreview = true,
-		fetchBlob
+		fetchBlob,
+		onQuickLook = undefined,
+		description = null,
+		createdAt = null,
+		modifiedAt = null
 	}: {
 		title: string;
 		sizeBytes?: number | null;
@@ -17,7 +24,23 @@
 		canPreview?: boolean;
 		/** Lazily fetches the file bytes; only called when expanded or downloaded. */
 		fetchBlob: () => Promise<Blob>;
+		/** When set, shows a button that opens the file in the OS quick-look previewer. */
+		onQuickLook?: (() => void) | undefined;
+		/** Sender-supplied Content-Description, shown in the expanded panel. */
+		description?: string | null;
+		/** RFC 2183 file timestamps (as sent), shown in the expanded panel. */
+		createdAt?: string | null;
+		modifiedAt?: string | null;
 	} = $props();
+
+	const metadata = $derived(
+		[
+			{ label: 'Description', value: description },
+			{ label: 'Type', value: mimeType },
+			{ label: 'File created', value: createdAt },
+			{ label: 'File modified', value: modifiedAt }
+		].filter((entry): entry is { label: string; value: string } => Boolean(entry.value))
+	);
 
 	let objectUrl = $state<string | null>(null);
 	let textContent = $state<string | null>(null);
@@ -90,26 +113,65 @@
 				<span class="text-muted-foreground flex-shrink-0 text-xs">{formatBytes(sizeBytes)}</span>
 			{/if}
 		</span>
-		<button
-			type="button"
-			class="text-muted-foreground hover:text-foreground flex-shrink-0 rounded p-1"
-			aria-label={`Download ${title}`}
-			onclick={(e) => {
-				e.preventDefault();
-				e.stopPropagation();
-				void downloadFile();
-			}}
-		>
-			<Download class="h-4 w-4" />
-		</button>
+		<span class="flex flex-shrink-0 items-center">
+			{#if onQuickLook}
+				<button
+					type="button"
+					class="text-muted-foreground hover:text-foreground flex-shrink-0 rounded p-1"
+					aria-label={`Quick Look ${title}`}
+					title="Quick Look"
+					onclick={(e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						onQuickLook();
+					}}
+				>
+					<Eye class="h-4 w-4" />
+				</button>
+			{/if}
+			<button
+				type="button"
+				class="text-muted-foreground hover:text-foreground flex-shrink-0 rounded p-1"
+				aria-label={`Download ${title}`}
+				onclick={(e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					void downloadFile();
+				}}
+			>
+				<Download class="h-4 w-4" />
+			</button>
+		</span>
 	</summary>
 	<div class="border-t p-2">
+		{#if metadata.length > 0}
+			<dl class="text-muted-foreground mb-2 space-y-0.5 text-xs">
+				{#each metadata as entry (entry.label)}
+					<div class="flex gap-2">
+						<dt class="w-24 flex-shrink-0 font-medium">{entry.label}</dt>
+						<dd class="min-w-0 break-words">{entry.value}</dd>
+					</div>
+				{/each}
+			</dl>
+		{/if}
 		{#if !previewable}
 			<div class="text-muted-foreground flex items-center justify-between gap-2 text-xs">
 				<span>Preview not available for this file type.</span>
-				<Button variant="outline" size="sm" class="gap-1 text-xs" onclick={downloadFile}>
-					<Download class="h-3.5 w-3.5" /> Download
-				</Button>
+				<span class="flex items-center gap-1">
+					{#if onQuickLook}
+						<Button
+							variant="outline"
+							size="sm"
+							class="gap-1 text-xs"
+							onclick={() => onQuickLook()}
+						>
+							<Eye class="h-3.5 w-3.5" /> Quick Look
+						</Button>
+					{/if}
+					<Button variant="outline" size="sm" class="gap-1 text-xs" onclick={downloadFile}>
+						<Download class="h-3.5 w-3.5" /> Download
+					</Button>
+				</span>
 			</div>
 		{:else if loading}
 			<p class="text-muted-foreground text-xs">Loading preview…</p>

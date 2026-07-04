@@ -72,22 +72,6 @@ export interface IGetQueuesResponse {
 }
 
 /**
- * URL parameters for the endpoint that retrieves jobs from a specific queue.
- */
-export interface IGetQueueJobsRequestParams {
-	queueName: string;
-}
-
-/**
- * Query parameters for filtering and paginating jobs within a queue.
- */
-export interface IGetQueueJobsRequestQuery {
-	status: JobStatus;
-	page: string; // Received as a string from query params
-	limit: string; // Received as a string from query params
-}
-
-/**
  * Response body for the endpoint that retrieves jobs from a specific queue.
  */
 export type IGetQueueJobsResponse = IQueueDetails;

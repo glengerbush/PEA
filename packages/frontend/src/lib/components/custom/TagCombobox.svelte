@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { Combobox } from 'bits-ui';
-	import { Check, Plus, Tag } from 'lucide-svelte';
+	import Check from '@lucide/svelte/icons/check';
+	import Plus from '@lucide/svelte/icons/plus';
+	import Tag from '@lucide/svelte/icons/tag';
 	import { cn } from '$lib/utils.js';
 
 	let {

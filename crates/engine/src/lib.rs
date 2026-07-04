@@ -1,11 +1,10 @@
-//! pea-engine library — the full OpenArchiver engine: API router, job queue,
-//! ingestion pipeline, storage crypto, and fresh-dir provisioning. The Tauri
+//! pea-engine library — the full PEA engine (ported from OpenArchiver): API router, job queue,
+//! ingestion pipeline, blob storage, and fresh-dir provisioning. The Tauri
 //! desktop app links this directly (R4: single process, no sidecars); the
 //! pea-engine binary wraps it for standalone/debug serving and CLI imports.
 
 pub mod api;
-pub mod connectors;
-pub mod crypto;
+pub mod readers;
 pub mod duplicates;
 pub mod emails;
 pub mod eml;
@@ -23,9 +22,37 @@ pub mod state;
 pub mod writes;
 
 
-use serde_json::{json, Value};
 use state::AppState;
 use std::path::Path;
+
+/// Lowercase hex encoding — the digests we hash are always ASCII hex, so an
+/// owned encoder is trivially correct and removes the `hex` dependency.
+pub fn hex_encode(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Whether the desktop shell should check for updates at launch. Reads the
+/// `autoCheckUpdates` system setting, defaulting to true when the setting is
+/// unset, the row is missing, or the config can't be read/parsed.
+pub fn auto_check_updates(state: &AppState) -> bool {
+    let Ok(conn) = state.pool.get() else {
+        return true;
+    };
+    conn.query_row("SELECT config FROM system_settings LIMIT 1", [], |r| {
+        r.get::<_, String>(0)
+    })
+    .ok()
+    .and_then(|config| serde_json::from_str::<serde_json::Value>(&config).ok())
+    .and_then(|v| v.get("autoCheckUpdates").and_then(|b| b.as_bool()))
+    .unwrap_or(true)
+}
 
 /// ISO-8601 with milliseconds — matches JS Date.toJSON() for epoch-ms ints.
 pub fn iso(ms: i64) -> String {
@@ -48,65 +75,30 @@ pub fn iso(ms: i64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
 }
 
-/// Default data dir for PEA, with a one-time automatic migration from the
-/// pre-rename Open Archiver location (same-filesystem rename — atomic).
-/// Env override: PEA_DATA_DIR (or the legacy OA_DATA_DIR).
+/// Platform data dir: ~/Library/Application Support/PEA on macOS,
+/// $XDG_DATA_HOME/pea (default ~/.local/share/pea) elsewhere.
+/// Env override: PEA_DATA_DIR.
 pub fn default_data_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("PEA_DATA_DIR").or_else(|_| std::env::var("OA_DATA_DIR")) {
+    if let Ok(dir) = std::env::var("PEA_DATA_DIR") {
         return std::path::PathBuf::from(dir);
     }
-    let (new_dir, old_dir) = if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         let home = std::env::var("HOME").unwrap_or_default();
-        (
-            std::path::PathBuf::from(&home).join("Library/Application Support/PEA"),
-            std::path::PathBuf::from(&home).join("Library/Application Support/OpenArchiver"),
-        )
+        std::path::PathBuf::from(&home).join("Library/Application Support/PEA")
     } else {
         let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
             format!("{}/.local/share", std::env::var("HOME").unwrap_or_default())
         });
-        (
-            std::path::PathBuf::from(&base).join("pea"),
-            std::path::PathBuf::from(&base).join("open-archiver"),
-        )
-    };
-    if !new_dir.exists() && old_dir.exists() {
-        if std::fs::rename(&old_dir, &new_dir).is_err() {
-            // Migration failed (permissions / cross-device) — keep the old home.
-            return old_dir;
-        }
-        eprintln!(
-            "[pea] migrated archive dir {} -> {}",
-            old_dir.display(),
-            new_dir.display()
-        );
+        std::path::PathBuf::from(&base).join("pea")
     }
-    new_dir
 }
 
-/// Builds an AppState for a data dir: pool + keys from secrets.json.
+/// Builds an AppState for a data dir.
 pub fn state_for_dir(data_dir: &Path, read_only: bool) -> Result<AppState, String> {
-    let secrets: Value = std::fs::read_to_string(data_dir.join("secrets.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| json!({}));
-    let storage_key = secrets
-        .get("storageEncryptionKey")
-        .and_then(|k| k.as_str())
-        .and_then(|hexkey| {
-            let bytes = hex::decode(hexkey).ok()?;
-            <[u8; 32]>::try_from(bytes.as_slice()).ok()
-        });
-    let master_key = secrets
-        .get("encryptionKey")
-        .and_then(|k| k.as_str())
-        .map(String::from);
-    let pool = state::open_pool(&data_dir.join("archive.db"), read_only);
+    let pool = state::open_pool(&data_dir.join("archive.db"), read_only)?;
     Ok(AppState {
         pool,
         data_dir: data_dir.to_path_buf(),
-        storage_key,
-        master_key,
         queue_nudge: std::sync::Arc::new(tokio::sync::Notify::new()),
         frontend_dir: std::env::var("FRONTEND_BUILD_DIR").ok().map(std::path::PathBuf::from),
     })

@@ -3,14 +3,21 @@
 	import * as Table from '$lib/components/ui/table';
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import { MoreHorizontal, Trash, RefreshCw, ChevronRight } from 'lucide-svelte';
+	import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+	import Trash from '@lucide/svelte/icons/trash';
+	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import IngestionSourceForm from '$lib/components/custom/IngestionSourceForm.svelte';
 	import { api } from '$lib/api.client';
 	import { formatBytes } from '$lib/utils';
-	import type { SafeIngestionSource, CreateIngestionSourceDto } from '@pea/types';
+	import type {
+		SafeIngestionSource,
+		CreateIngestionSourceDto,
+		IngestionSourceStats,
+	} from '@pea/types';
 	import Badge from '$lib/components/ui/badge/badge.svelte';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import * as HoverCard from '$lib/components/ui/hover-card/index.js';
@@ -18,10 +25,38 @@
 
 	let { data }: { data: PageData } = $props();
 	let ingestionSources = $state(data.ingestionSources as SafeIngestionSource[]);
+	let sourceStats = $state<IngestionSourceStats[]>(data.storageStats ?? []);
 	// Per-source storage usage (bytes) for the Storage column, keyed by source id.
 	const storageBySource = $derived(
-		new Map((data.storageStats ?? []).map((s) => [s.id, s.storageUsed] as const))
+		new Map(sourceStats.map((s) => [s.id, s.storageUsed] as const))
 	);
+	// Per-source archived-email counts for the Emails column, keyed by source id.
+	const emailCountBySource = $derived(
+		new Map(sourceStats.map((s) => [s.id, s.emailCount ?? 0] as const))
+	);
+
+	// While any import is running, poll so the row's status, storage, and
+	// email count update in place — no navigating away and back. A freshly
+	// created source is returned as ready (the queue flips it to
+	// importing moments later), so those pre-import states must count too.
+	const RUNNING_STATUSES = new Set(['pending', 'ready', 'importing']);
+	const hasRunningImport = $derived(ingestionSources.some((s) => RUNNING_STATUSES.has(s.status)));
+	$effect(() => {
+		if (!hasRunningImport) return;
+		const interval = setInterval(async () => {
+			try {
+				const [sourcesRes, statsRes] = await Promise.all([
+					api('/ingestion-sources'),
+					api('/dashboard/ingestion-sources'),
+				]);
+				if (sourcesRes.ok) ingestionSources = await sourcesRes.json();
+				if (statsRes.ok) sourceStats = await statsRes.json();
+			} catch {
+				// transient failure — the next tick retries
+			}
+		}, 1000);
+		return () => clearInterval(interval);
+	});
 	let isDialogOpen = $state(false);
 	let isDeleteDialogOpen = $state(false);
 	let selectedSource = $state<SafeIngestionSource | null>(null);
@@ -49,6 +84,7 @@
 	const fileBasedProviders = ['eml_import', 'mbox_import'];
 	const isImportProvider = (provider: SafeIngestionSource['provider']): boolean =>
 		fileBasedProviders.includes(provider);
+
 	const importSources = $derived(rootSources.filter((s) => isImportProvider(s.provider)));
 
 	/** Returns aggregated status for a group.
@@ -60,14 +96,13 @@
 	): SafeIngestionSource['status'] {
 		const all = [root, ...children];
 		if (all.some((s) => s.status === 'error')) return 'error';
-		if (all.some((s) => s.status === 'syncing')) return 'syncing';
 		if (all.some((s) => s.status === 'importing')) return 'importing';
 		if (all.every((s) => s.status === 'paused')) return 'paused';
 		// Root paused but some children are active/imported — show active so the
 		// group badge reflects that ingestion is still ongoing via the children.
 		if (
 			root.status === 'paused' &&
-			children.some((s) => ['active', 'imported', 'syncing', 'importing'].includes(s.status))
+			children.some((s) => ['active', 'imported', 'importing'].includes(s.status))
 		)
 			return 'partially_active';
 		if (all.every((s) => ['imported', 'active'].includes(s.status))) return 'active';
@@ -132,13 +167,13 @@
 		}
 	};
 
-	const handleSync = async (id: string) => {
-		const res = await api(`/ingestion-sources/${id}/sync`, { method: 'POST' });
+	const handleReimport = async (id: string) => {
+		const res = await api(`/ingestion-sources/${id}/reimport`, { method: 'POST' });
 		if (!res.ok) {
 			const errorBody = await res.json();
 			setAlert({
 				type: 'error',
-				title: 'Failed to trigger force sync import',
+				title: 'Failed to trigger re-import',
 				message: errorBody.message || JSON.stringify(errorBody),
 				duration: 5000,
 				show: true,
@@ -147,7 +182,7 @@
 		}
 		ingestionSources = ingestionSources.map((s) => {
 			if (s.id === id) {
-				return { ...s, status: 'syncing' as const };
+				return { ...s, status: 'importing' as const };
 			}
 			return s;
 		});
@@ -185,7 +220,7 @@
 		} catch (e) {
 			setAlert({
 				type: 'error',
-				title: 'Failed to trigger force sync import',
+				title: 'Failed to update source',
 				message: e instanceof Error ? e.message : JSON.stringify(e),
 				duration: 5000,
 				show: true,
@@ -262,36 +297,36 @@
 		}
 	};
 
-	const handleBulkForceSync = async () => {
+	const handleBulkReimport = async () => {
 		try {
 			for (const id of selectedIds) {
-				const res = await api(`/ingestion-sources/${id}/sync`, { method: 'POST' });
+				const res = await api(`/ingestion-sources/${id}/reimport`, { method: 'POST' });
 				if (!res.ok) {
 					const errorBody = await res.json();
 					setAlert({
 						type: 'error',
-						title: `Failed to trigger force sync for import ${id}`,
+						title: `Failed to trigger re-import for source ${id}`,
 						message: errorBody.message || JSON.stringify(errorBody),
 						duration: 5000,
 						show: true,
 					});
 				}
 			}
-			// Backend cascades force sync to non-file-based children,
-			// so optimistically mark root + eligible children as syncing
+			// Backend cascades re-import to non-file-based children,
+			// so optimistically mark root + eligible children as importing
 			ingestionSources = ingestionSources.map((s) => {
-				// Mark selected roots as syncing
+				// Mark selected roots as importing
 				if (selectedIds.includes(s.id)) {
-					return { ...s, status: 'syncing' as const };
+					return { ...s, status: 'importing' as const };
 				}
-				// Mark non-file-based children of selected roots as syncing
+				// Mark non-file-based children of selected roots as importing
 				if (
 					s.mergedIntoId &&
 					selectedIds.includes(s.mergedIntoId) &&
 					!fileBasedProviders.includes(s.provider) &&
 					(s.status === 'active' || s.status === 'error')
 				) {
-					return { ...s, status: 'syncing' as const };
+					return { ...s, status: 'importing' as const };
 				}
 				return s;
 			});
@@ -299,7 +334,7 @@
 		} catch (e) {
 			setAlert({
 				type: 'error',
-				title: 'Failed to trigger force sync',
+				title: 'Failed to trigger re-import',
 				message: e instanceof Error ? e.message : JSON.stringify(e),
 				duration: 5000,
 				show: true,
@@ -334,7 +369,13 @@
 					throw new Error(errorData.message || 'Failed to create source.');
 				}
 				const newSource = await response.json();
-				ingestionSources = [...ingestionSources, newSource];
+				// Dedup by id: the 1s import poll may already have refetched a list
+				// containing this source; a plain append would put two rows with
+				// the same id into the keyed #each and crash Svelte (each_key_duplicate).
+				ingestionSources = [
+					...ingestionSources.filter((s) => s.id !== newSource.id),
+					newSource,
+				];
 			}
 			isDialogOpen = false;
 		} catch (error) {
@@ -364,13 +405,11 @@
 				return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
 			case 'error':
 				return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300';
-			case 'syncing':
-				return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300';
 			case 'importing':
 				return 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300';
-			case 'pending_auth':
+			case 'pending':
 				return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300';
-			case 'auth_success':
+			case 'ready':
 				return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
 			default:
 				return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
@@ -397,9 +436,9 @@
 						{/snippet}
 					</DropdownMenu.Trigger>
 					<DropdownMenu.Content>
-						<DropdownMenu.Item onclick={handleBulkForceSync}>
+						<DropdownMenu.Item onclick={handleBulkReimport}>
 							<RefreshCw class="mr-2 h-4 w-4" />
-							{$t('app.imports.force_sync')}
+							{$t('app.imports.reimport')}
 						</DropdownMenu.Item>
 						<DropdownMenu.Item
 							class="text-red-600"
@@ -457,7 +496,11 @@
 					{/if}
 				</div>
 			</Table.Cell>
-			<Table.Cell class="capitalize">{source.provider.split('_').join(' ')}</Table.Cell>
+			<Table.Cell>
+				<a class="hover:underline" href="/mailbox?ingestionSourceId={source.id}">
+					{(emailCountBySource.get(source.id) ?? 0).toLocaleString()}
+				</a>
+			</Table.Cell>
 			<Table.Cell class="min-w-24">
 				<HoverCard.Root>
 					<HoverCard.Trigger>
@@ -468,8 +511,8 @@
 					<HoverCard.Content class="{getStatusClasses(displayStatus)} ">
 						<div class="flex flex-col space-y-4 text-sm">
 							<p class=" font-mono">
-								<b>{$t('app.imports.last_sync_message')}:</b>
-								{source.lastSyncStatusMessage || $t('app.imports.empty')}
+								<b>{$t('app.imports.last_import_message')}:</b>
+								{source.lastImportStatusMessage || $t('app.imports.empty')}
 							</p>
 						</div>
 					</HoverCard.Content>
@@ -504,8 +547,8 @@
 							>{$t('app.imports.edit')}</DropdownMenu.Item
 						>
 						{#if displayStatus === 'error'}
-							<DropdownMenu.Item onclick={() => handleSync(source.id)}
-								>{$t('app.imports.force_sync')}</DropdownMenu.Item
+							<DropdownMenu.Item onclick={() => handleReimport(source.id)}
+								>{$t('app.imports.reimport')}</DropdownMenu.Item
 							>
 						{/if}
 						<DropdownMenu.Separator />
@@ -534,8 +577,9 @@
 							>
 						</div>
 					</Table.Cell>
-					<Table.Cell class="capitalize">{child.provider.split('_').join(' ')}</Table.Cell
-					>
+					<Table.Cell>
+						{(emailCountBySource.get(child.id) ?? 0).toLocaleString()}
+					</Table.Cell>
 					<Table.Cell class="min-w-24">
 						<HoverCard.Root>
 							<HoverCard.Trigger>
@@ -550,8 +594,8 @@
 							<HoverCard.Content class="{getStatusClasses(child.status)} ">
 								<div class="flex flex-col space-y-4 text-sm">
 									<p class=" font-mono">
-										<b>{$t('app.imports.last_sync_message')}:</b>
-										{child.lastSyncStatusMessage || $t('app.imports.empty')}
+										<b>{$t('app.imports.last_import_message')}:</b>
+										{child.lastImportStatusMessage || $t('app.imports.empty')}
 									</p>
 								</div>
 							</HoverCard.Content>
@@ -587,8 +631,8 @@
 									>{$t('app.imports.edit')}</DropdownMenu.Item
 								>
 								{#if child.status === 'error'}
-									<DropdownMenu.Item onclick={() => handleSync(child.id)}
-										>{$t('app.imports.force_sync')}</DropdownMenu.Item
+									<DropdownMenu.Item onclick={() => handleReimport(child.id)}
+										>{$t('app.imports.reimport')}</DropdownMenu.Item
 									>
 								{/if}
 								<DropdownMenu.Item onclick={() => openUnmergeDialog(child)}>
@@ -632,7 +676,7 @@
 							/>
 						</Table.Head>
 						<Table.Head>{$t('app.imports.name')}</Table.Head>
-						<Table.Head>{$t('app.imports.provider')}</Table.Head>
+						<Table.Head>{$t('app.imports.emails')}</Table.Head>
 						<Table.Head>{$t('app.imports.status')}</Table.Head>
 						{#if !isImport}
 							<Table.Head>{$t('app.imports.active')}</Table.Head>

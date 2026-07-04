@@ -15,6 +15,8 @@ publish the draft release, everything else is automatic.**
  publish the draft  ──────────────────────────────────────┘
 ```
 
+**After** approving a draft release, update the version in `packaging/arch/PKGBUILD` so that arch installs pull the latest release. 
+
 ---
 
 ## One-time setup (before the first release)

@@ -12,7 +12,7 @@ apps/desktop/src-tauri/resources/
 apps/desktop/src-tauri/binaries/
 apps/desktop/src-tauri/gen/
 
-# Local database backups — NEVER commit these: they contain the archive's
+# Local database backups. NEVER commit these: they contain the archive's
 # metadata (subjects, senders, recipients) and this repo is public.
 backups/
 

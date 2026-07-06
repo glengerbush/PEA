@@ -123,7 +123,7 @@ fn claim(conn: &Connection, queue: &str, free: i64) -> Vec<ClaimedJob> {
              ORDER BY created_at ASC LIMIT ?",
         )
         .unwrap();
-    let jobs: Vec<ClaimedJob> = stmt
+    let candidates: Vec<ClaimedJob> = stmt
         .query_map(rusqlite::params![queue, now, free], |row| {
             Ok(ClaimedJob {
                 id: row.get(0)?,
@@ -138,41 +138,58 @@ fn claim(conn: &Connection, queue: &str, free: i64) -> Vec<ClaimedJob> {
         .unwrap()
         .filter_map(Result::ok)
         .collect();
-    for job in &jobs {
-        conn.execute(
-            "UPDATE jobs SET state = 'active', started_at = ?, attempts = ? WHERE id = ?",
+    // Flip pending→active atomically and only return jobs we actually won. The
+    // `AND state = 'pending'` guard + rows-affected check means a job whose claim
+    // write is lost (or was already taken) is left for a later tick, never run
+    // while still 'pending' — otherwise the next poll could claim and run it again.
+    let mut claimed = Vec::new();
+    for job in candidates {
+        match conn.execute(
+            "UPDATE jobs SET state = 'active', started_at = ?, attempts = ? \
+             WHERE id = ? AND state = 'pending'",
             rusqlite::params![now, job.attempts + 1, job.id],
-        )
-        .ok();
+        ) {
+            Ok(1) => claimed.push(job),
+            _ => {}
+        }
     }
-    jobs
+    claimed
 }
 
 fn finish(conn: &Connection, job: &ClaimedJob, result: Result<(), String>) {
-    match result {
-        Ok(()) => {
-            conn.execute(
-                "UPDATE jobs SET state = 'completed', finished_at = ?, error = NULL WHERE id = ?",
-                rusqlite::params![now_ms(), job.id],
-            )
-            .ok();
+    // Retry the state write briefly. A silently dropped completion write would
+    // leave the job 'active' and re-run it after the next restart; busy_timeout
+    // already waits out most contention, so a couple of retries closes the gap.
+    let durable = |sql: &str, params: &[&dyn rusqlite::ToSql]| {
+        for attempt in 0..3 {
+            if conn.execute(sql, params).is_ok() {
+                return;
+            }
+            if attempt < 2 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
+        eprintln!("[queue] {}:{} state write failed after retries", job.queue, job.name);
+    };
+    match result {
+        Ok(()) => durable(
+            "UPDATE jobs SET state = 'completed', finished_at = ?, error = NULL WHERE id = ?",
+            rusqlite::params![now_ms(), job.id],
+        ),
         Err(message) => {
             let attempts = job.attempts + 1;
             if attempts >= job.max_attempts {
-                conn.execute(
+                durable(
                     "UPDATE jobs SET state = 'failed', finished_at = ?, error = ? WHERE id = ?",
                     rusqlite::params![now_ms(), message, job.id],
-                )
-                .ok();
+                );
                 eprintln!("[queue] {}:{} failed permanently: {message}", job.queue, job.name);
             } else {
                 let delay = (BACKOFF_BASE_MS << (attempts - 1).min(20)).min(BACKOFF_CAP_MS);
-                conn.execute(
+                durable(
                     "UPDATE jobs SET state = 'pending', run_at = ?, error = ? WHERE id = ?",
                     rusqlite::params![now_ms() + delay, message, job.id],
-                )
-                .ok();
+                );
             }
         }
     }
@@ -220,9 +237,14 @@ fn concurrency_for(queue: &str) -> i64 {
 /// The worker loop — poll + nudge driven; each claimed job runs on the
 /// blocking pool through the processor dispatch in `crate::processors`.
 pub async fn start_queue(state: AppState) {
-    {
-        let conn = state.pool.get().unwrap();
+    if let Ok(conn) = state.pool.get() {
         recover_interrupted(&conn);
+    }
+    // One-shot cleanup of stale tracker "failures" recorded before the tracking
+    // filter recognized them (runs off the async executor; self-limiting).
+    {
+        let state = state.clone();
+        tokio::task::spawn_blocking(move || crate::remote_content::sweep_tracking_assets(&state));
     }
     let running: Arc<HashMap<&'static str, AtomicI64>> = Arc::new(
         QUEUE_NAMES.iter().map(|q| (*q, AtomicI64::new(0))).collect(),
@@ -254,9 +276,15 @@ pub async fn start_queue(state: AppState) {
         for queue in QUEUE_NAMES {
             let counter = &running[queue];
             let free = concurrency_for(queue) - counter.load(Ordering::SeqCst);
-            let jobs = {
-                let conn = state.pool.get().unwrap();
-                claim(&conn, queue, free)
+            if free <= 0 {
+                continue; // fully busy — also avoids a `LIMIT <= 0` claim
+            }
+            // A transient pool-checkout timeout must NOT kill this loop: it is
+            // spawned unsupervised, so an `.unwrap()` panic here would permanently
+            // stop all background processing. Skip this tick and retry next poll.
+            let jobs = match state.pool.get() {
+                Ok(conn) => claim(&conn, queue, free),
+                Err(_) => continue,
             };
             for job in jobs {
                 counter.fetch_add(1, Ordering::SeqCst);
@@ -270,8 +298,17 @@ pub async fn start_queue(state: AppState) {
                         crate::processors::dispatch(&state, &job.queue, &job.name, &job.payload)
                     }))
                     .unwrap_or_else(|_| Err(format!("job {}/{} panicked", job.queue, job.name)));
-                    let conn = state.pool.get().unwrap();
-                    finish(&conn, &job, result);
+                    // Record the outcome if we can, but ALWAYS release the slot and
+                    // nudge afterwards — a failed pool checkout here must not leak
+                    // the slot (which would stall this queue for the whole run). A
+                    // job left 'active' by a missed write is re-queued on next boot.
+                    match state.pool.get() {
+                        Ok(conn) => finish(&conn, &job, result),
+                        Err(e) => eprintln!(
+                            "[queue] could not record result for {}/{}: {e}",
+                            job.queue, job.name
+                        ),
+                    }
                     running[job.queue.as_str()].fetch_sub(1, Ordering::SeqCst);
                     state.queue_nudge.notify_one();
                 });

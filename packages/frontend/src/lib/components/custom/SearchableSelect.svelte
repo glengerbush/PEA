@@ -49,7 +49,15 @@
 </script>
 
 <Combobox.Root type="single" {name} bind:value bind:open {inputValue} {onValueChange}>
-	<div class="relative">
+	<!-- Close when focus leaves the field entirely (Tab / Shift+Tab away). Opening
+	     keeps focus on the input (onOpenAutoFocus is prevented) and item clicks
+	     preventDefault their blur, so this only fires on a real tab-away. -->
+	<div
+		class="relative"
+		onfocusout={(e) => {
+			if (!e.currentTarget.contains(e.relatedTarget as Node | null)) open = false;
+		}}
+	>
 		<Combobox.Input
 			{placeholder}
 			oninput={(e) => (searchValue = e.currentTarget.value)}

@@ -2,7 +2,7 @@ name: Release desktop builds
 
 # Push a tag like v0.7.0 and this builds + publishes:
 #   Linux:  .AppImage (self-updating), .deb, .rpm
-#   macOS:  .dmg for Apple Silicon (unsigned — see release notes)
+#   macOS:  .dmg for Apple Silicon (unsigned, see release notes)
 # plus signed updater artifacts and latest.json for the in-app updater.
 #
 # No Intel macOS build: GitHub's macos-13 (Intel) hosted runners have become

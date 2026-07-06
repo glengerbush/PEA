@@ -6,7 +6,7 @@
 	<div class="container mx-auto flex flex-col items-center justify-center gap-4 py-8 md:flex-row">
 		<div class="flex flex-col items-center gap-2">
 			<p class="text-balance text-center text-xs font-medium leading-loose">
-				© {new Date().getFullYear()} PEA — Personal Email Archive
+				© {new Date().getFullYear()} PEA (Personal Email Archive)
 			</p>
 			<p class="text-muted-foreground text-balance text-center text-xs leading-loose">
 				Based on the upstream

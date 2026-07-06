@@ -30,7 +30,7 @@
 		{ href: '/dashboard', label: $t('app.layout.dashboard'), position: 1 },
 		{ href: '/dashboard/imports', label: $t('app.layout.imports'), position: 2 },
 		{ href: '/dashboard/duplicates', label: 'Duplicates', position: 3 },
-		{ href: '/dashboard/admin/jobs', label: $t('app.jobs.jobs'), position: 4 },
+		{ href: '/trash', label: 'Trash', position: 4 },
 		{
 			label: $t('app.layout.settings'),
 			subMenu: [
@@ -41,6 +41,10 @@
 				{
 					href: '/dashboard/settings/contacts',
 					label: 'Contacts',
+				},
+				{
+					href: '/dashboard/admin/jobs',
+					label: $t('app.jobs.jobs'),
 				},
 			],
 			position: 9,
@@ -111,7 +115,7 @@
 			class="mx-4 flex min-w-0 flex-1 justify-center overflow-x-clip"
 			{@attach observeWidth((w) => (available = w))}
 		>
-			<NavigationMenu.Root viewport={false}>
+			<NavigationMenu.Root viewport={false} delayDuration={0}>
 				<NavigationMenu.List class="flex items-center space-x-4">
 					{#each visibleItems as item (item.href || item.label)}
 						{#if item.subMenu && item.subMenu.length > 0}
@@ -197,7 +201,7 @@
 
 <!-- Invisible full copy of the bar, only for measuring item widths. -->
 <div class="pointer-events-none fixed top-0 left-0 -z-50 h-0 overflow-hidden" aria-hidden="true" inert>
-	<NavigationMenu.Root viewport={false}>
+	<NavigationMenu.Root viewport={false} delayDuration={0}>
 		<NavigationMenu.List class="flex items-center space-x-4">
 			{#each navItems as item, i (item.href || item.label)}
 				<NavigationMenu.Item {@attach observeWidth((w) => (widths[i] = w))}>

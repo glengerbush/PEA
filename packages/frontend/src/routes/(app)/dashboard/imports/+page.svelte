@@ -675,7 +675,7 @@
 											: false) as any)}
 							/>
 						</Table.Head>
-						<Table.Head>{$t('app.imports.name')}</Table.Head>
+						<Table.Head>{$t('app.imports.import_source')}</Table.Head>
 						<Table.Head>{$t('app.imports.emails')}</Table.Head>
 						<Table.Head>{$t('app.imports.status')}</Table.Head>
 						{#if !isImport}

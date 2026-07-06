@@ -1,0 +1,1 @@
+ALTER TABLE `archived_emails` RENAME COLUMN `user_email` TO `import_source`;

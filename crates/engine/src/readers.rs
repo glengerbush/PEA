@@ -2,7 +2,7 @@
 //! localFilePath (file or directory). Apple Mail .emlx messages inside .mbox
 //! bundles are supported.
 
-use crate::ingest::{parse_message, EmailObj};
+use crate::ingest::{parse_message, EmailObj, EmlxMeta};
 use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
@@ -61,10 +61,25 @@ fn find_local_inputs(import_root: &Path, dir: &Path, out: &mut Vec<MboxInput>) -
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        // Don't follow symlinks: a self-referential link would recurse forever
+        // (stack overflow / ENAMETOOLONG that aborts the import), and a link
+        // pointing outside the tree would import files from outside the selected
+        // root. entry.file_type() reports the link itself, without traversing it.
+        if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+            continue;
+        }
         let rel = path
             .strip_prefix(import_root)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| name.clone());
+        // Skip macOS AppleDouble sidecars (._*): resource-fork/metadata files
+        // that appear when Mail data is copied onto a non-HFS+ filesystem. They
+        // carry the real item's name (._x.emlx, ._x.mbox) but hold no email, so
+        // they'd otherwise be imported and fail to parse (a "missing length
+        // line" error per hidden sidecar).
+        if name.starts_with("._") {
+            continue;
+        }
         if path.is_dir() {
             find_local_inputs(import_root, &path, out)?;
         } else if path.is_file() && is_mbox_path(&name) {
@@ -133,10 +148,9 @@ pub fn get_mbox_inputs(provider_config: &Value) -> Result<Vec<MboxInput>, String
     }])
 }
 
-/// getDisplayName → the constructed <name>@mbox.local mailbox user.
-pub fn mbox_user_email(provider_config: &Value) -> String {
-    let display = mbox_display_name(provider_config);
-    format!("{}@mbox.local", display.replace(' ', ".").to_lowercase())
+/// The import's display name (from the mbox file name), used as its Import Source.
+pub fn mbox_import_source(provider_config: &Value) -> String {
+    mbox_display_name(provider_config)
 }
 
 fn mbox_display_name(provider_config: &Value) -> String {
@@ -151,7 +165,7 @@ fn mbox_display_name(provider_config: &Value) -> String {
     format!("mbox-import-{}", crate::search::now_ms())
 }
 
-fn extract_emlx_message(buffer: &[u8], file_path: &str) -> Result<Vec<u8>, String> {
+fn extract_emlx_message(buffer: &[u8], file_path: &str) -> Result<(Vec<u8>, EmlxMeta), String> {
     let newline = buffer
         .iter()
         .position(|b| *b == b'\n')
@@ -168,9 +182,60 @@ fn extract_emlx_message(buffer: &[u8], file_path: &str) -> Result<Vec<u8>, Strin
     if message_length == 0 || end > buffer.len() {
         return Err(format!("Invalid Apple Mail EMLX file (truncated message): {file_path}"));
     }
-    Ok(buffer[start..end].to_vec())
+    // Everything after the message is Apple's plist metadata trailer — parse it
+    // as a fallback for messages whose own RFC-822 headers are missing.
+    let meta = parse_emlx_plist(&buffer[end..]);
+    Ok((buffer[start..end].to_vec(), meta))
 }
 
+/// Extract date-sent / subject / sender / to from an emlx plist trailer. The
+/// trailer is a flat `<key>NAME</key><type>VALUE</type>` dict, so a direct
+/// scan is simpler (and avoids quick-xml 0.41 splitting text at entity refs).
+/// Best effort: anything unparseable just leaves the field empty.
+fn parse_emlx_plist(trailer: &[u8]) -> EmlxMeta {
+    let mut meta = EmlxMeta::default();
+    if trailer.is_empty() {
+        return meta;
+    }
+    let text = String::from_utf8_lossy(trailer);
+    if let Some(secs) = plist_value(&text, "date-sent").and_then(|v| v.trim().parse::<f64>().ok()) {
+        meta.date_sent_ms = Some((secs * 1000.0) as i64);
+    }
+    meta.subject = plist_string(&text, "subject");
+    meta.sender = plist_string(&text, "sender");
+    meta.to = plist_string(&text, "to");
+    meta
+}
+
+/// Raw inner text of the value element immediately following `<key>KEY</key>`
+/// (entities left intact, e.g. `Name &lt;a@b&gt;`).
+fn plist_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let key_tag = format!("<key>{key}</key>");
+    let after = text[text.find(&key_tag)? + key_tag.len()..].trim_start();
+    let open_end = after.find('>')?; // end of the value element's opening tag
+    let inner = &after[open_end + 1..];
+    // Entities use `&lt;`/`&gt;`, so the first literal `<` is the closing tag.
+    let close = inner.find('<')?;
+    Some(&inner[..close])
+}
+
+/// A plist string value for `key`, XML-unescaped; None if absent or blank.
+fn plist_string(text: &str, key: &str) -> Option<String> {
+    let raw = plist_value(text, key)?;
+    let unescaped = quick_xml::escape::unescape(raw)
+        .map(|c| c.into_owned())
+        .unwrap_or_else(|_| raw.to_string());
+    let trimmed = unescaped.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Kept as the reference splitter that `for_each_mbox_message` is tested against
+/// (the import path itself now streams instead of buffering the whole file).
+#[cfg(test)]
 fn split_mbox(buffer: &[u8]) -> Vec<Vec<u8>> {
     let delim = b"\nFrom ";
     let mut out = Vec::new();
@@ -212,6 +277,42 @@ fn unescape_mbox_quoting(buffer: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Streams an mbox file message-by-message without loading the whole file, so a
+/// multi-GB archive never has to fit in memory (only one message at a time).
+/// Each yielded chunk is byte-identical to `split_mbox`'s output: the message
+/// including its leading "From " envelope, minus the single '\n' that precedes
+/// the next "From " line.
+fn for_each_mbox_message(
+    path: &str,
+    mut on_message: impl FnMut(Vec<u8>),
+) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(file);
+    let mut msg: Vec<u8> = Vec::new();
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        line.clear();
+        let n = reader.read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break; // EOF
+        }
+        // A "From " at the start of a line begins a new message. The first
+        // message's leading envelope is not a boundary (msg is still empty there).
+        if line.starts_with(b"From ") && !msg.is_empty() {
+            if msg.last() == Some(&b'\n') {
+                msg.pop(); // the '\n' before "From " is the delimiter, not content
+            }
+            on_message(std::mem::take(&mut msg));
+        }
+        msg.extend_from_slice(&line);
+    }
+    if !msg.is_empty() {
+        on_message(msg);
+    }
+    Ok(())
+}
+
 /// fetchEmails — iterates every message of every input.
 pub fn for_each_email(
     provider_config: &Value,
@@ -226,36 +327,42 @@ pub fn for_each_email(
     // message stays findable under every folder it appeared in. (Deduping here
     // would drop those extra folder tags — the mbox path never did.)
     for input in &inputs {
-        let bytes = match std::fs::read(&input.file_path).map_err(|e| e.to_string()) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("[reader] failed to read input {}: {e}", input.file_path);
-                continue; // Node logs + skips the input
-            }
-        };
-        if input.is_emlx {
-            match extract_emlx_message(&bytes, &input.file_path) {
-                Ok(eml) => match parse_message(eml, &input.source_path) {
+        // .emlx / .eml are single, small messages — read them whole. An .mbox can
+        // be many GB, so it is streamed below rather than read into memory.
+        if input.is_emlx || input.is_eml {
+            let bytes = match std::fs::read(&input.file_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[reader] failed to read input {}: {e}", input.file_path);
+                    continue; // Node logs + skips the input
+                }
+            };
+            if input.is_emlx {
+                match extract_emlx_message(&bytes, &input.file_path) {
+                    Ok((eml, meta)) => match parse_message(eml, &input.source_path, Some(&meta)) {
+                        Ok(email) => handle(email),
+                        Err(e) => eprintln!("[reader] emlx parse failed: {e}"),
+                    },
+                    Err(e) => eprintln!("[reader] {e}"),
+                }
+            } else {
+                match parse_message(bytes, &input.source_path, None) {
                     Ok(email) => handle(email),
-                    Err(e) => eprintln!("[reader] emlx parse failed: {e}"),
-                },
-                Err(e) => eprintln!("[reader] {e}"),
+                    Err(e) => eprintln!("[reader] eml parse failed: {e}"),
+                }
             }
             continue;
         }
-        if input.is_eml {
-            match parse_message(bytes, &input.source_path) {
-                Ok(email) => handle(email),
-                Err(e) => eprintln!("[reader] eml parse failed: {e}"),
-            }
-            continue;
-        }
-        for chunk in split_mbox(&bytes) {
+
+        let read_result = for_each_mbox_message(&input.file_path, |chunk| {
             let eml = unescape_mbox_quoting(strip_mbox_envelope(&chunk));
-            match parse_message(eml, &input.source_path) {
+            match parse_message(eml, &input.source_path, None) {
                 Ok(email) => handle(email),
                 Err(e) => eprintln!("[reader] mbox message parse failed: {e}"),
             }
+        });
+        if let Err(e) = read_result {
+            eprintln!("[reader] failed to read input {}: {e}", input.file_path);
         }
     }
 
@@ -282,6 +389,28 @@ mod tests {
         assert_eq!(split_mbox(b"From a\n\nbody").len(), 1);
     }
 
+    // The streaming reader must yield byte-identical message chunks to split_mbox,
+    // so switching to streaming can't change stored bytes / storage hashes.
+    #[test]
+    fn streaming_mbox_matches_split_mbox() {
+        for data in [
+            &b"From a\n\nbody one\nFrom b\n\nbody two\n"[..],
+            &b"From a\n\nbody one\nFrom b\n\nbody two"[..], // no trailing newline
+            &b"From only\n\nsingle message body\n"[..],
+            &b">From quoted\nFrom real\n\nbody"[..], // ">From" is not a boundary
+        ] {
+            let dir = std::env::temp_dir()
+                .join(format!("pea-mboxstream-{}-{}", std::process::id(), data.len()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("s.mbox");
+            std::fs::write(&path, data).unwrap();
+            let mut streamed: Vec<Vec<u8>> = Vec::new();
+            for_each_mbox_message(path.to_str().unwrap(), |c| streamed.push(c)).unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+            assert_eq!(streamed, split_mbox(data), "streaming differs from split_mbox for {data:?}");
+        }
+    }
+
     #[test]
     fn path_predicates_and_derivations() {
         assert!(is_mbox_path("X.MBOX") && is_emlx_path("a.EMLX") && is_eml_path("b.Eml"));
@@ -292,10 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn mbox_display_name_and_user_email() {
+    fn mbox_display_name_and_import_source() {
         let c = serde_json::json!({ "localFilePath": "/x/My Mail.mbox" });
         assert_eq!(mbox_display_name(&c), "My Mail");
-        assert_eq!(mbox_user_email(&c), "my.mail@mbox.local");
+        assert_eq!(mbox_import_source(&c), "My Mail");
     }
 
     #[test]
@@ -309,7 +438,7 @@ mod tests {
 
     #[test]
     fn extract_emlx_reads_declared_length() {
-        assert_eq!(extract_emlx_message(b"5\nhello world extra", "x.emlx").unwrap(), b"hello");
+        assert_eq!(extract_emlx_message(b"5\nhello world extra", "x.emlx").unwrap().0, b"hello");
     }
 
     #[test]
@@ -318,6 +447,53 @@ mod tests {
         assert!(extract_emlx_message(b"18446744073709551615\nx", "x.emlx").is_err());
         assert!(extract_emlx_message(b"100\nshort", "x.emlx").is_err());
         assert!(extract_emlx_message(b"nolength", "x.emlx").is_err());
+    }
+
+    #[test]
+    fn emlx_plist_trailer_backfills_missing_headers() {
+        // Reproduces the real corrupt message: a headerless body, but Apple's
+        // plist trailer still carries the date/subject/sender.
+        let body = "\n\nCiao ragazzi, come vanno le vacanze?\n";
+        let plist = "<?xml version=\"1.0\"?><plist><dict>\
+            <key>date-sent</key><real>1256610359</real>\
+            <key>subject</key><string>Gruppi di conversazione</string>\
+            <key>sender</key><string>Ivana Di Siena &lt;ivana@x.edu&gt;</string>\
+            </dict></plist>";
+        let emlx = format!("{}\n{}{}", body.len(), body, plist);
+
+        let (eml, meta) = extract_emlx_message(emlx.as_bytes(), "x.emlx").unwrap();
+        assert_eq!(meta.date_sent_ms, Some(1256610359000));
+        assert_eq!(meta.subject.as_deref(), Some("Gruppi di conversazione"));
+        assert_eq!(meta.sender.as_deref(), Some("Ivana Di Siena <ivana@x.edu>"));
+
+        // The headerless message backfills every missing field from the plist.
+        let email = parse_message(eml, "Folder", Some(&meta)).unwrap();
+        assert_eq!(email.subject, "Gruppi di conversazione");
+        assert_eq!(email.received_at_ms, 1256610359000);
+        assert_eq!(email.from[0].address, "ivana@x.edu");
+        assert_eq!(email.from[0].name, "Ivana Di Siena");
+    }
+
+    #[test]
+    fn appledouble_sidecars_are_skipped() {
+        // Reproduces the real Apple Mail store copied to a non-HFS+ disk: every
+        // real message has a hidden `._<name>` AppleDouble twin, and the mailbox
+        // dir has one too. Only the real .emlx must be discovered.
+        let dir = std::env::temp_dir().join(format!("pea-appledouble-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let messages = dir.join("Oberlin.mbox/Data/2/Messages");
+        std::fs::create_dir_all(&messages).unwrap();
+        std::fs::write(messages.join("32590.emlx"), b"5\nhello").unwrap();
+        std::fs::write(messages.join("._32590.emlx"), b"\x00\x05\x16\x07junk").unwrap();
+        std::fs::write(dir.join("._Oberlin.mbox"), b"\x00\x05\x16\x07junk").unwrap();
+
+        let mut inputs = Vec::new();
+        find_local_inputs(&dir, &dir, &mut inputs).unwrap();
+
+        assert_eq!(inputs.len(), 1, "only the real .emlx is imported, sidecars skipped");
+        assert!(inputs[0].is_emlx && inputs[0].file_path.ends_with("32590.emlx"));
+        assert!(!inputs[0].file_path.contains("._"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

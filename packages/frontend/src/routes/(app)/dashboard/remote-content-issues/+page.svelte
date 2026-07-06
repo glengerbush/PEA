@@ -3,16 +3,20 @@
 	import * as Table from '$lib/components/ui/table';
 	import * as Select from '$lib/components/ui/select';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
+	import { buttonVariants } from '$lib/components/ui/button';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api.client';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import { formatDateTime } from '$lib/stores/datetime.svelte';
+	import { disableTwoFingerSwipe } from '$lib/stores/swipe.store';
+	import { get } from 'svelte/store';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
-	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 
 	let { data }: { data: PageData } = $props();
 	const result = $derived(data.result);
@@ -87,6 +91,37 @@
 			retrying = { ...retrying, [emailId]: false };
 		}
 	}
+
+	function goBack() {
+		goto('/dashboard');
+	}
+
+	// --- Two-finger (horizontal) swipe returns to the dashboard ---
+	let swipeAccum = 0;
+	let swipeResetTimer: ReturnType<typeof setTimeout> | null = null;
+	let swipeCooldownUntil = 0;
+	/** 0→1 progress toward the swipe threshold, drives the on-screen affordance. */
+	let swipeProgress = $state(0);
+	function handleWheel(event: WheelEvent) {
+		if (get(disableTwoFingerSwipe)) return;
+		// Only count clearly-horizontal movement so vertical scrolling never triggers.
+		if (Math.abs(event.deltaX) <= Math.abs(event.deltaY) * 1.5) return;
+		const now = Date.now();
+		if (now < swipeCooldownUntil) return;
+		swipeAccum += event.deltaX;
+		swipeProgress = Math.min(1, Math.abs(swipeAccum) / 300);
+		if (swipeResetTimer) clearTimeout(swipeResetTimer);
+		swipeResetTimer = setTimeout(() => {
+			swipeAccum = 0;
+			swipeProgress = 0;
+		}, 400);
+		if (Math.abs(swipeAccum) >= 300) {
+			swipeAccum = 0;
+			swipeProgress = 0;
+			swipeCooldownUntil = now + 1000;
+			goBack();
+		}
+	}
 </script>
 
 {#snippet sortHeader(field: string, label: string)}
@@ -111,6 +146,25 @@
 <svelte:head>
 	<title>Remote content issues - PEA</title>
 </svelte:head>
+
+<svelte:window onwheel={handleWheel} />
+
+<!-- Two-finger swipe affordance: a back indicator that slides in as the gesture
+     approaches the threshold, then completes into the navigation. -->
+{#if swipeProgress > 0}
+	<div
+		class="pointer-events-none fixed left-2 top-1/2 z-50"
+		style="opacity:{swipeProgress}; transform: translate({-44 + swipeProgress * 44}px, -50%);"
+		aria-hidden="true"
+	>
+		<div
+			class="bg-primary/90 text-primary-foreground flex h-12 w-12 items-center justify-center rounded-full shadow-lg backdrop-blur"
+			style="transform: scale({0.7 + swipeProgress * 0.3});"
+		>
+			<ArrowLeft class="h-6 w-6" />
+		</div>
+	</div>
+{/if}
 
 <div class="space-y-4">
 	<div class="flex flex-wrap items-center justify-between gap-3">
@@ -139,7 +193,7 @@
 					<Table.Head>{@render sortHeader('status', 'Status')}</Table.Head>
 					<Table.Head>Errors</Table.Head>
 					<Table.Head>{@render sortHeader('date', 'Archived')}</Table.Head>
-					<Table.Head class="text-right">Action</Table.Head>
+					<Table.Head class="text-right">Retry</Table.Head>
 				</Table.Row>
 			</Table.Header>
 			<Table.Body class="text-sm">
@@ -190,20 +244,22 @@
 								{formatDateTime(issue.archivedAt)}
 							</Table.Cell>
 							<Table.Cell class="text-right">
-								<Button
-									size="sm"
-									variant="outline"
-									class="gap-1.5"
-									disabled={retrying[issue.emailId]}
-									onclick={() => retry(issue.emailId)}
-								>
-									<RefreshCw
-										class="h-3.5 w-3.5 {retrying[issue.emailId]
-											? 'animate-spin'
-											: ''}"
-									/>
-									Retry
-								</Button>
+								<Tooltip.Root>
+									<Tooltip.Trigger
+										type="button"
+										class={buttonVariants({ variant: 'ghost', size: 'icon' })}
+										disabled={retrying[issue.emailId]}
+										onclick={() => retry(issue.emailId)}
+										aria-label="Retry"
+									>
+										<RotateCw
+											class="h-4 w-4 {retrying[issue.emailId]
+												? 'animate-spin'
+												: ''}"
+										/>
+									</Tooltip.Trigger>
+									<Tooltip.Content>Retry</Tooltip.Content>
+								</Tooltip.Root>
 							</Table.Cell>
 						</Table.Row>
 					{/each}

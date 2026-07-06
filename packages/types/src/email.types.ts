@@ -1,7 +1,7 @@
 // Define the structure of the document to be indexed for full-text search
 export interface EmailDocument {
 	id: string; // The unique ID of the email
-	userEmail: string;
+	importSource: string;
 	from: string;
 	senderName: string;
 	to: string[];

@@ -6,10 +6,12 @@
 	import * as RadioGroup from '$lib/components/ui/radio-group';
 	import * as Select from '$lib/components/ui/select';
 	import { Switch } from '$lib/components/ui/switch';
+	import { disableTwoFingerSwipe } from '$lib/stores/swipe.store';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
-	import type { SupportedLanguage, NativeUpdateInfo } from '@pea/types';
+	import type { SupportedLanguage, NativeUpdateInfo, DateFormat } from '@pea/types';
 	import { t } from '$lib/translations';
 	import { api } from '$lib/api.client';
+	import { setDateTimePrefs } from '$lib/stores/datetime.svelte';
 
 	let { data }: { data: PageData } = $props();
 	let settings = $state(data.systemSettings);
@@ -39,19 +41,37 @@
 			'Select a language'
 	);
 
+	const dateFormatOptions: { value: DateFormat; label: string }[] = [
+		{ value: 'system', label: 'Automatic (your locale)' },
+		{ value: 'mdy', label: 'MM/DD/YYYY' },
+		{ value: 'dmy', label: 'DD/MM/YYYY' },
+		{ value: 'ymd', label: 'YYYY-MM-DD' },
+		{ value: 'long', label: 'Month D, YYYY' },
+	];
+	const dateFormatLabel = $derived(
+		dateFormatOptions.find((option) => option.value === settings.dateFormat)?.label ??
+			'Automatic (your locale)'
+	);
+
 	// Only send the keys this form edits — the backend merges the partial body
-	// into current settings (a "full" body would wipe timeZone/clockFormat).
+	// into current settings, preserving timeZone / autoCheckUpdates.
 	async function saveSettings(event: SubmitEvent) {
 		event.preventDefault();
 		isSaving = true;
 		try {
 			const response = await api('/settings/system', {
 				method: 'PUT',
-				body: JSON.stringify({ language: settings.language, theme: settings.theme }),
+				body: JSON.stringify({
+					language: settings.language,
+					theme: settings.theme,
+					clockFormat: settings.clockFormat,
+					dateFormat: settings.dateFormat,
+				}),
 			});
 			const body = await response.json();
 			if (response.ok) {
 				settings = body;
+				setDateTimePrefs(body);
 				setAlert({
 					type: 'success',
 					title: $t('app.system_settings.saved_title'),
@@ -199,8 +219,34 @@
 						</div>
 					</RadioGroup.Root>
 				</div>
+
+				<div class="grid gap-2">
+					<Label.Root class="mb-1">Time format</Label.Root>
+					<RadioGroup.Root bind:value={settings.clockFormat} name="clockFormat" class="flex items-center gap-4">
+						<div class="flex items-center gap-2">
+							<RadioGroup.Item value="12h" id="clock-12h" />
+							<Label.Root for="clock-12h">12-hour (1:30 PM)</Label.Root>
+						</div>
+						<div class="flex items-center gap-2">
+							<RadioGroup.Item value="24h" id="clock-24h" />
+							<Label.Root for="clock-24h">24-hour (13:30)</Label.Root>
+						</div>
+					</RadioGroup.Root>
+				</div>
+
+				<div class="grid gap-2">
+					<Label.Root class="mb-1" for="dateFormat">Date format</Label.Root>
+					<Select.Root name="dateFormat" bind:value={settings.dateFormat} type="single">
+						<Select.Trigger class="w-[280px]">{dateFormatLabel}</Select.Trigger>
+						<Select.Content>
+							{#each dateFormatOptions as option (option.value)}
+								<Select.Item value={option.value}>{option.label}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
+				</div>
 			</Card.Content>
-			<Card.Footer class="border-t px-6 py-4">
+			<Card.Footer class="border-t">
 				<Button type="submit" disabled={isSaving}>
 					{#if isSaving}
 						{$t('app.system_settings.saving')}...
@@ -298,7 +344,7 @@
 				<p class="text-destructive">{updateError}</p>
 			{/if}
 		</Card.Content>
-		<Card.Footer class="border-t px-6 py-4">
+		<Card.Footer class="border-t">
 			<Button
 				type="button"
 				variant="outline"
@@ -310,5 +356,28 @@
 					: $t('app.system_settings.updates.check')}
 			</Button>
 		</Card.Footer>
+	</Card.Root>
+
+	<Card.Root>
+		<Card.Header>
+			<Card.Title>Preferences</Card.Title>
+			<Card.Description>Personal interface preferences, stored on this device.</Card.Description>
+		</Card.Header>
+		<Card.Content class="space-y-4 text-sm">
+			<div class="flex items-center justify-between gap-4">
+				<div class="space-y-1">
+					<Label.Root for="disable-two-finger-swipe">Disable two-finger swipe</Label.Root>
+					<p class="text-muted-foreground text-xs">
+						Turn off the trackpad two-finger horizontal swipe that returns from an email to
+						the previous list.
+					</p>
+				</div>
+				<Switch
+					id="disable-two-finger-swipe"
+					checked={$disableTwoFingerSwipe}
+					onCheckedChange={(v) => disableTwoFingerSwipe.set(v)}
+				/>
+			</div>
+		</Card.Content>
 	</Card.Root>
 </div>

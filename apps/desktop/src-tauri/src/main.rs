@@ -280,6 +280,18 @@ fn main() {
                 responder.respond(handle_request(router, request).await);
             });
         })
+        .on_page_load(|_webview, _payload| {
+            // Dev convenience: bind Ctrl/Cmd+R and F5 to reload the webview.
+            // Re-injected on every page load so it survives reloads. The whole
+            // block is compiled out of release builds.
+            #[cfg(debug_assertions)]
+            let _ = _webview.eval(
+                "if(!window.__peaDevReload){window.__peaDevReload=1;\
+                 document.addEventListener('keydown',function(e){\
+                 if(((e.ctrlKey||e.metaKey)&&(e.key==='r'||e.key==='R'))||e.key==='F5'){\
+                 e.preventDefault();location.reload();}});}",
+            );
+        })
         .setup(move |app| {
             // Launch check only when "Automatically check for updates" is on
             // (default). Off → the user drives it from Settings. Dev builds never

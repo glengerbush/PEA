@@ -7,8 +7,43 @@ use regex::Regex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
-/// deleteArchivedEmail — attachments (ref-counted), storage, FTS, row, and
-/// auto-removal of an emptied file-based source in a terminal state.
+/// Soft-delete: move an email to the trash by stamping `deleted_at`. Storage
+/// blobs, attachments, FTS rows, and the ingestion source are all left intact so
+/// the email can be restored; the default listings hide `deleted_at IS NOT NULL`.
+pub fn soft_delete_archived_email(conn: &Connection, email_id: &str) -> Result<(), String> {
+    let affected = conn
+        .execute(
+            "UPDATE archived_emails SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+            rusqlite::params![crate::search::now_ms(), email_id],
+        )
+        .map_err(|e| e.to_string())?;
+    // Zero rows means it's missing or already trashed; only "missing" is an error.
+    if affected == 0 {
+        let exists: bool = conn
+            .query_row("SELECT 1 FROM archived_emails WHERE id = ?", [email_id], |_| Ok(true))
+            .unwrap_or(false);
+        if !exists {
+            return Err("Archived email not found".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Restore an email from the trash (clear `deleted_at`).
+pub fn restore_archived_email(conn: &Connection, email_id: &str) -> Result<(), String> {
+    let affected = conn
+        .execute("UPDATE archived_emails SET deleted_at = NULL WHERE id = ?", [email_id])
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err("Archived email not found".to_string());
+    }
+    Ok(())
+}
+
+/// deleteArchivedEmail — PERMANENT delete: attachments (ref-counted so a blob
+/// shared with an email that remains is kept), storage, FTS, row, and
+/// auto-removal of an emptied file-based source in a terminal state. Used by the
+/// trash's "delete forever" / "empty trash" — soft delete is the default path.
 pub fn delete_archived_email(state: &AppState, conn: &Connection, email_id: &str) -> Result<(), String> {
     let email: (String, bool, Option<String>) = conn
         .query_row(
@@ -217,18 +252,18 @@ pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String
     }
 
     // Recompute the FTS meta column per email. Must mirror index_email's meta
-    // build exactly: user_email + source_path + tags. (source_labels was dropped
+    // build exactly: import_source + source_path + tags. (source_labels was dropped
     // from the schema in migration 0003 — selecting it here errored, and the
     // `.ok()` swallowed it, so tag edits silently never re-indexed the meta.)
     for (id, _) in &updates {
         let row: Option<(String, Option<String>, Option<String>)> = conn
             .query_row(
-                "SELECT user_email, source_path, tags FROM archived_emails WHERE id = ?",
+                "SELECT import_source, source_path, tags FROM archived_emails WHERE id = ?",
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .ok();
-        let Some((user_email, source_path, tags_raw)) = row else { continue };
+        let Some((import_source, source_path, tags_raw)) = row else { continue };
         let tags: Vec<String> = tags_raw
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -236,7 +271,7 @@ pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String
         // sanitize_text each part exactly like index_email, so a re-index after a
         // tag edit produces the same meta as the original index.
         use crate::ingest::sanitize_text;
-        let mut meta_parts = vec![sanitize_text(&user_email), sanitize_text(&source_path.unwrap_or_default())];
+        let mut meta_parts = vec![sanitize_text(&import_source), sanitize_text(&source_path.unwrap_or_default())];
         meta_parts.extend(tags.iter().map(|t| sanitize_text(t)));
         conn.execute(
             "UPDATE email_fts SET meta = ? WHERE rowid = (SELECT rowid FROM archived_emails WHERE id = ?)",

@@ -1735,7 +1735,7 @@
 					"id": {
 						"type": "string"
 					},
-					"userEmail": {
+					"importSource": {
 						"type": "string"
 					},
 					"from": {
@@ -1906,7 +1906,7 @@
 					"ingestionSourceId": {
 						"type": "string"
 					},
-					"userEmail": {
+					"importSource": {
 						"type": "string"
 					},
 					"messageIdHeader": {
@@ -1959,10 +1959,6 @@
 						"nullable": true
 					},
 					"duplicateSubjectHash": {
-						"type": "string",
-						"nullable": true
-					},
-					"duplicateLikelyGroupKey": {
 						"type": "string",
 						"nullable": true
 					},
@@ -2152,7 +2148,7 @@
 					"senderEmail": {
 						"type": "string"
 					},
-					"userEmail": {
+					"importSource": {
 						"type": "string"
 					},
 					"sentAt": {

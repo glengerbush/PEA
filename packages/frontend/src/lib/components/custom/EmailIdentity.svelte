@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { contactName } from '$lib/stores/contacts.svelte';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 
 	let {
 		email,
 		fallbackName = '',
-		class: className = ''
+		class: className = '',
 	}: {
 		email: string | null | undefined;
 		/** Name from the email itself (e.g. sender display name), used if no contact matches. */
@@ -20,9 +21,28 @@
 
 {#if showName}
 	<span class="flex min-w-0 flex-col leading-tight {className}">
-		<span class="truncate font-medium" title={name}>{name}</span>
-		<span class="text-muted-foreground truncate text-xs" title={addr}>{addr}</span>
+		<Tooltip.Root
+			><Tooltip.Trigger
+				>{#snippet child({ props })}<span {...props} class="truncate font-medium"
+						>{name}</span
+					>{/snippet}</Tooltip.Trigger
+			><Tooltip.Content>{name}</Tooltip.Content></Tooltip.Root
+		>
+		<Tooltip.Root
+			><Tooltip.Trigger
+				>{#snippet child({ props })}<span
+						{...props}
+						class="text-muted-foreground truncate text-xs">{addr}</span
+					>{/snippet}</Tooltip.Trigger
+			><Tooltip.Content>{addr}</Tooltip.Content></Tooltip.Root
+		>
 	</span>
 {:else}
-	<span class="block truncate {className}" title={addr}>{addr || '—'}</span>
+	<Tooltip.Root
+		><Tooltip.Trigger
+			>{#snippet child({ props })}<span {...props} class="block truncate {className}"
+					>{addr || '—'}</span
+				>{/snippet}</Tooltip.Trigger
+		><Tooltip.Content>{addr}</Tooltip.Content></Tooltip.Root
+	>
 {/if}

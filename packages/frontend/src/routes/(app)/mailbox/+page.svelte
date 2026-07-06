@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { PageData } from './$types';
 	import * as Table from '$lib/components/ui/table';
 	import { Button } from '$lib/components/ui/button';
@@ -10,10 +11,11 @@
 	import AttachmentTypeFilter from '$lib/components/custom/AttachmentTypeFilter.svelte';
 	import EmailIdentity from '$lib/components/custom/EmailIdentity.svelte';
 	import { formatDateTime } from '$lib/stores/datetime.svelte';
-	import { goto } from '$app/navigation';
+	import { goto, afterNavigate, beforeNavigate } from '$app/navigation';
 	import { onDestroy } from 'svelte';
 	import { page as appPage } from '$app/state';
 	import { lastMailboxListUrl } from '$lib/stores/mailbox-nav';
+	import { saveListScroll, getListScroll, lastOpenedEmailId } from '$lib/stores/list-view-state';
 	import { api } from '$lib/api.client';
 	import { t } from '$lib/translations';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
@@ -91,6 +93,20 @@
 	// email detail page's Back button can return to the exact same view.
 	$effect(() => {
 		lastMailboxListUrl.set(appPage.url.pathname + appPage.url.search);
+	});
+
+	// Remember scroll position and which email was opened, then restore both on
+	// return — the Back button/swipe uses goto(), so SvelteKit's own scroll
+	// restoration (popstate-only) never fires. Keyed by full URL so each
+	// filter/sort/page variant restores independently.
+	beforeNavigate(({ to }) => {
+		saveListScroll(appPage.url.pathname + appPage.url.search, window.scrollY);
+		const openedId = to?.url.pathname.match(/^\/mailbox\/([^/]+)$/)?.[1];
+		if (openedId) lastOpenedEmailId.set(openedId);
+	});
+	afterNavigate(() => {
+		const y = getListScroll(appPage.url.pathname + appPage.url.search);
+		if (y !== undefined) requestAnimationFrame(() => window.scrollTo(0, y));
 	});
 
 	const fieldOptions: SelectOption[] = [
@@ -446,7 +462,14 @@
 			bind:value={fields}
 			onValueChange={applyAfterUpdate}
 		>
-			<Select.Trigger class="w-[10.5rem]" title="Search scope">{fieldLabel}</Select.Trigger>
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					{#snippet child({ props })}
+						<Select.Trigger {...props} class="w-[10.5rem]">{fieldLabel}</Select.Trigger>
+					{/snippet}
+				</Tooltip.Trigger>
+				<Tooltip.Content>Search scope</Tooltip.Content>
+			</Tooltip.Root>
 			<Select.Content>
 				{#each fieldOptions as option (option.value)}
 					<Select.Item value={option.value} label={option.label}
@@ -461,7 +484,14 @@
 			bind:value={matchingStrategy}
 			onValueChange={applyAfterUpdate}
 		>
-			<Select.Trigger class="w-[8rem]" title="Match mode">{matchingLabel}</Select.Trigger>
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					{#snippet child({ props })}
+						<Select.Trigger {...props} class="w-[8rem]">{matchingLabel}</Select.Trigger>
+					{/snippet}
+				</Tooltip.Trigger>
+				<Tooltip.Content>Match mode</Tooltip.Content>
+			</Tooltip.Root>
 			<Select.Content>
 				{#each matchingOptions as option (option.value)}
 					<Select.Item value={option.value} label={option.label}
@@ -500,7 +530,7 @@
 	{#if showFilters}
 		<div class="flex flex-wrap items-end gap-4 rounded-md border p-3">
 			<label class="flex min-w-[12rem] flex-col gap-1 text-sm font-medium">
-				<span>Source</span>
+				<span>Import Source</span>
 				<Select.Root
 					type="single"
 					name="ingestionSourceId"
@@ -648,14 +678,16 @@
 					>{@render sortHeader('sender', $t('app.archived_emails_page.from'))}</Table.Head
 				>
 				<Table.Head>{$t('app.archived_emails_page.to')}</Table.Head>
-				<Table.Head>{$t('app.archived_emails_page.inbox')}</Table.Head>
+				<Table.Head>{$t('app.archived_emails_page.import_source')}</Table.Head>
 			</Table.Row>
 		</Table.Header>
 		<Table.Body class="text-sm">
 			{#if searchResult.hits.length > 0}
 				{#each searchResult.hits as email (email.id)}
 					<Table.Row
-						class="hover:bg-muted/50 cursor-pointer"
+						class="hover:bg-muted/50 cursor-pointer {email.id === $lastOpenedEmailId
+							? 'bg-primary/10'
+							: ''}"
 						onclick={() => goto(`/mailbox/${email.id}`)}
 					>
 						<!-- Checkbox cell: stop propagation so toggling selection doesn't open the email -->
@@ -721,7 +753,7 @@
 							{/if}
 						</Table.Cell>
 						<Table.Cell>
-							<span class="block max-w-52 truncate">{email.userEmail}</span>
+							<span class="block max-w-52 truncate">{email.importSource}</span>
 						</Table.Cell>
 					</Table.Row>
 				{/each}
@@ -764,14 +796,13 @@
 	<Dialog.Content class="sm:max-w-lg">
 		<Dialog.Header>
 			<Dialog.Title
-				>Delete {selectedVisibleIds.length} selected email{selectedVisibleIds.length === 1
+				>Move {selectedVisibleIds.length} selected email{selectedVisibleIds.length === 1
 					? ''
-					: 's'}?</Dialog.Title
+					: 's'} to the Trash?</Dialog.Title
 			>
 			<Dialog.Description>
-				This permanently deletes the selected email{selectedVisibleIds.length === 1
-					? ''
-					: 's'} and any attachments not shared with other emails. This action cannot be undone.
+				This moves the selected email{selectedVisibleIds.length === 1 ? '' : 's'} to the Trash, where
+				{selectedVisibleIds.length === 1 ? 'it' : 'they'} can be restored or permanently deleted.
 			</Dialog.Description>
 		</Dialog.Header>
 		<Dialog.Footer class="sm:justify-start">

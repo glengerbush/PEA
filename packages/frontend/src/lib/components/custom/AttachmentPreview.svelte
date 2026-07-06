@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { Button } from '$lib/components/ui/button';
 	import Download from '@lucide/svelte/icons/download';
 	import Eye from '@lucide/svelte/icons/eye';
@@ -15,7 +16,7 @@
 		onQuickLook = undefined,
 		description = null,
 		createdAt = null,
-		modifiedAt = null
+		modifiedAt = null,
 	}: {
 		title: string;
 		sizeBytes?: number | null;
@@ -38,7 +39,7 @@
 			{ label: 'Description', value: description },
 			{ label: 'Type', value: mimeType },
 			{ label: 'File created', value: createdAt },
-			{ label: 'File modified', value: modifiedAt }
+			{ label: 'File modified', value: modifiedAt },
 		].filter((entry): entry is { label: string; value: string } => Boolean(entry.value))
 	);
 
@@ -110,24 +111,33 @@
 			<FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
 			<span class="truncate" {title}>{title}</span>
 			{#if sizeBytes != null}
-				<span class="text-muted-foreground flex-shrink-0 text-xs">{formatBytes(sizeBytes)}</span>
+				<span class="text-muted-foreground flex-shrink-0 text-xs"
+					>{formatBytes(sizeBytes)}</span
+				>
 			{/if}
 		</span>
 		<span class="flex flex-shrink-0 items-center">
 			{#if onQuickLook}
-				<button
-					type="button"
-					class="text-muted-foreground hover:text-foreground flex-shrink-0 rounded p-1"
-					aria-label={`Quick Look ${title}`}
-					title="Quick Look"
-					onclick={(e) => {
-						e.preventDefault();
-						e.stopPropagation();
-						onQuickLook();
-					}}
-				>
-					<Eye class="h-4 w-4" />
-				</button>
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<button
+								{...props}
+								type="button"
+								class="text-muted-foreground hover:text-foreground flex-shrink-0 rounded p-1"
+								aria-label={`Quick Look ${title}`}
+								onclick={(e) => {
+									e.preventDefault();
+									e.stopPropagation();
+									onQuickLook();
+								}}
+							>
+								<Eye class="h-4 w-4" />
+							</button>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content>Quick Look</Tooltip.Content>
+				</Tooltip.Root>
 			{/if}
 			<button
 				type="button"
@@ -168,7 +178,12 @@
 							<Eye class="h-3.5 w-3.5" /> Quick Look
 						</Button>
 					{/if}
-					<Button variant="outline" size="sm" class="gap-1 text-xs" onclick={downloadFile}>
+					<Button
+						variant="outline"
+						size="sm"
+						class="gap-1 text-xs"
+						onclick={downloadFile}
+					>
 						<Download class="h-3.5 w-3.5" /> Download
 					</Button>
 				</span>

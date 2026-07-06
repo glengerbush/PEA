@@ -314,26 +314,68 @@ pub fn trigger_reimport(state: &AppState, conn: &Connection, id: &str) -> Result
 /// be left corrupted (emails listed but bodies gone). Doing the DB work first,
 /// and only removing files once it has succeeded, keeps delete atomic-enough.
 pub fn delete_source(state: &AppState, conn: &Connection, id: &str) -> Result<(), String> {
+    // Verify existence up front (this is the error the endpoint maps to 404) so a
+    // missing id never opens an empty transaction.
+    find_by_id(conn, id)?;
+
+    // One transaction spanning this source AND all its merged children: a
+    // mid-teardown failure (SQLITE_BUSY, I/O error) now rolls the whole thing back
+    // instead of leaving orphaned junction rows or half-deleted children. Files
+    // are removed only after the DB work commits, so the archive is never left
+    // with emails listed but their bytes gone.
+    let mut files: Vec<String> = Vec::new();
+    let mut dirs: Vec<(String, String)> = Vec::new();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    delete_source_rows(conn, id, &mut files, &mut dirs)?;
+    tx.commit().map_err(|e| e.to_string())?;
+
+    // The DB is now consistent; remove the blobs it used to reference.
+    for path in files {
+        if let Ok(file) = state.storage_abs(&path) {
+            std::fs::remove_file(file).ok();
+        }
+    }
+    // Drop each (now-empty) source directory if its name still matches on disk.
+    for (name, sid) in dirs {
+        let dir = state
+            .storage_root()
+            .join(format!("pea/{}-{}/", name.replace(' ', "-"), sid));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+    Ok(())
+}
+
+/// Recursive DB-only teardown for a source and its merged children, run inside
+/// the caller's transaction. Collects the on-disk paths (blob files + source
+/// directories) to remove after that transaction commits.
+fn delete_source_rows(
+    conn: &Connection,
+    id: &str,
+    files: &mut Vec<String>,
+    dirs: &mut Vec<(String, String)>,
+) -> Result<(), String> {
     let source = find_by_id(conn, id)?;
 
     if source.merged_into_id.is_none() {
-        let mut stmt = conn
-            .prepare("SELECT id FROM ingestion_sources WHERE merged_into_id = ?")
-            .map_err(|e| e.to_string())?;
-        let children: Vec<String> = stmt
-            .query_map([id], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(Result::ok)
-            .collect();
+        let children: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM ingestion_sources WHERE merged_into_id = ?")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([id], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok).collect()
+        };
         for child in children {
-            delete_source(state, conn, &child)?;
+            delete_source_rows(conn, &child, files, dirs)?;
         }
     }
 
     // Collect the actual on-disk paths from the DB before deleting the rows, so
     // a source renamed after ingest (which never moves files) can't orphan its
     // blobs — we delete exactly what the DB references, not a name-derived guess.
-    let mut files: Vec<String> = Vec::new();
     let mut collect = |sql: &str| -> Result<(), String> {
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt
@@ -373,18 +415,6 @@ pub fn delete_source(state: &AppState, conn: &Connection, id: &str) -> Result<()
     conn.execute("DELETE FROM ingestion_sources WHERE id = ?", [id])
         .map_err(|e| e.to_string())?;
 
-    // The DB is now consistent; remove the blobs it used to reference.
-    for path in files {
-        if let Ok(file) = state.storage_abs(&path) {
-            std::fs::remove_file(file).ok();
-        }
-    }
-    // Drop the (now-empty) source directory if the name still matches on disk.
-    let dir = state
-        .storage_root()
-        .join(format!("pea/{}-{}/", source.name.replace(' ', "-"), source.id));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).ok();
-    }
+    dirs.push((source.name, source.id));
     Ok(())
 }

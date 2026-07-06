@@ -41,6 +41,9 @@ fn flatten_recipients(raw: Option<&str>) -> Option<Vec<Value>> {
             if let Some(address) = r.get("address") {
                 entry.insert("email".into(), address.clone());
             }
+            // Preserve which field this recipient came from so the detail view
+            // can render separate To / Cc / Bcc lines.
+            entry.insert("kind".into(), json!(key));
             out.push(Value::Object(entry));
         }
     }
@@ -62,7 +65,7 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
         "ingestionSourceId".into(),
         json!(row.get::<_, String>("ingestion_source_id")?),
     );
-    doc.insert("userEmail".into(), json!(row.get::<_, String>("user_email")?));
+    doc.insert("importSource".into(), json!(row.get::<_, String>("import_source")?));
     doc.insert(
         "messageIdHeader".into(),
         json!(row.get::<_, Option<String>>("message_id_header")?),
@@ -87,7 +90,6 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
     doc.insert("sourcePath".into(), json!(row.get::<_, Option<String>>("source_path")?));
     for (js, col) in [
         ("duplicateSubjectHash", "duplicate_subject_hash"),
-        ("duplicateLikelyGroupKey", "duplicate_likely_group_key"),
         ("duplicateBodyHash", "duplicate_body_hash"),
         ("duplicateRecipientFingerprint", "duplicate_recipient_fingerprint"),
         ("duplicateAttachmentFingerprint", "duplicate_attachment_fingerprint"),
@@ -186,7 +188,7 @@ pub async fn email_detail(
         let placeholders = vec!["?"; group_ids.len()].join(", ");
         let sql = format!(
             "SELECT id, subject, sent_at, sender_email, has_attachments FROM archived_emails \
-             WHERE thread_id = ? AND ingestion_source_id IN ({placeholders}) ORDER BY sent_at ASC"
+             WHERE thread_id = ? AND deleted_at IS NULL AND ingestion_source_id IN ({placeholders}) ORDER BY sent_at ASC"
         );
         let mut stmt = conn.prepare(&sql).unwrap();
         let mut params: Vec<String> = vec![thread_id.to_string()];
@@ -256,11 +258,15 @@ pub async fn dashboard_sources(State(app): State<AppState>) -> Json<Value> {
     let conn = app.pool.get().unwrap();
     let mut stmt = conn
         .prepare(
+            // Exclude trashed emails from the per-source counts/storage to match
+            // the mailbox. The filter lives in the LEFT JOIN's ON clause (not a
+            // WHERE) so a source whose only emails are trashed still appears, at 0.
             "SELECT ingestion_sources.id, ingestion_sources.name, ingestion_sources.provider, \
              ingestion_sources.status, sum(archived_emails.size_bytes), \
              count(archived_emails.id) \
              FROM ingestion_sources \
              LEFT JOIN archived_emails ON ingestion_sources.id = archived_emails.ingestion_source_id \
+             AND archived_emails.deleted_at IS NULL \
              GROUP BY ingestion_sources.id",
         )
         .unwrap();

@@ -77,34 +77,54 @@ fn escape_html(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Decodes the handful of HTML entities we care about in a URL/attribute value,
+/// in a SINGLE pass — a '&' produced by decoding one entity is never re-scanned
+/// as the start of another. (The old sequential replace_all double-decoded e.g.
+/// `&amp;#38;` → `&` and `&#38;amp;` → `&`, so the archive and preview could key
+/// the same asset differently.)
 pub fn decode_html_attribute(value: &str) -> String {
-    static AMP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)&amp;").unwrap());
-    static QUOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)&quot;").unwrap());
-    static APOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)&#39;|&apos;").unwrap());
-    static LT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)&lt;").unwrap());
-    static GT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)&gt;").unwrap());
-    static HEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)&#x([0-9a-f]+);").unwrap());
-    static DEC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&#(\d+);").unwrap());
-    let v = AMP.replace_all(value, "&");
-    let v = QUOT.replace_all(&v, "\"");
-    let v = APOS.replace_all(&v, "'");
-    let v = LT.replace_all(&v, "<");
-    let v = GT.replace_all(&v, ">");
-    let v = HEX.replace_all(&v, |c: &regex::Captures| {
-        u32::from_str_radix(&c[1], 16)
-            .ok()
-            .and_then(char::from_u32)
-            .map(String::from)
-            .unwrap_or_default()
-    });
-    let v = DEC.replace_all(&v, |c: &regex::Captures| {
-        c[1].parse::<u32>()
-            .ok()
-            .and_then(char::from_u32)
-            .map(String::from)
-            .unwrap_or_default()
-    });
-    v.into_owned()
+    let mut out = String::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            // Bounded scan for the terminating ';' (longest handled form is
+            // "#x10FFFF"); beyond that, treat '&' as a literal, not an entity.
+            if let Some(rel) = value[i + 1..].find(';').filter(|r| *r <= 12) {
+                if let Some(decoded) = decode_html_entity(&value[i + 1..i + 1 + rel]) {
+                    out.push_str(&decoded);
+                    i += 1 + rel + 1;
+                    continue;
+                }
+            }
+        }
+        // Not an entity — copy one full UTF-8 char.
+        let ch = value[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Decodes a single entity body (the text between `&` and `;`): the named set the
+/// preview supports plus numeric `#NN` / `#xNN`. Returns None for anything else,
+/// so an unrecognised entity is left verbatim.
+fn decode_html_entity(name: &str) -> Option<String> {
+    match name.to_ascii_lowercase().as_str() {
+        "amp" => return Some("&".into()),
+        "quot" => return Some("\"".into()),
+        "apos" => return Some("'".into()),
+        "lt" => return Some("<".into()),
+        "gt" => return Some(">".into()),
+        _ => {}
+    }
+    if let Some(hex) = name.strip_prefix("#x").or_else(|| name.strip_prefix("#X")) {
+        return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32).map(String::from);
+    }
+    if let Some(dec) = name.strip_prefix('#') {
+        return dec.parse::<u32>().ok().and_then(char::from_u32).map(String::from);
+    }
+    None
 }
 
 pub fn to_remote_url(value: &str) -> Option<String> {
@@ -393,8 +413,67 @@ fn is_likely_tracking_pixel(attributes: &HashMap<String, String>) -> bool {
     matches!((width, height), (Some(w), Some(h)) if w <= 2.0 && h <= 2.0)
 }
 
+/// Hosts that exist ONLY to serve tracking / analytics beacons — never real email
+/// images — so ANY URL on them is a tracker. Suffix-matched (exact host or a
+/// subdomain), which keeps false positives at zero for real content. Curated for
+/// the largest analytics/ad-tech providers; add more here as they're identified.
+const TRACKING_HOSTS: [&str; 9] = [
+    "google-analytics.com",  // Google Analytics collection
+    "emltrk.com",            // Litmus email open tracking
+    "2o7.net",               // Adobe Analytics (Omniture)
+    "omtrdc.net",            // Adobe Experience Cloud collection
+    "scorecardresearch.com", // Comscore
+    "quantserve.com",        // Quantcast
+    "px.ads.linkedin.com",   // LinkedIn Insight pixel
+    "track.hubspot.com",     // HubSpot open tracking
+    "analytics.twitter.com", // X / Twitter analytics
+];
+
+/// True when `host` equals `base` or is a subdomain of it (`x.base`).
+fn host_matches(host: &str, base: &str) -> bool {
+    host == base
+        || (host.len() > base.len()
+            && host.ends_with(base)
+            && host.as_bytes()[host.len() - base.len() - 1] == b'.')
+}
+
+/// Amazon storefront host (amazon.<tld>, incl. www./regional subdomains) — NOT the
+/// image CDNs like ssl-images-amazon.com, so "amazon" must be a full domain label.
+fn is_amazon_storefront_host(host: &str) -> bool {
+    static AMAZON: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)(?:^|\.)amazon\.[a-z]{2,}(?:\.[a-z]{2,})?$").unwrap());
+    AMAZON.is_match(host)
+}
+
+/// Domain-gated tracker detection: dedicated whole-host trackers, plus specific
+/// tracking endpoints on hosts that also serve real content (path-gated so a real
+/// image from those providers is never skipped).
+fn is_known_domain_tracker(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else { return false };
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    if TRACKING_HOSTS.iter().any(|base| host_matches(&host, base)) {
+        return true;
+    }
+    let path = parsed.path();
+    // Amazon marketing open-tracker redirect (resolves to a transparent pixel):
+    //   amazon.<tld>/gp/r.html?...&U=<pixel>
+    if is_amazon_storefront_host(&host) && path.eq_ignore_ascii_case("/gp/r.html") {
+        return true;
+    }
+    // Meta (Facebook) tracking pixel: facebook.com/tr
+    if host_matches(&host, "facebook.com")
+        && (path.eq_ignore_ascii_case("/tr") || path.eq_ignore_ascii_case("/tr.php"))
+    {
+        return true;
+    }
+    false
+}
+
 fn is_likely_tracking_url(url: &str) -> bool {
-    TRACKING_URL_PATTERNS.iter().any(|p| p.is_match(url))
+    TRACKING_URL_PATTERNS.iter().any(|p| p.is_match(url)) || is_known_domain_tracker(url)
 }
 
 pub fn is_likely_tracking_url_pub(url: &str) -> bool {
@@ -620,9 +699,16 @@ fn sanitize_email_preview_html(
             let Some(href) = href else { continue };
             let Some(css) = css_by_url.get(&href) else { continue };
             let sheet_rewrite = |raw: &str| -> Option<String> {
-                let absolute = url::Url::parse(&href)
+                // Resolve sub-resource URLs against the stylesheet's FINAL url
+                // (post-redirect), matching the keys archive_stylesheet_subresources
+                // stored them under; fall back to the link href when none recorded.
+                let base = asset_by_url
+                    .get(&href)
+                    .and_then(|a| a.final_url.clone())
+                    .unwrap_or_else(|| href.clone());
+                let absolute = url::Url::parse(&base)
                     .ok()
-                    .and_then(|base| base.join(raw).ok())
+                    .and_then(|b| b.join(raw).ok())
                     .map(|u| u.to_string())
                     .unwrap_or_else(|| raw.to_string());
                 rewrite_image_source(email_id, &absolute, cid_map, &asset_by_url)
@@ -635,8 +721,10 @@ fn sanitize_email_preview_html(
     }
 
     // Pull the email's own <style> blocks out (sanitized) before the HTML pass.
+    // Match to the closing tag OR end of input, so an unclosed <style> block is
+    // still extracted/sanitized instead of leaking its raw CSS as visible text.
     static STYLE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?is)<style\b[^>]*>(.*?)</style\s*>").unwrap());
+        LazyLock::new(|| Regex::new(r"(?is)<style\b[^>]*>(.*?)(?:</style\s*>|$)").unwrap());
     let html_without_style_tags = STYLE.replace_all(html, |c: &regex::Captures| {
         let safe = sanitize_css_text(&c[1], &rewrite_url);
         if !safe.is_empty() {
@@ -999,6 +1087,37 @@ mod tests {
     fn escape_and_decode_html() {
         assert_eq!(escape_html(r#"<a href="x">&'"#), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;");
         assert_eq!(decode_html_attribute("&amp;&lt;&gt;&#65;&#x42;"), "&<>AB");
+        // Single-pass: a '&' produced by decoding must NOT start another entity.
+        assert_eq!(decode_html_attribute("&amp;#38;"), "&#38;");
+        assert_eq!(decode_html_attribute("&#38;amp;"), "&amp;");
+        assert_eq!(decode_html_attribute("&amp;lt;"), "&lt;");
+        // Unrecognised or malformed entities are left verbatim.
+        assert_eq!(decode_html_attribute("a&nbsp;b"), "a&nbsp;b");
+        assert_eq!(decode_html_attribute("100% & more"), "100% & more");
+        assert_eq!(decode_html_attribute("x&y"), "x&y");
+    }
+
+    #[test]
+    fn known_domain_trackers_are_filtered() {
+        // Amazon redirect open-tracker (the reported case) + a regional TLD.
+        assert!(is_likely_tracking_url(
+            "http://www.amazon.com/gp/r.html?R=X&C=Y&H=Z&T=E&U=http%3A%2F%2Fimages.amazon.com%2Fimages%2FG%2F01%2Fnav%2Ftransp.gif"
+        ));
+        assert!(is_likely_tracking_url("https://amazon.co.uk/gp/r.html?U=x"));
+        // Dedicated whole-host trackers.
+        assert!(is_likely_tracking_url("https://www.google-analytics.com/collect?v=1"));
+        assert!(is_likely_tracking_url("https://region1.google-analytics.com/g/collect"));
+        assert!(is_likely_tracking_url("https://sb.scorecardresearch.com/b?c1=2"));
+        assert!(is_likely_tracking_url("https://px.ads.linkedin.com/collect?pid=1"));
+        // Meta pixel (path-gated).
+        assert!(is_likely_tracking_url("https://www.facebook.com/tr?id=123&ev=Open"));
+
+        // NOT filtered: real images, and the tracker path on an unrelated host.
+        assert!(!is_likely_tracking_url("https://images-na.ssl-images-amazon.com/images/I/abc.jpg"));
+        assert!(!is_likely_tracking_url("https://example.com/gp/r.html?U=x"));
+        assert!(!is_likely_tracking_url("https://www.facebook.com/logo.png"));
+        assert!(!is_likely_tracking_url("https://notgoogle-analytics.com/hero.jpg"));
+        assert!(!is_likely_tracking_url("https://cdn.example.com/hero.jpg"));
     }
 
     #[test]

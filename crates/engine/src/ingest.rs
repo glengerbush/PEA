@@ -25,10 +25,12 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 fn now_ms() -> i64 {
+    // Fall back to the epoch rather than panic if the system clock is set before
+    // 1970 — a bogus timestamp is recoverable, an aborted import is not.
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn uuid() -> String {
@@ -62,18 +64,6 @@ fn duplicate_hash(value: &str) -> Option<String> {
     } else {
         Some(sha256_hex(value.as_bytes()))
     }
-}
-
-fn build_likely_group_key(sender_email: &str, subject_hash: &Option<String>) -> Option<String> {
-    let subject_hash = subject_hash.as_ref()?;
-    if sender_email.is_empty() {
-        return None;
-    }
-    duplicate_hash(&format!(
-        "{}|{}",
-        sender_email.trim().to_lowercase(),
-        subject_hash
-    ))
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -399,7 +389,47 @@ pub(crate) fn mailparser_text_and_html(msg: &Message) -> (String, String) {
 }
 
 /// Mbox reader: parse — a clean RFC 5322 buffer to an EmailObj.
-pub(crate) fn parse_message(eml: Vec<u8>, source_path: &str) -> Result<EmailObj, String> {
+/// Metadata Apple Mail keeps in the emlx plist trailer (alongside, not inside,
+/// the RFC-822 message). Used as a fallback when the message itself is missing
+/// headers — some Apple Mail messages are stored headerless/corrupt, but Apple
+/// still recorded the date/subject/sender/to separately.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct EmlxMeta {
+    pub date_sent_ms: Option<i64>,
+    pub subject: Option<String>,
+    pub sender: Option<String>,
+    pub to: Option<String>,
+}
+
+/// Parse a display-form address string ("Name <addr>" or a bare address) into an
+/// EmailAddr, for the emlx-plist sender/to fallback. Returns None if there's no
+/// usable address.
+fn parse_display_address(raw: &str) -> Option<EmailAddr> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let (Some(lt), Some(gt)) = (raw.rfind('<'), raw.rfind('>')) {
+        if lt < gt {
+            let address = raw[lt + 1..gt].trim().to_string();
+            let name = raw[..lt].trim().trim_matches('"').trim().to_string();
+            if !address.is_empty() {
+                let name = if name.is_empty() { address.clone() } else { name };
+                return Some(EmailAddr { name, address });
+            }
+        }
+    }
+    if raw.contains('@') {
+        return Some(EmailAddr { name: raw.to_string(), address: raw.to_string() });
+    }
+    None
+}
+
+pub(crate) fn parse_message(
+    eml: Vec<u8>,
+    source_path: &str,
+    meta: Option<&EmlxMeta>,
+) -> Result<EmailObj, String> {
     let msg = MessageParser::default()
         .parse(&eml)
         .ok_or("unparseable message")?;
@@ -439,12 +469,20 @@ pub(crate) fn parse_message(eml: Vec<u8>, source_path: &str) -> Result<EmailObj,
         .clone()
         .unwrap_or_else(|| format!("generated-{}", sha256_hex(&eml)));
 
+    // When the message has no usable From (e.g. a corrupt/headerless Apple Mail
+    // message), fall back to the emlx plist's sender before the placeholder.
     let mut from = map_addresses(msg.from());
     if from.is_empty() {
-        from.push(EmailAddr {
-            name: "No Sender".into(),
-            address: "No Sender".into(),
-        });
+        from = meta
+            .and_then(|m| m.sender.as_deref())
+            .and_then(parse_display_address)
+            .map(|addr| vec![addr])
+            .unwrap_or_else(|| {
+                vec![EmailAddr {
+                    name: "No Sender".into(),
+                    address: "No Sender".into(),
+                }]
+            });
     }
 
     // Folder from client headers: X-Gmail-Labels → X-Folder → source path.
@@ -467,20 +505,43 @@ pub(crate) fn parse_message(eml: Vec<u8>, source_path: &str) -> Result<EmailObj,
         final_path = folder;
     }
 
+    // Prefer the message's Date header; fall back to the emlx plist's date-sent
+    // (Apple keeps it even when the body has no Date), and only then to now().
     let received_at_ms = msg
         .date()
+        // mail_parser returns Some for a malformed-but-parseable Date (e.g.
+        // "47:99:99" or an out-of-range year) without validating it; skip those
+        // so we fall back to the emlx date / now() instead of a bogus sent time.
+        .filter(|d| d.is_valid())
         .map(|d| d.to_timestamp() * 1000)
+        .or_else(|| meta.and_then(|m| m.date_sent_ms))
         .unwrap_or_else(now_ms);
+
+    // Recipients / subject: same plist fallback when the message omits them.
+    let mut to = map_addresses(msg.to());
+    if to.is_empty() {
+        if let Some(addr) = meta.and_then(|m| m.to.as_deref()).and_then(parse_display_address) {
+            to.push(addr);
+        }
+    }
+    let subject = {
+        let s = msg.subject().unwrap_or("").trim().to_string();
+        if s.is_empty() {
+            meta.and_then(|m| m.subject.clone()).unwrap_or_default()
+        } else {
+            s
+        }
+    };
 
     Ok(EmailObj {
         id: message_id,
         header_message_id,
         thread_id,
-        to: map_addresses(msg.to()),
+        to,
         cc: map_addresses(msg.cc()),
         bcc: map_addresses(msg.bcc()),
         from,
-        subject: msg.subject().unwrap_or("").to_string(),
+        subject,
         body: text,
         html,
         attachments,
@@ -716,10 +777,18 @@ fn extract_text(buffer: &[u8], mime_type: &str) -> String {
         .unwrap_or_default();
     }
     if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
-        return extract_docx_text(buffer).unwrap_or_default();
+        // calamine/quick_xml/zip can PANIC (not just Err) on a malformed Office
+        // file — isolate it like PDF so one bad attachment can't abort the import.
+        return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            extract_docx_text(buffer).unwrap_or_default()
+        }))
+        .unwrap_or_default();
     }
     if mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
-        return extract_xlsx_text(buffer).unwrap_or_default();
+        return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            extract_xlsx_text(buffer).unwrap_or_default()
+        }))
+        .unwrap_or_default();
     }
     if mime_type.starts_with("text/")
         || mime_type == "application/json"
@@ -751,7 +820,13 @@ fn extract_docx_text(buffer: &[u8]) -> Option<String> {
                 }
             }
             Ok(quick_xml::events::Event::Text(t)) if in_text => {
-                out.push_str(&t.unescape().unwrap_or_default());
+                // quick-xml 0.41 split decode + unescape into separate steps.
+                if let Ok(decoded) = t.decode() {
+                    match quick_xml::escape::unescape(&decoded) {
+                        Ok(s) => out.push_str(&s),
+                        Err(_) => out.push_str(&decoded),
+                    }
+                }
             }
             Ok(quick_xml::events::Event::Eof) | Err(_) => break,
             _ => {}
@@ -837,7 +912,7 @@ pub(crate) fn process_email(
     group_ids: &[String],
     effective: &crate::sources::SourceRow,
     email: &EmailObj,
-    user_email: &str,
+    import_source: &str,
 ) -> Result<Option<String>, String> {
     // Node: header value if present, else generated-<sha(raw)>-<sourceId>-<email.id>.
     let message_id = &email.header_message_id.clone().unwrap_or_else(|| {
@@ -903,7 +978,6 @@ pub(crate) fn process_email(
     }
     let sender_email = email.from.first().map(|a| a.address.clone()).unwrap_or_default();
     let duplicate_subject_hash = duplicate_hash(&normalize_duplicate_text(&email.subject));
-    let duplicate_likely_group_key = build_likely_group_key(&sender_email, &duplicate_subject_hash);
     let body_or_html = if !email.body.is_empty() { &email.body } else { &email.html };
     let duplicate_body_hash = duplicate_hash(&normalize_duplicate_text(body_or_html));
     let mut recipient_addresses: Vec<String> = email
@@ -960,19 +1034,26 @@ pub(crate) fn process_email(
     });
 
     let archived_id = uuid();
+    // The row and its attachments are one unit. Without this transaction, a
+    // failure while writing an attachment blob below (e.g. disk-full — the most
+    // likely failure point on a large import) would leave a committed
+    // has_attachments=true row whose blob was never written, and re-import's
+    // message-id dedup would skip it forever → permanent silent attachment loss.
+    // On any error the transaction rolls back, so re-import re-processes and heals.
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     conn
         .execute(
-            "INSERT INTO archived_emails (id, ingestion_source_id, user_email, thread_id, \
+            "INSERT INTO archived_emails (id, ingestion_source_id, import_source, thread_id, \
              message_id_header, provider_message_id, sent_at, subject, sender_name, sender_email, \
              recipients, storage_path, storage_hash_sha256, size_bytes, has_attachments, \
-             source_path, duplicate_subject_hash, duplicate_likely_group_key, \
+             source_path, duplicate_subject_hash, \
              duplicate_body_hash, duplicate_recipient_fingerprint, duplicate_attachment_fingerprint, \
              tags) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rusqlite::params![
                 archived_id,
                 effective.id,
-                user_email,
+                import_source,
                 email.thread_id,
                 message_id,
                 email.id,
@@ -987,7 +1068,6 @@ pub(crate) fn process_email(
                 !email.attachments.is_empty(),
                 source_path,
                 duplicate_subject_hash,
-                duplicate_likely_group_key,
                 duplicate_body_hash,
                 duplicate_recipient_fingerprint,
                 Option::<String>::None,
@@ -1069,6 +1149,7 @@ pub(crate) fn process_email(
             .map_err(|e| e.to_string())?;
     }
 
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(Some(archived_id))
 }
 
@@ -1080,14 +1161,14 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
         sender_name: Option<String>,
         recipients: Option<String>,
         storage_path: String,
-        user_email: String,
+        import_source: String,
         source_path: Option<String>,
         tags: Option<String>,
         has_attachments: bool,
     }
     let row = conn
         .query_row(
-            "SELECT subject, sender_email, sender_name, recipients, storage_path, user_email, \
+            "SELECT subject, sender_email, sender_name, recipients, storage_path, import_source, \
              source_path, tags, has_attachments \
              FROM archived_emails WHERE id = ?",
             [email_id],
@@ -1098,7 +1179,7 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
                     sender_name: r.get(2)?,
                     recipients: r.get(3)?,
                     storage_path: r.get(4)?,
-                    user_email: r.get(5)?,
+                    import_source: r.get(5)?,
                     source_path: r.get(6)?,
                     tags: r.get(7)?,
                     has_attachments: r.get::<_, i64>(8)? != 0,
@@ -1197,7 +1278,7 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
         .collect::<Vec<_>>()
         .join("\n");
     let source_path_value = row.source_path.clone().unwrap_or_default();
-    let mut meta_parts: Vec<String> = vec![sanitize_text(&row.user_email), sanitize_text(&source_path_value)];
+    let mut meta_parts: Vec<String> = vec![sanitize_text(&row.import_source), sanitize_text(&source_path_value)];
     meta_parts.extend(tags.iter().map(|t| sanitize_text(t)));
     let meta = meta_parts.join(" ");
 
@@ -1244,14 +1325,10 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_hash_and_likely_key() {
+    fn duplicate_hash_basics() {
         assert!(duplicate_hash("").is_none());
         assert_eq!(duplicate_hash("x"), duplicate_hash("x"));
         assert!(duplicate_hash("x") != duplicate_hash("y"));
-        let h = duplicate_hash("subj");
-        assert!(build_likely_group_key("", &h).is_none()); // no sender
-        assert!(build_likely_group_key("a@x.com", &None).is_none()); // no subject
-        assert!(build_likely_group_key("a@x.com", &h).is_some());
     }
 
     #[test]

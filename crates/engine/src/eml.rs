@@ -14,8 +14,8 @@ fn display_name(provider_config: &Value) -> String {
     format!("eml-import-{}", crate::search::now_ms())
 }
 
-pub fn eml_user_email(provider_config: &Value) -> String {
-    format!("{}@eml.local", display_name(provider_config).replace(' ', ".").to_lowercase())
+pub fn eml_import_source(provider_config: &Value) -> String {
+    display_name(provider_config)
 }
 
 /// testConnection — validates the local zip path.
@@ -44,7 +44,12 @@ pub fn for_each_email(
     for i in 0..zip.len() {
         let mut entry = match zip.by_index(i) {
             Ok(e) => e,
-            Err(_) => continue,
+            // A corrupt/encrypted/unsupported member is skipped — but log it so an
+            // email silently vanishing from the import is visible, not swallowed.
+            Err(e) => {
+                eprintln!("[eml] skipped unreadable zip entry #{i}: {e}");
+                continue;
+            }
         };
         let name = entry.name().to_string();
         if name.starts_with("__MACOSX/") || name.ends_with('/') {
@@ -54,7 +59,8 @@ pub fn for_each_email(
             continue;
         }
         let mut contents = Vec::new();
-        if entry.read_to_end(&mut contents).is_err() {
+        if let Err(e) = entry.read_to_end(&mut contents) {
+            eprintln!("[eml] failed to read zip entry {name}: {e}");
             continue;
         }
         // dirname(fileName), '' when at the zip root.
@@ -62,7 +68,7 @@ pub fn for_each_email(
             Some(pos) => name[..pos].to_string(),
             None => String::new(),
         };
-        match parse_message(contents, &relative) {
+        match parse_message(contents, &relative, None) {
             Ok(email) => handle(email),
             Err(e) => eprintln!("[eml] failed to parse {name}: {e}"),
         }
@@ -83,8 +89,8 @@ mod tests {
     }
 
     #[test]
-    fn eml_user_email_normalizes() {
-        assert_eq!(eml_user_email(&json!({"localFilePath":"/x/My Mail.zip"})), "my.mail@eml.local");
+    fn eml_import_source_uses_display_name() {
+        assert_eq!(eml_import_source(&json!({"localFilePath":"/x/My Mail.zip"})), "My Mail");
     }
 
     #[test]

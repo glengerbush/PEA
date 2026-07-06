@@ -67,9 +67,11 @@ async fn exact_duplicates_list_and_approve() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn likely_duplicates_listed_and_approved_live() {
+async fn body_only_match_is_not_an_exact_group() {
     let a = TempArchive::new();
-    // two same-sender / same-subject emails share a likely-duplicate group key
+    // Same body but different Message-ID and different recipients: message body is
+    // a weak signal (deduped-attachment-style false positives), so it must never
+    // form a group on its own — no strong signal is shared here.
     a.import_mbox_str(&format!(
         "{}{}",
         mbox_msg("<fz1@x>", "Alice <alice@x.com>", "b@x.com", "Weekly Meeting", &[], "identical agenda body"),
@@ -77,64 +79,97 @@ async fn likely_duplicates_listed_and_approved_live() {
     ));
     let app = a.router();
 
-    // No scan step: the listing is computed live from archived_emails.
-    let (s, groups) = get_json(&app, "/api/v1/archived-emails/duplicates/likely").await;
+    let (s, groups) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
     assert_eq!(s, StatusCode::OK);
-    let total = groups["totalGroups"].as_i64().unwrap();
-    assert!(total >= 1, "identical sender+subject should surface a likely group");
-    assert_eq!(groups["groups"].as_array().unwrap().len() as i64, total.min(25));
-
-    let group = &groups["groups"][0];
-    let gkey = group["groupKey"].as_str().unwrap().to_string();
-    let keeper = group["keeperEmailId"].as_str().unwrap().to_string();
-    let dups: Vec<String> = group["emails"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e["id"].as_str().unwrap().to_string())
-        .filter(|id| *id != keeper)
-        .collect();
-    assert!(!dups.is_empty());
-
-    // approve keyed by groupKey: deletes the duplicates, keeper remains
-    let (s, ares) = post_json(
-        &app,
-        "/api/v1/archived-emails/duplicates/likely/approve",
-        json!({"groups":[{"groupKey": gkey, "keeperEmailId": keeper, "duplicateEmailIds": dups}]}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(ares["deletedEmails"].as_i64().unwrap(), dups.len() as i64);
-
-    // group self-resolves out of the live listing (only the keeper is left)
-    let (_, after) = get_json(&app, "/api/v1/archived-emails/duplicates/likely").await;
-    assert_eq!(after["totalGroups"].as_i64().unwrap(), 0);
+    assert_eq!(groups["totalGroups"].as_i64().unwrap(), 0, "body alone must not group");
+    assert_eq!(groups["reasonCounts"]["message_body"].as_i64().unwrap(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn likely_duplicate_ignore_hides_group() {
+async fn exact_duplicate_ignore_hides_group() {
     let a = TempArchive::new();
-    a.import_mbox_str(&format!(
-        "{}{}",
-        mbox_msg("<ig1@x>", "Bob <bob@x.com>", "b@x.com", "Status Report", &[], "same body text"),
-        mbox_msg("<ig2@x>", "Bob <bob@x.com>", "c@x.com", "Status Report", &[], "same body text"),
-    ));
+    // Same Message-ID imported twice → one exact-duplicate group.
+    let email = mbox_msg("<ig@x>", "Bob <bob@x.com>", "b@x.com", "Status Report", &[], "same body text");
+    a.import_mbox_str(&email);
+    a.import_mbox_str(&email);
     let app = a.router();
 
-    let (_, groups) = get_json(&app, "/api/v1/archived-emails/duplicates/likely").await;
+    let (_, groups) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
+    assert_eq!(groups["totalGroups"].as_i64().unwrap(), 1);
     let gkey = groups["groups"][0]["groupKey"].as_str().unwrap().to_string();
 
     // empty ignore is a well-formed no-op
-    let (s, res) = post_json(&app, "/api/v1/archived-emails/duplicates/likely/ignore", json!({ "groupKeys": [] })).await;
+    let (s, res) = post_json(&app, "/api/v1/archived-emails/duplicates/exact/ignore", json!({ "groupKeys": [] })).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["ignoredGroups"].as_i64().unwrap(), 0);
 
-    // ignoring the key records it and drops the group from the live listing
-    let (s, res) = post_json(&app, "/api/v1/archived-emails/duplicates/likely/ignore", json!({ "groupKeys": [gkey] })).await;
+    // ignoring the key records it and drops the group from the listing
+    let (s, res) = post_json(&app, "/api/v1/archived-emails/duplicates/exact/ignore", json!({ "groupKeys": [gkey] })).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["ignoredGroups"].as_i64().unwrap(), 1);
-    let (_, after) = get_json(&app, "/api/v1/archived-emails/duplicates/likely").await;
+    let (_, after) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
     assert_eq!(after["totalGroups"].as_i64().unwrap(), 0, "ignored group is hidden");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_trashes_and_restore_brings_back() {
+    let a = TempArchive::new();
+    a.import_mbox_str(&simple_mbox("Trashable", "body"));
+    let app = a.router();
+    let id = { let (_, b) = get_json(&app, "/api/v1/archived-emails").await; b["hits"][0]["id"].as_str().unwrap().to_string() };
+
+    // delete → soft delete: gone from the default list, present in the trash view
+    let (s, _) = send(&app, "DELETE", &format!("/api/v1/archived-emails/{id}"), None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, list) = get_json(&app, "/api/v1/archived-emails").await;
+    assert_eq!(list["total"], json!(0), "hidden from the default list");
+    let (_, trash) = get_json(&app, "/api/v1/archived-emails?trashed=true").await;
+    assert_eq!(trash["total"], json!(1), "shown in the trash");
+
+    // restore → back in the default list
+    let (s, res) = post_json(&app, "/api/v1/archived-emails/trash/restore", json!({"emailIds":[id]})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(res["restoredCount"], json!(1));
+    let (_, list) = get_json(&app, "/api/v1/archived-emails").await;
+    assert_eq!(list["total"], json!(1), "restored to the list");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_trash_preserves_attachment_shared_with_remaining_email() {
+    let a = TempArchive::new();
+    let mime = r#"Content-Type: multipart/mixed; boundary="B""#;
+    let parts = "--B\nContent-Type: text/plain\n\nbody\n\
+        --B\nContent-Type: text/plain; name=\"shared.txt\"\nContent-Disposition: attachment; filename=\"shared.txt\"\n\nSHAREDDATA\n--B--\n";
+    // Two messages in the SAME source carrying the identical attachment → one
+    // deduped `attachments` row referenced by both emails.
+    a.import_mbox_str(&format!(
+        "{}{}",
+        mbox_msg("<m1@x>", "Alice <a@x.com>", "b@x.com", "One", &[mime], parts),
+        mbox_msg("<m2@x>", "Alice <a@x.com>", "b@x.com", "Two", &[mime], parts),
+    ));
+    let app = a.router();
+
+    let (_, all) = get_json(&app, "/api/v1/archived-emails").await;
+    assert_eq!(all["total"], json!(2), "both archived");
+    let ids: Vec<String> = all["hits"].as_array().unwrap().iter()
+        .map(|h| h["id"].as_str().unwrap().to_string()).collect();
+    let att_count = || a.with_conn(|c| c.query_row("SELECT count(*) FROM attachments", [], |r| r.get::<_, i64>(0)).unwrap());
+    assert_eq!(att_count(), 1, "attachment deduped to one row");
+
+    // Trash the first, empty the trash → attachment survives (still used by the second).
+    let (s, _) = send(&app, "DELETE", &format!("/api/v1/archived-emails/{}", ids[0]), None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, res) = post_json(&app, "/api/v1/archived-emails/trash/empty", json!({})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(res["deletedCount"], json!(1));
+    assert_eq!(att_count(), 1, "shared attachment preserved while another email uses it");
+
+    // Trash the second, empty the trash → nothing references it now, so it's GC'd.
+    let (s, _) = send(&app, "DELETE", &format!("/api/v1/archived-emails/{}", ids[1]), None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = post_json(&app, "/api/v1/archived-emails/trash/empty", json!({})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(att_count(), 0, "attachment removed once no email references it");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -225,8 +260,6 @@ async fn writes_edge_cases() {
     let (s, res) = post_json(&app, "/api/v1/archived-emails/duplicates/exact/approve", json!({ "groups": [] })).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["approvedGroups"], json!(0));
-    let (s, _) = post_json(&app, "/api/v1/archived-emails/duplicates/likely/approve", json!({ "groups": [] })).await;
-    assert_eq!(s, StatusCode::OK);
     // an unsupported contacts format is rejected
     let (s, _) = post_json(&app, "/api/v1/contacts/import", json!({ "format": "xml", "content": "x" })).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -273,7 +306,7 @@ async fn search_sort_and_filter_variations() {
         "to=x@y.com",
         "cc=x@y.com",
         "bcc=x@y.com",
-        "userEmail=x@y.com",
+        "importSource=MyMail",
         "sourcePath=Inbox",
         "attachmentExt=pdf,txt",
         "hasAttachments=true",

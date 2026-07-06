@@ -34,11 +34,18 @@ async fn facets(State(app): State<AppState>) -> Json<Value> {
 
 async fn dashboard_stats(State(app): State<AppState>) -> Json<Value> {
     let conn = app.pool.get().unwrap();
+    // Trashed emails are excluded everywhere the user sees the archive (mailbox
+    // list, facets, top senders), so the dashboard totals must match — otherwise
+    // trashing emails never moves these numbers.
     let total_emails: i64 = conn
-        .query_row("SELECT count(*) FROM archived_emails", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM archived_emails WHERE deleted_at IS NULL", [], |r| r.get(0))
         .unwrap_or(0);
     let total_storage: i64 = conn
-        .query_row("SELECT COALESCE(sum(size_bytes), 0) FROM archived_emails", [], |r| r.get(0))
+        .query_row(
+            "SELECT COALESCE(sum(size_bytes), 0) FROM archived_emails WHERE deleted_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     let seven_days_ago = search::now_ms() - 7 * 24 * 3600 * 1000;
     let failed7: i64 = conn
@@ -51,7 +58,8 @@ async fn dashboard_stats(State(app): State<AppState>) -> Json<Value> {
     let (rc_failed, rc_partial): (i64, i64) = conn
         .query_row(
             "SELECT count(*) FILTER (WHERE remote_content_status = 'failed'), \
-             count(*) FILTER (WHERE remote_content_status = 'partial') FROM archived_emails",
+             count(*) FILTER (WHERE remote_content_status = 'partial') FROM archived_emails \
+             WHERE deleted_at IS NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -71,7 +79,8 @@ async fn dashboard_history(State(app): State<AppState>) -> Json<Value> {
     let mut stmt = conn
         .prepare(
             "SELECT date(archived_at / 1000, 'unixepoch') AS d, count(*) AS c \
-             FROM archived_emails WHERE archived_at >= ? GROUP BY d ORDER BY d",
+             FROM archived_emails WHERE archived_at >= ? AND deleted_at IS NULL \
+             GROUP BY d ORDER BY d",
         )
         .unwrap();
     let history: Vec<Value> = stmt
@@ -98,6 +107,7 @@ async fn settings_system(State(app): State<AppState>) -> Json<Value> {
         "theme": "system",
         "timeZone": Value::Null,
         "clockFormat": "12h",
+        "dateFormat": "system",
         "autoCheckUpdates": true,
     });
     let config: Option<String> = conn
@@ -232,18 +242,6 @@ async fn duplicates_exact(
     ))
 }
 
-async fn duplicates_likely(
-    State(app): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Json<Value> {
-    let conn = app.pool.get().unwrap();
-    Json(duplicates::list_likely_duplicates(
-        &conn,
-        params.get("page").map(String::as_str),
-        params.get("limit").map(String::as_str),
-    ))
-}
-
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
         // Express (non-strict routing) matched both forms; the mailbox page
@@ -252,15 +250,16 @@ pub fn router(state: AppState) -> Router {
         .route("/archived-emails/", get(archived_emails))
         .route("/archived-emails/facets", get(facets))
         .route("/archived-emails/duplicates/exact", get(duplicates_exact))
-        .route("/archived-emails/duplicates/likely", get(duplicates_likely))
         .route(
             "/archived-emails/duplicates/exact/approve",
             post(writes::approve_exact_duplicates),
         )
-        .route("/archived-emails/duplicates/likely/approve", post(writes::approve_likely))
-        .route("/archived-emails/duplicates/likely/ignore", post(writes::ignore_likely))
+        .route("/archived-emails/duplicates/exact/ignore", post(writes::ignore_exact))
         .route("/archived-emails/bulk/tags", post(writes::update_tags))
         .route("/archived-emails/bulk/delete", post(writes::bulk_delete))
+        .route("/archived-emails/trash/restore", post(writes::restore_emails))
+        .route("/archived-emails/trash/delete", post(writes::permanent_delete_emails))
+        .route("/archived-emails/trash/empty", post(writes::empty_trash))
         .route(
             "/archived-emails/{id}",
             get(handlers::email_detail).delete(writes::delete_email),
@@ -287,6 +286,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/archived-emails/{id}/remote-assets/{assetId}",
             get(preview::get_remote_asset),
+        )
+        .route(
+            "/archived-emails/{id}/remote-assets/{assetId}/retry",
+            post(writes::retry_remote_asset),
         )
         .route("/dashboard/stats", get(dashboard_stats))
         .route("/dashboard/ingestion-history", get(dashboard_history))

@@ -29,7 +29,7 @@ const SEARCH_FIELDS = new Set<ArchiveSearchField>([
 	'bcc',
 	'attachments.filename',
 	'attachments.content',
-	'userEmail',
+	'importSource',
 	'sourcePath',
 	'tags',
 ]);

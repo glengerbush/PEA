@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageData } from './$types';
-	import { Button } from '$lib/components/ui/button';
+	import { Button, buttonVariants } from '$lib/components/ui/button';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Card from '$lib/components/ui/card';
 	import EmailPreview from '$lib/components/custom/EmailPreview.svelte';
 	import TagCombobox from '$lib/components/custom/TagCombobox.svelte';
@@ -24,7 +25,8 @@
 	import AlertCircle from '@lucide/svelte/icons/alert-circle';
 	import Shield from '@lucide/svelte/icons/shield';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
-	import Archive from '@lucide/svelte/icons/archive';
+	import RotateCw from '@lucide/svelte/icons/rotate-cw';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import Download from '@lucide/svelte/icons/download';
 	import Reply from '@lucide/svelte/icons/reply';
@@ -32,6 +34,7 @@
 	import X from '@lucide/svelte/icons/x';
 	import { get } from 'svelte/store';
 	import { lastMailboxListUrl } from '$lib/stores/mailbox-nav';
+	import { disableTwoFingerSwipe } from '$lib/stores/swipe.store';
 	import { page } from '$app/state';
 	import { enhance } from '$app/forms';
 	import type {
@@ -46,10 +49,15 @@
 	let { data }: { data: PageData } = $props();
 	let email = $derived(data.email);
 
-	/** Return to the previous mailbox list view (preserving its search/filter/page
-	 *  query), falling back to the mailbox root if it was opened directly. */
+	/** Where "back" should go: the explicit origin passed in `?from=` (e.g. the
+	 *  duplicates page with its filters/page), else the last mailbox list view,
+	 *  else the mailbox root when the email was opened directly. */
+	function backTarget(): string {
+		return page.url.searchParams.get('from') || get(lastMailboxListUrl) || '/mailbox';
+	}
+
 	function goBack() {
-		goto(get(lastMailboxListUrl) ?? '/mailbox');
+		goto(backTarget());
 	}
 
 	/** "Name <email>" when a name (contact or header) is known, else the bare address. */
@@ -59,6 +67,16 @@
 		return name && name.toLowerCase() !== email.toLowerCase() ? `${name} <${email}>` : email;
 	}
 
+	function formatRecipients(list: { email: string; name?: string }[]): string {
+		return list.map((r) => identityLabel(r.email, r.name)).join(', ');
+	}
+
+	// Recipients split by header, so the view can show separate To/Cc/Bcc lines.
+	// `kind` is optional for older records — treat a missing kind as "to".
+	let toRecipients = $derived((email?.recipients ?? []).filter((r) => (r.kind ?? 'to') === 'to'));
+	let ccRecipients = $derived((email?.recipients ?? []).filter((r) => r.kind === 'cc'));
+	let bccRecipients = $derived((email?.recipients ?? []).filter((r) => r.kind === 'bcc'));
+
 	// --- Tag editing (add/remove on this single email) ---
 	let localTags = $state<string[]>([]);
 	$effect(() => {
@@ -66,9 +84,7 @@
 	});
 	let isUpdatingTags = $state(false);
 	// Existing tags across the archive, minus the ones already on this email.
-	let tagSuggestions = $derived(
-		(data.allTags ?? []).filter((t) => !localTags.includes(t))
-	);
+	let tagSuggestions = $derived((data.allTags ?? []).filter((t) => !localTags.includes(t)));
 
 	async function applyTagChange(addTags: string[], removeTags: string[]) {
 		if (!email) return;
@@ -85,7 +101,9 @@
 			}
 			const result = body as UpdateArchivedEmailTagsResult;
 			const updated = result.emails.find((e) => e.id === emailId);
-			if (updated) localTags = updated.tags;
+			// Ignore a response that resolved after the user navigated to another
+			// email — otherwise the previous email's tags render under the new one.
+			if (updated && email?.id === emailId) localTags = updated.tags;
 		} catch (error) {
 			setAlert({
 				type: 'error',
@@ -110,6 +128,7 @@
 	}
 
 	let isDeleteDialogOpen = $state(false);
+	let metadataOpen = $state(false);
 	let isDeleting = $state(false);
 	let isQueueingRemoteContent = $state(false);
 	let remoteContentQueued = $state(false);
@@ -202,10 +221,41 @@
 		void loadRemoteAssets(id);
 	});
 
+	// Retry a single failed/blocked remote asset without touching the others.
+	let retryingAssetId = $state<string | null>(null);
+	async function retryAsset(assetId: string) {
+		const id = email?.id;
+		if (!id) return;
+		retryingAssetId = assetId;
+		try {
+			const response = await api(`/archived-emails/${id}/remote-assets/${assetId}/retry`, {
+				method: 'POST'
+			});
+			if (!response.ok) throw new Error('Retry failed');
+			// Reflect the new status and refresh the preview in case it now renders.
+			if (email?.id === id) {
+				await loadRemoteAssets(id);
+				remoteContentRefreshKey += 1;
+			}
+		} catch (error) {
+			setAlert({
+				type: 'error',
+				title: 'Retry failed',
+				message: error instanceof Error ? error.message : 'Could not retry this item',
+				duration: 5000,
+				show: true
+			});
+		} finally {
+			retryingAssetId = null;
+		}
+	}
+
 	async function loadRemoteAssets(id: string): Promise<void> {
 		try {
 			const response = await api(`/archived-emails/${id}/remote-assets`);
-			const assets = response.ok ? ((await response.json()) as RemoteContentAssetSummary[]) : [];
+			const assets = response.ok
+				? ((await response.json()) as RemoteContentAssetSummary[])
+				: [];
 			// Ignore a response that resolved after the user navigated away, or
 			// it would show email A's assets under email B (and 404 on click).
 			if (email?.id !== id) return;
@@ -243,8 +293,6 @@
 			return asset.originalUrl;
 		}
 	}
-
-
 
 	async function download(path: string, filename: string) {
 		if (!browser) return;
@@ -514,20 +562,28 @@
 		}
 	}
 
-	// --- Two-finger (horizontal) swipe returns to the mailbox list ---
+	// --- Two-finger (horizontal) swipe returns to the previous screen ---
 	let swipeAccum = 0;
 	let swipeResetTimer: ReturnType<typeof setTimeout> | null = null;
 	let swipeCooldownUntil = 0;
+	/** 0→1 progress toward the swipe threshold, drives the on-screen affordance. */
+	let swipeProgress = $state(0);
 	function handleWheel(event: WheelEvent) {
+		if (get(disableTwoFingerSwipe)) return;
 		// Only count clearly-horizontal movement so vertical scrolling never triggers.
 		if (Math.abs(event.deltaX) <= Math.abs(event.deltaY) * 1.5) return;
 		const now = Date.now();
 		if (now < swipeCooldownUntil) return;
 		swipeAccum += event.deltaX;
+		swipeProgress = Math.min(1, Math.abs(swipeAccum) / 300);
 		if (swipeResetTimer) clearTimeout(swipeResetTimer);
-		swipeResetTimer = setTimeout(() => (swipeAccum = 0), 400);
+		swipeResetTimer = setTimeout(() => {
+			swipeAccum = 0;
+			swipeProgress = 0;
+		}, 400);
 		if (Math.abs(swipeAccum) >= 300) {
 			swipeAccum = 0;
+			swipeProgress = 0;
 			swipeCooldownUntil = now + 1000;
 			goBack();
 		}
@@ -553,7 +609,7 @@
 				});
 				return;
 			}
-			await goto('/mailbox', { invalidateAll: true });
+			await goto(backTarget(), { invalidateAll: true });
 		} catch (error) {
 			console.error('Delete failed:', error);
 		} finally {
@@ -702,6 +758,23 @@
 
 <svelte:window onwheel={handleWheel} />
 
+<!-- Two-finger swipe affordance: a back indicator that slides in and fills as
+     the gesture approaches the threshold, then completes into the navigation. -->
+{#if swipeProgress > 0}
+	<div
+		class="pointer-events-none fixed top-1/2 left-2 z-50"
+		style="opacity:{swipeProgress}; transform: translate({-44 + swipeProgress * 44}px, -50%);"
+		aria-hidden="true"
+	>
+		<div
+			class="bg-primary/90 text-primary-foreground flex h-12 w-12 items-center justify-center rounded-full shadow-lg backdrop-blur"
+			style="transform: scale({0.7 + swipeProgress * 0.3});"
+		>
+			<ArrowLeft class="h-6 w-6" />
+		</div>
+	</div>
+{/if}
+
 {#if email}
 	<div class="mb-4">
 		<Button variant="ghost" size="sm" class="gap-2" onclick={goBack}>
@@ -711,39 +784,76 @@
 	</div>
 	<div class="grid grid-cols-3 gap-6">
 		<div class="col-span-3 md:col-span-2">
-			<Card.Root>
-				<Card.Header>
-					<div class="flex flex-wrap items-start justify-between gap-4">
-						<div class="min-w-0 space-y-1.5">
+			<Card.Root class="gap-1.5">
+				<Card.Header class="relative">
+					<div class="flex flex-col-reverse gap-4 sm:block">
+						<div class="min-w-0 space-y-1.5 sm:pr-40">
+							<p class="text-sm">
+								<span class="font-semibold">{$t('app.archive.from')}:</span>
+								<span class="text-muted-foreground"
+									>{identityLabel(email.senderEmail, email.senderName)}</span
+								>
+							</p>
 							<Card.Title>{email.subject || $t('app.archive.no_subject')}</Card.Title>
-							<Card.Description>
-								{$t('app.archive.from')}: {identityLabel(
-									email.senderEmail,
-									email.senderName
-								)} | {$t('app.archive.sent')}: {formatDateTime(email.sentAt)}
-							</Card.Description>
+							<p class="text-sm">
+								<span class="font-semibold">{$t('app.archive.to')}:</span>
+								<span class="text-muted-foreground"
+									>{formatRecipients(toRecipients)}</span
+								>
+							</p>
+							{#if ccRecipients.length > 0}
+								<p class="text-sm">
+									<span class="font-semibold">Cc:</span>
+									<span class="text-muted-foreground"
+										>{formatRecipients(ccRecipients)}</span
+									>
+								</p>
+							{/if}
+							{#if bccRecipients.length > 0}
+								<p class="text-sm">
+									<span class="font-semibold">Bcc:</span>
+									<span class="text-muted-foreground"
+										>{formatRecipients(bccRecipients)}</span
+									>
+								</p>
+							{/if}
+							<p class="text-muted-foreground text-xs">
+								{$t('app.archive.sent')}: {formatDateTime(email.sentAt)}
+							</p>
 						</div>
-						<div class="flex flex-shrink-0 flex-col items-stretch gap-2">
+						<div
+							class="flex flex-col items-stretch gap-2 sm:absolute sm:right-6 sm:top-0 sm:w-32"
+						>
 							<div class="flex gap-2">
-								<Button
-									size="sm"
-									class="flex-1"
-									title={$t('app.archive.download_eml')}
-									aria-label={$t('app.archive.download_eml')}
-									onclick={downloadEml}
-								>
-									<Download class="h-4 w-4" />
-								</Button>
-								<Button
-									variant="destructive"
-									size="sm"
-									class="flex-1"
-									title={$t('app.archive.delete_email')}
-									aria-label={$t('app.archive.delete_email')}
-									onclick={() => (isDeleteDialogOpen = true)}
-								>
-									<Trash2 class="h-4 w-4" />
-								</Button>
+								<Tooltip.Root>
+									<Tooltip.Trigger
+										type="button"
+										class="{buttonVariants({ size: 'sm' })} flex-1"
+										aria-label={$t('app.archive.download_eml')}
+										onclick={downloadEml}
+									>
+										<Download class="h-4 w-4" />
+									</Tooltip.Trigger>
+									<Tooltip.Content
+										>{$t('app.archive.download_eml')}</Tooltip.Content
+									>
+								</Tooltip.Root>
+								<Tooltip.Root>
+									<Tooltip.Trigger
+										type="button"
+										class="{buttonVariants({
+											variant: 'destructive',
+											size: 'sm',
+										})} flex-1"
+										aria-label={$t('app.archive.delete_email')}
+										onclick={() => (isDeleteDialogOpen = true)}
+									>
+										<Trash2 class="h-4 w-4" />
+									</Tooltip.Trigger>
+									<Tooltip.Content
+										>{$t('app.archive.delete_email')}</Tooltip.Content
+									>
+								</Tooltip.Root>
 							</div>
 							<Button
 								variant="outline"
@@ -769,90 +879,30 @@
 				</Card.Header>
 				<Card.Content>
 					<div class="space-y-4">
-						<div class="space-y-1">
-							<h3 class="font-semibold">{$t('app.archive.recipients')}</h3>
-							<p class="text-muted-foreground text-sm">
-								{$t('app.archive.to')}: {email.recipients
-									.map((r) => identityLabel(r.email, r.name))
-									.join(', ')}
-							</p>
-						</div>
-						<div class="space-y-1">
-							<h3 class="font-semibold">{$t('app.archive.meta_data')}</h3>
-							<div class="text-muted-foreground space-y-2 text-sm">
-								<div class="flex flex-wrap items-center gap-2">
-									<span>{$t('app.archived_emails_page.inbox')}:</span>
-									<span class="bg-muted truncate rounded p-1.5 text-xs"
-										>{email.userEmail}</span
-									>
-								</div>
-								<div class="flex flex-wrap items-center gap-2">
-									<span>{$t('app.archive.tags')}:</span>
-									{#each localTags as tag (tag)}
-										<span
-											class="bg-muted flex items-center gap-1 rounded py-1 pl-1.5 pr-1 text-xs"
-										>
-											{tag}
-											<button
-												type="button"
-												class="text-muted-foreground hover:text-foreground disabled:opacity-50"
-												disabled={isUpdatingTags}
-												onclick={() => removeTag(tag)}
-												aria-label={`Remove tag ${tag}`}
-											>
-												<X class="h-3 w-3" />
-											</button>
-										</span>
-									{/each}
-									<TagCombobox
-										existingTags={tagSuggestions}
+						<!-- Tags stay here; the rest of the metadata is in the collapsible Metadata panel on the right. -->
+						<div class="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
+							<span>{$t('app.archive.tags')}:</span>
+							{#each localTags as tag (tag)}
+								<span class="bg-muted flex items-center gap-1 rounded py-1 pl-1.5 pr-1 text-xs">
+									{tag}
+									<button
+										type="button"
+										class="text-muted-foreground hover:text-foreground disabled:opacity-50"
 										disabled={isUpdatingTags}
-										onSelect={addTagByName}
-									/>
-								</div>
-								<div class="flex flex-wrap items-center gap-2">
-									<span>{$t('app.archive.size')}:</span>
-									<span class="bg-muted truncate rounded p-1.5 text-xs"
-										>{formatBytes(email.sizeBytes)}</span
+										onclick={() => removeTag(tag)}
+										aria-label={`Remove tag ${tag}`}
 									>
-								</div>
-							</div>
+										<X class="h-3 w-3" />
+									</button>
+								</span>
+							{/each}
+							<TagCombobox
+								existingTags={tagSuggestions}
+								disabled={isUpdatingTags}
+								onSelect={addTagByName}
+							/>
 						</div>
 						<div>
-							<div class="flex flex-wrap items-center justify-between gap-2">
-								<div class="flex flex-wrap items-center gap-2">
-									<h3 class="font-semibold">{$t('app.archive.email_preview')}</h3>
-									<Badge variant="secondary">
-										{remoteContentLabel(currentRemoteContentStatus)}
-									</Badge>
-									{#if currentRemoteContentAssetCount > 0}
-										<Badge variant="outline">
-											{assetCountLabel(currentRemoteContentAssetCount)}
-										</Badge>
-									{/if}
-								</div>
-								{#if currentRemoteContentStatus !== 'archived' && currentRemoteContentStatus !== 'skipped'}
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										class="gap-2 text-xs"
-										disabled={isQueueingRemoteContent || remoteContentQueued}
-										onclick={queueRemoteContentArchive}
-									>
-										<Archive class="h-3.5 w-3.5" />
-										{#if isQueueingRemoteContent}
-											Queueing...
-										{:else if remoteContentQueued}
-											Processing...
-										{:else if currentRemoteContentStatus === 'failed'}
-											Retry Remote Content
-										{:else}
-											Archive Remote Content
-										{/if}
-									</Button>
-								{/if}
-							</div>
 							<EmailPreview emailId={email.id} refreshKey={remoteContentRefreshKey} />
 						</div>
 					</div>
@@ -860,6 +910,58 @@
 			</Card.Root>
 		</div>
 		<div class="col-span-3 space-y-6 md:col-span-1">
+			{#snippet metaRow(label: string, value: string | null | undefined, mono = false)}
+				{#if value}
+					<div class="flex flex-col gap-0.5 sm:flex-row sm:gap-3">
+						<dt class="text-muted-foreground w-44 flex-shrink-0 font-medium">{label}</dt>
+						<dd class="min-w-0 break-all {mono ? 'font-mono' : ''}">{value}</dd>
+					</div>
+				{/if}
+			{/snippet}
+
+			<!-- Metadata (collapsible, debug-oriented; starts collapsed) -->
+			<Card.Root class="gap-0 overflow-hidden py-0">
+				<button
+					type="button"
+					class="hover:bg-muted/50 flex w-full items-center justify-between gap-2 px-4 py-3 text-left"
+					aria-expanded={metadataOpen}
+					onclick={() => (metadataOpen = !metadataOpen)}
+				>
+					<Card.Title>{$t('app.archive.meta_data')}</Card.Title>
+					<ChevronDown class="text-muted-foreground h-4 w-4 flex-shrink-0 transition-transform {metadataOpen ? 'rotate-180' : ''}" />
+				</button>
+				{#if metadataOpen}
+					<Card.Content class="pb-4 pt-0">
+						<dl class="space-y-2 text-xs">
+							{@render metaRow('Size', `${formatBytes(email.sizeBytes)} (${email.sizeBytes.toLocaleString()} bytes)`)}
+							{@render metaRow('Sent', formatDateTime(email.sentAt))}
+							{@render metaRow('Archived', formatDateTime(email.archivedAt))}
+							{@render metaRow('Import Source', email.importSource)}
+							{@render metaRow('Storage path', email.storagePath, true)}
+							{@render metaRow('Original Folder', email.sourcePath)}
+
+							{@render metaRow('Has attachments', email.hasAttachments ? 'Yes' : 'No')}
+							{@render metaRow('Remote content status', email.remoteContentStatus)}
+							{@render metaRow('Remote assets archived', String(email.remoteContentAssetCount))}
+							{@render metaRow('Remote content archived', email.remoteContentArchivedAt ? formatDateTime(email.remoteContentArchivedAt) : null)}
+
+							{@render metaRow('Ingestion source ID', email.ingestionSourceId, true)}
+							{@render metaRow('Email ID', email.id, true)}
+							{@render metaRow('Thread ID', email.threadId, true)}
+							{@render metaRow('Message-ID header', email.messageIdHeader, true)}
+							{@render metaRow('Provider message ID', email.providerMessageId, true)}
+
+							{@render metaRow('Storage hash (SHA-256)', email.storageHashSha256, true)}
+
+							{@render metaRow('Duplicate: subject hash', email.duplicateSubjectHash, true)}
+							{@render metaRow('Duplicate: body hash', email.duplicateBodyHash, true)}
+							{@render metaRow('Duplicate: recipient fingerprint', email.duplicateRecipientFingerprint, true)}
+							{@render metaRow('Duplicate: attachment fingerprint', email.duplicateAttachmentFingerprint, true)}
+						</dl>
+					</Card.Content>
+				{/if}
+			</Card.Root>
+
 			<!-- Attachments (collapsed, with inline preview where possible) -->
 			{#if email.attachments && email.attachments.length > 0}
 				<Card.Root>
@@ -910,8 +1012,8 @@
 								mimeType={attachment.mimeType}
 								fetchBlob={() =>
 									Promise.resolve(
-										new Blob([attachment.content], {
-											type: attachment.mimeType || 'application/octet-stream'
+										new Blob([attachment.content as BlobPart], {
+											type: attachment.mimeType || 'application/octet-stream',
 										})
 									)}
 							/>
@@ -922,9 +1024,38 @@
 
 			<!-- Remote content: archived (collapsed previews) + failed/blocked (with reason) -->
 			{#if remoteAssets.length > 0}
-				<Card.Root>
-					<Card.Header>
+				<Card.Root class="gap-3">
+					<Card.Header class="gap-3">
 						<Card.Title>{$t('app.archive.remote_content')}</Card.Title>
+						<Card.Action>
+							<Tooltip.Root>
+								<Tooltip.Trigger
+									type="button"
+									class={buttonVariants({ variant: 'ghost', size: 'icon' })}
+									aria-label="Retry all remote content"
+									disabled={isQueueingRemoteContent || remoteContentQueued}
+									onclick={queueRemoteContentArchive}
+								>
+									<RotateCw
+										class="h-4 w-4 {isQueueingRemoteContent ||
+										remoteContentQueued
+											? 'animate-spin'
+											: ''}"
+									/>
+								</Tooltip.Trigger>
+								<Tooltip.Content>Retry all remote content</Tooltip.Content>
+							</Tooltip.Root>
+						</Card.Action>
+						<div class="flex flex-wrap items-center gap-2">
+							<Badge variant="secondary"
+								>{remoteContentLabel(currentRemoteContentStatus)}</Badge
+							>
+							{#if currentRemoteContentAssetCount > 0}
+								<Badge variant="outline"
+									>{assetCountLabel(currentRemoteContentAssetCount)}</Badge
+								>
+							{/if}
+						</div>
 					</Card.Header>
 					<Card.Content class="space-y-2">
 						{#each archivedRemoteAssets as asset (asset.id)}
@@ -941,28 +1072,52 @@
 							<div class="space-y-2 pt-1">
 								<p class="text-muted-foreground text-xs font-medium">
 									{$t('app.archive.remote_content_failed', {
-										count: failedRemoteAssets.length
+										count: failedRemoteAssets.length,
 									} as any)}
 								</p>
 								{#each failedRemoteAssets as asset (asset.id)}
 									<div class="rounded-md border p-2 text-xs">
 										<div class="flex items-center justify-between gap-2">
-											<a
-												href={asset.originalUrl}
-												target="_blank"
-												rel="noreferrer"
-												class="truncate hover:underline"
-												title={asset.originalUrl}>{remoteAssetTitle(asset)}</a
-											>
-											<Badge
-												variant={asset.status === 'blocked'
-													? 'secondary'
-													: 'destructive'}
-												class="flex-shrink-0 capitalize">{asset.status}</Badge
-											>
+											<Tooltip.Root>
+												<Tooltip.Trigger>
+													{#snippet child({ props })}
+														<a
+															{...props}
+															href={asset.originalUrl}
+															target="_blank"
+															rel="noreferrer"
+															class="truncate hover:underline"
+															>{remoteAssetTitle(asset)}</a
+														>
+													{/snippet}
+												</Tooltip.Trigger>
+												<Tooltip.Content
+													>{asset.originalUrl}</Tooltip.Content
+												>
+											</Tooltip.Root>
+											<div class="flex flex-shrink-0 items-center gap-1">
+												<Badge
+													variant={asset.status === 'blocked' ? 'secondary' : 'destructive'}
+													class="capitalize">{asset.status}</Badge
+												>
+												<Tooltip.Root>
+													<Tooltip.Trigger
+														type="button"
+														class="{buttonVariants({ variant: 'ghost', size: 'icon' })} h-6 w-6"
+														disabled={retryingAssetId === asset.id}
+														onclick={() => retryAsset(asset.id)}
+														aria-label="Retry this item"
+													>
+														<RotateCw class="h-3.5 w-3.5 {retryingAssetId === asset.id ? 'animate-spin' : ''}" />
+													</Tooltip.Trigger>
+													<Tooltip.Content>Retry this item</Tooltip.Content>
+												</Tooltip.Root>
+											</div>
 										</div>
 										{#if asset.failureReason}
-											<p class="text-muted-foreground mt-1 break-words font-mono">
+											<p
+												class="text-muted-foreground mt-1 break-words font-mono"
+											>
 												{asset.failureReason}
 											</p>
 										{/if}
@@ -1021,7 +1176,9 @@
 		<Dialog.Content class="sm:max-w-3xl">
 			<Dialog.Header>
 				<Dialog.Title>{$t('app.archive.view_headers')}</Dialog.Title>
-				<Dialog.Description>{email.subject || $t('app.archive.no_subject')}</Dialog.Description>
+				<Dialog.Description
+					>{email.subject || $t('app.archive.no_subject')}</Dialog.Description
+				>
 			</Dialog.Header>
 			<pre
 				class="bg-muted max-h-[60vh] overflow-auto whitespace-pre-wrap break-all rounded-md p-3 font-mono text-xs">{emailHeaders}</pre>
@@ -1035,7 +1192,6 @@
 			</Dialog.Footer>
 		</Dialog.Content>
 	</Dialog.Root>
-
 {:else}
 	<p>{$t('app.archive.not_found')}</p>
 {/if}

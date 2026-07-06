@@ -142,7 +142,7 @@
 	);
 </script>
 
-<form onsubmit={handleSubmit} class="grid gap-4 py-4">
+<form onsubmit={handleSubmit} class="grid gap-4">
 	<div class="grid grid-cols-4 items-center gap-4">
 		<Label for="name" class="text-left">{$t('app.imports.name')}</Label>
 		<Input id="name" bind:value={formData.name} class="col-span-3" />

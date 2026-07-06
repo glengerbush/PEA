@@ -14,7 +14,7 @@ fn field_to_column(field: &str) -> Option<&'static str> {
         "from" | "senderName" => Some("sender"),
         "to" | "cc" | "bcc" => Some("recipients"),
         "attachments.filename" | "attachments.content" => Some("attachments"),
-        "userEmail" | "sourcePath" | "tags" => Some("meta"),
+        "importSource" | "sourcePath" | "tags" => Some("meta"),
         _ => None,
     }
 }
@@ -29,7 +29,7 @@ const DEFAULT_FIELDS: [&str; 12] = [
     "bcc",
     "attachments.filename",
     "attachments.content",
-    "userEmail",
+    "importSource",
     "sourcePath",
     "tags",
 ];
@@ -216,6 +216,15 @@ pub fn build_filter_sql(conn: &Connection, q: &dyn Fn(&str) -> Option<String>) -
     let mut parts: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
 
+    // Trash: the default listing hides trashed emails; `?trashed=true` shows only
+    // them (the Trash view). This clause is always present, so every count/list
+    // path that runs through build_filter_sql excludes trashed rows by default.
+    if q("trashed").as_deref() == Some("true") {
+        parts.push("ae.deleted_at IS NOT NULL".to_string());
+    } else {
+        parts.push("ae.deleted_at IS NULL".to_string());
+    }
+
     if let Some(source_id) = q("ingestionSourceId") {
         if !source_id.is_empty() {
             match group_source_ids(conn, &source_id) {
@@ -231,7 +240,7 @@ pub fn build_filter_sql(conn: &Connection, q: &dyn Fn(&str) -> Option<String>) -
         }
     }
     for (key, column) in [
-        ("userEmail", "ae.user_email"),
+        ("importSource", "ae.import_source"),
         ("from", "ae.sender_email"),
         ("sourcePath", "ae.source_path"),
     ] {
@@ -337,8 +346,8 @@ pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Valu
     let mut doc = Map::new();
     doc.insert("id".into(), json!(row.get::<_, String>("id").unwrap_or_default()));
     doc.insert(
-        "userEmail".into(),
-        json!(row.get::<_, String>("user_email").unwrap_or_default()),
+        "importSource".into(),
+        json!(row.get::<_, String>("import_source").unwrap_or_default()),
     );
     doc.insert(
         "from".into(),
@@ -527,6 +536,7 @@ pub fn top_senders(conn: &Connection, limit: i64) -> Value {
     let mut stmt = conn
         .prepare(
             "SELECT sender_email AS sender, count(*) AS count FROM archived_emails \
+             WHERE deleted_at IS NULL \
              GROUP BY sender_email ORDER BY count DESC, sender ASC LIMIT ?",
         )
         .unwrap();
@@ -548,7 +558,8 @@ pub fn filter_facets(conn: &Connection) -> Value {
     let mut stmt = conn
         .prepare(
             "SELECT DISTINCT j.value AS tag FROM archived_emails ae, \
-             json_each(COALESCE(ae.tags, '[]')) j WHERE trim(j.value) <> '' \
+             json_each(COALESCE(ae.tags, '[]')) j \
+             WHERE trim(j.value) <> '' AND ae.deleted_at IS NULL \
              ORDER BY tag COLLATE NOCASE ASC",
         )
         .unwrap();

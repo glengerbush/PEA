@@ -115,7 +115,9 @@ pub async fn unmerge_source(State(app): State<AppState>, AxumPath(id): AxumPath<
 
 pub async fn delete_email(State(app): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
     let conn = app.pool.get().unwrap();
-    match emails::delete_archived_email(&app, &conn, &id) {
+    // Deleting sends the email to the trash (soft delete); permanent removal
+    // happens from the trash via "delete forever" / "empty trash".
+    match emails::soft_delete_archived_email(&conn, &id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) if e == "Archived email not found" => not_found("Archived email not found"),
         Err(_) => internal_error(),
@@ -130,13 +132,106 @@ pub async fn bulk_delete(State(app): State<AppState>, Json(dto): Json<Value>) ->
     let mut deleted_ids: Vec<String> = Vec::new();
     let mut failed: Vec<Value> = Vec::new();
     for id in ids.iter().filter_map(|v| v.as_str()) {
-        match emails::delete_archived_email(&app, &conn, id) {
+        match emails::soft_delete_archived_email(&conn, id) {
             Ok(()) => deleted_ids.push(id.to_string()),
             Err(reason) => failed.push(json!({ "id": id, "reason": reason })),
         }
     }
     Json(json!({
         "requestedCount": ids.len(),
+        "deletedCount": deleted_ids.len(),
+        "deletedIds": deleted_ids,
+        "failed": failed,
+    }))
+    .into_response()
+}
+
+/// Permanently delete a set of email ids (used by the trash), returning the
+/// ids removed and any per-id failures. Uses the ref-counting hard delete, so a
+/// blob shared with an email that remains (trashed or not) is preserved.
+fn permanently_delete_ids<'a>(
+    app: &AppState,
+    conn: &rusqlite::Connection,
+    ids: impl Iterator<Item = &'a str>,
+) -> (Vec<String>, Vec<Value>) {
+    let mut deleted_ids: Vec<String> = Vec::new();
+    let mut failed: Vec<Value> = Vec::new();
+    for id in ids {
+        match emails::delete_archived_email(app, conn, id) {
+            Ok(()) => deleted_ids.push(id.to_string()),
+            Err(reason) => failed.push(json!({ "id": id, "reason": reason })),
+        }
+    }
+    (deleted_ids, failed)
+}
+
+pub async fn restore_emails(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
+    let conn = app.pool.get().unwrap();
+    let Some(ids) = dto.get("emailIds").and_then(|v| v.as_array()).filter(|a| !a.is_empty()) else {
+        return message_response(StatusCode::BAD_REQUEST, "emailIds are required");
+    };
+    let mut restored_ids: Vec<String> = Vec::new();
+    let mut failed: Vec<Value> = Vec::new();
+    for id in ids.iter().filter_map(|v| v.as_str()) {
+        match emails::restore_archived_email(&conn, id) {
+            Ok(()) => restored_ids.push(id.to_string()),
+            Err(reason) => failed.push(json!({ "id": id, "reason": reason })),
+        }
+    }
+    Json(json!({
+        "requestedCount": ids.len(),
+        "restoredCount": restored_ids.len(),
+        "restoredIds": restored_ids,
+        "failed": failed,
+    }))
+    .into_response()
+}
+
+pub async fn permanent_delete_emails(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
+    let conn = app.pool.get().unwrap();
+    let Some(ids) = dto.get("emailIds").and_then(|v| v.as_array()).filter(|a| !a.is_empty()) else {
+        return message_response(StatusCode::BAD_REQUEST, "emailIds are required");
+    };
+    let (deleted_ids, failed) =
+        permanently_delete_ids(&app, &conn, ids.iter().filter_map(|v| v.as_str()));
+    Json(json!({
+        "requestedCount": ids.len(),
+        "deletedCount": deleted_ids.len(),
+        "deletedIds": deleted_ids,
+        "failed": failed,
+    }))
+    .into_response()
+}
+
+pub async fn empty_trash(State(app): State<AppState>) -> Response {
+    let conn = app.pool.get().unwrap();
+    let trashed_ids: Vec<String> = {
+        let mut stmt = match conn.prepare("SELECT id FROM archived_emails WHERE deleted_at IS NOT NULL") {
+            Ok(stmt) => stmt,
+            Err(_) => return internal_error(),
+        };
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>());
+        match rows {
+            Ok(ids) => ids,
+            Err(_) => return internal_error(),
+        }
+    };
+    let mut deleted_ids: Vec<String> = Vec::new();
+    let mut failed: Vec<Value> = Vec::new();
+    for id in &trashed_ids {
+        match emails::delete_archived_email(&app, &conn, id) {
+            Ok(()) => deleted_ids.push(id.clone()),
+            // Deleting the last email of a file-based source auto-removes that
+            // source, which can cascade away OTHER trashed rows still in this
+            // list. Such an id is already gone — successfully emptied, not a
+            // failure — so it must not be reported as "not found".
+            Err(reason) if reason == "Archived email not found" => deleted_ids.push(id.clone()),
+            Err(reason) => failed.push(json!({ "id": id, "reason": reason })),
+        }
+    }
+    Json(json!({
         "deletedCount": deleted_ids.len(),
         "deletedIds": deleted_ids,
         "failed": failed,
@@ -182,8 +277,10 @@ pub async fn approve_exact_duplicates(State(app): State<AppState>, Json(dto): Js
         if !keeper_exists {
             continue;
         }
+        // Approved duplicate copies go to the trash (recoverable), consistent
+        // with every other delete; empty the trash to reclaim their storage.
         for id in &duplicate_ids {
-            if emails::delete_archived_email(&app, &conn, id).is_ok() {
+            if emails::soft_delete_archived_email(&conn, id).is_ok() {
                 deleted_emails += 1;
             }
         }
@@ -198,71 +295,29 @@ pub async fn approve_exact_duplicates(State(app): State<AppState>, Json(dto): Js
     .into_response()
 }
 
-pub async fn approve_likely(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
+pub async fn ignore_exact(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
     let conn = app.pool.get().unwrap();
-    let groups = dto.get("groups").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let mut approved_groups = 0usize;
-    let mut deleted_emails = 0usize;
-    let mut keeper_emails = 0usize;
-    for group in &groups {
-        let keeper = group.get("keeperEmailId").and_then(|v| v.as_str()).unwrap_or("");
-        let mut duplicate_ids: Vec<String> = Vec::new();
-        for v in group.get("duplicateEmailIds").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
-            if let Some(s) = v.as_str() {
-                if s != keeper && !duplicate_ids.contains(&s.to_string()) {
-                    duplicate_ids.push(s.to_string());
-                }
-            }
-        }
-        if keeper.is_empty() || duplicate_ids.is_empty() {
-            continue;
-        }
-        let keeper_exists: bool = conn
-            .query_row("SELECT 1 FROM archived_emails WHERE id = ?", [keeper], |_| Ok(true))
-            .unwrap_or(false);
-        // Never delete a group's copies when the keeper is gone (data loss).
-        if !keeper_exists {
-            continue;
-        }
-        // Deleting every non-keeper leaves the group key with a single email, so
-        // it self-resolves out of the live candidate query — no ledger row needed
-        // (an ignore is the only decision that must be remembered).
-        for id in &duplicate_ids {
-            if emails::delete_archived_email(&app, &conn, id).is_ok() {
-                deleted_emails += 1;
-            }
-        }
-        keeper_emails += 1;
-        approved_groups += 1;
-    }
-    Json(json!({
-        "approvedGroups": approved_groups,
-        "deletedEmails": deleted_emails,
-        "keeperEmails": keeper_emails,
-    }))
-    .into_response()
-}
-
-pub async fn ignore_likely(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
-    let conn = app.pool.get().unwrap();
-    let mut keys: Vec<String> = Vec::new();
+    let mut fingerprints: Vec<String> = Vec::new();
     for v in dto.get("groupKeys").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
         if let Some(s) = v.as_str() {
-            if !s.is_empty() && !keys.contains(&s.to_string()) {
-                keys.push(s.to_string());
+            // The client sends the cluster group key ("cluster:<fingerprint>");
+            // persist just the fingerprint (the cluster's min email id).
+            let fp = s.strip_prefix("cluster:").unwrap_or(s);
+            if !fp.is_empty() && !fingerprints.iter().any(|f| f == fp) {
+                fingerprints.push(fp.to_string());
             }
         }
     }
-    if keys.is_empty() {
+    if fingerprints.is_empty() {
         return Json(json!({ "ignoredGroups": 0 })).into_response();
     }
-    // Record each ignored group key; the live listing left-excludes these.
+    // Record each ignored fingerprint; list_exact_groups excludes these clusters.
     let mut ignored = 0usize;
-    for key in &keys {
+    for fp in &fingerprints {
         if conn
             .execute(
-                "INSERT OR IGNORE INTO likely_duplicate_ignores (group_key) VALUES (?)",
-                [key],
+                "INSERT OR IGNORE INTO exact_duplicate_ignores (fingerprint) VALUES (?)",
+                [fp],
             )
             .unwrap_or(0)
             > 0
@@ -283,6 +338,38 @@ pub async fn enqueue_remote_content(
         Json(json!({ "jobId": job_id.unwrap_or_default(), "emailIds": [id] })),
     )
         .into_response()
+}
+
+/// POST /archived-emails/{id}/remote-assets/{assetId}/retry — re-fetch just this
+/// one failed/blocked asset, leaving every other asset (and all already-archived
+/// ones) untouched. Runs the blocking HTTP fetch off the async executor.
+pub async fn retry_remote_asset(
+    State(app): State<AppState>,
+    AxumPath((id, asset_id)): AxumPath<(String, String)>,
+) -> Response {
+    let original_url: Option<String> = {
+        let conn = app.pool.get().unwrap();
+        conn.query_row(
+            "SELECT original_url FROM remote_content_assets WHERE id = ? AND email_id = ?",
+            rusqlite::params![asset_id, id],
+            |r| r.get(0),
+        )
+        .ok()
+    };
+    let Some(original_url) = original_url else {
+        return not_found("Remote content asset not found");
+    };
+    let app2 = app.clone();
+    let id2 = id.clone();
+    if tokio::task::spawn_blocking(move || {
+        crate::remote_content::retry_asset(&app2, &id2, &original_url);
+    })
+    .await
+    .is_err()
+    {
+        return internal_error();
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +393,7 @@ pub async fn import_contacts(State(app): State<AppState>, Json(dto): Json<Value>
 }
 
 const DEFAULT_SETTINGS: &str =
-    r#"{"language":"en","theme":"system","timeZone":null,"clockFormat":"12h","autoCheckUpdates":true}"#;
+    r#"{"language":"en","theme":"system","timeZone":null,"clockFormat":"12h","dateFormat":"system","autoCheckUpdates":true}"#;
 
 pub async fn update_settings(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
     let conn = app.pool.get().unwrap();

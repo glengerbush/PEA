@@ -4,6 +4,8 @@
 export interface Recipient {
 	name?: string;
 	email: string;
+	/** Which header this recipient came from, for separate To/Cc/Bcc display. */
+	kind?: 'to' | 'cc' | 'bcc';
 }
 
 /**
@@ -55,14 +57,19 @@ export type ExactDuplicateReason =
 	| 'message_id'
 	| 'storage_hash'
 	| 'attachment_hash_set'
-	| 'sender_recipients_sent';
+	| 'sender_recipients_sent'
+	| 'message_body';
+
+/** Group counts per reason (plus `all`), independent of the active filter, so
+ *  each filter pill can show its own count. */
+export type ExactDuplicateReasonCounts = Record<ExactDuplicateReason | 'all', number>;
 
 export interface ExactDuplicateEmail {
 	id: string;
 	subject: string | null;
 	senderName: string | null;
 	senderEmail: string;
-	userEmail: string;
+	importSource: string;
 	sentAt: Date;
 	archivedAt: Date;
 	hasAttachments: boolean;
@@ -85,7 +92,10 @@ export interface ExactDuplicateGroup {
 
 export interface ExactDuplicateGroupsResult {
 	groups: ExactDuplicateGroup[];
+	/** Group count for the active reason filter. */
 	totalGroups: number;
+	/** Per-reason group counts (and `all`), for the filter pills. */
+	reasonCounts: ExactDuplicateReasonCounts;
 	page: number;
 	limit: number;
 }
@@ -103,51 +113,7 @@ export interface ApproveExactDuplicatesResult {
 	keeperEmails: number;
 }
 
-export interface LikelyDuplicateSignals {
-	senderEmail: string;
-	subjectHash: string;
-	matchingBodyHash: boolean;
-	matchingRecipients: boolean;
-	matchingAttachments: boolean;
-	sentSpreadHours: number | null;
-}
-
-export interface LikelyDuplicateEmail extends ExactDuplicateEmail {
-	suggestedKeeper: boolean;
-}
-
-/** A likely-duplicate group, computed live and identified by its group key.
- *  There is no persisted row: approving deletes the duplicates (the group then
- *  self-resolves) and ignoring records the key so it drops out of the listing. */
-export interface LikelyDuplicateGroup {
-	groupKey: string;
-	score: number;
-	signals: LikelyDuplicateSignals;
-	keeperEmailId: string;
-	emails: LikelyDuplicateEmail[];
-}
-
-export interface LikelyDuplicateGroupsResult {
-	groups: LikelyDuplicateGroup[];
-	totalGroups: number;
-	page: number;
-	limit: number;
-}
-
-export interface ApproveLikelyDuplicateGroupDto {
-	groupKey: string;
-	keeperEmailId: string;
-	duplicateEmailIds: string[];
-}
-
-export interface ApproveLikelyDuplicatesResult {
-	approvedGroups: number;
-	/** Duplicate copies permanently deleted (the keeper of each group is preserved). */
-	deletedEmails: number;
-	keeperEmails: number;
-}
-
-export interface IgnoreLikelyDuplicateGroupsResult {
+export interface IgnoreExactDuplicateGroupsResult {
 	ignoredGroups: number;
 }
 
@@ -191,8 +157,10 @@ export interface RemoteContentAssetSummary {
 export interface ArchivedEmail {
 	id: string;
 	ingestionSourceId: string;
-	userEmail: string;
+	threadId: string | null;
+	importSource: string;
 	messageIdHeader: string | null;
+	providerMessageId: string | null;
 	sentAt: Date;
 	subject: string | null;
 	senderName: string | null;
@@ -205,7 +173,6 @@ export interface ArchivedEmail {
 	archivedAt: Date;
 	sourcePath: string | null;
 	duplicateSubjectHash: string | null;
-	duplicateLikelyGroupKey: string | null;
 	duplicateBodyHash: string | null;
 	duplicateRecipientFingerprint: string | null;
 	duplicateAttachmentFingerprint: string | null;

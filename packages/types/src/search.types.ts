@@ -11,7 +11,7 @@ export type ArchiveSearchField =
 	| 'bcc'
 	| 'attachments.filename'
 	| 'attachments.content'
-	| 'userEmail'
+	| 'importSource'
 	| 'sourcePath'
 	| 'tags';
 export type ArchiveSortField = 'sentAt' | 'archivedAt' | 'sender' | 'subject' | 'sizeBytes';

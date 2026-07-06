@@ -1,14 +1,14 @@
 //! Port of RemoteContentService's archive side: SSRF-guarded fetching of
 //! remote images/stylesheets referenced by archived emails, stored on disk
-//! and recorded in remote_content_assets. Statuses and failure messages match
-//! the Node implementation string-for-string.
+//! and recorded in remote_content_assets. Statuses mirror the Node
+//! implementation; the human-readable block/fail reasons are intentionally more
+//! specific than Node's (they name the offending type / size / address).
 
 use crate::preview::{self, normalize_content_type};
 use crate::state::AppState;
 use crate::{ingest, queue};
 use std::sync::LazyLock;
 use regex::Regex;
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::net::IpAddr;
@@ -18,7 +18,14 @@ const MAX_REMOTE_CONTENT_BYTES: usize = 5 * 1024 * 1024;
 const MAX_STYLESHEET_BYTES: usize = 1024 * 1024;
 const FETCH_TIMEOUT_MS: u64 = 10_000;
 const MAX_REDIRECTS: usize = 3;
-const USER_AGENT: &str = "PEA-LocalRemoteContentArchiver/1.0";
+// Present as a mainstream desktop browser rather than a bot. Remote email content
+// (logos, product images, stylesheets) is frequently served only to browser-like
+// clients; PEA fetches each asset exactly once, on the user's behalf, to archive an
+// email they already received — so identifying as a normal browser is what actually
+// retrieves the content they're entitled to. (This can't defeat JS/Captcha
+// challenges, which PEA doesn't execute.)
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+    (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
 fn hash_value(data: &[u8]) -> String {
     crate::hex_encode(Sha256::digest(data))
@@ -52,8 +59,8 @@ fn is_private_ipv4(octets: [u8; 4]) -> bool {
         || (a == 172 && (16..=31).contains(&b))
         || (a == 192 && b == 168)
         || (a == 100 && (64..=127).contains(&b))
-        || (a == 192 && b == 0)
-        || (a == 192 && b == 2)
+        || (a == 192 && b == 0 && c == 0) // 192.0.0.0/24 IETF protocol assignments
+        || (a == 192 && b == 0 && c == 2) // 192.0.2.0/24 TEST-NET-1
         || (a == 198 && (b == 18 || b == 19))
         || (a == 198 && b == 51 && c == 100)
         || (a == 203 && b == 0 && c == 113)
@@ -64,10 +71,24 @@ fn is_blocked_ip(addr: &IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => is_private_ipv4(v4.octets()),
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            let seg = v6.segments();
+            // Decode any embedded IPv4 and apply the v4 policy: IPv4-mapped
+            // (::ffff:a.b.c.d), IPv4-compatible (::a.b.c.d), 6to4 (2002:AABB:CCDD::/16),
+            // and the NAT64 well-known prefix (64:ff9b::/96) — otherwise a literal
+            // like `::127.0.0.1` would slip past the loopback check below.
+            if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
                 return is_private_ipv4(v4.octets());
             }
-            let seg = v6.segments();
+            if seg[0] == 0x2002 {
+                return is_private_ipv4([
+                    (seg[1] >> 8) as u8, seg[1] as u8, (seg[2] >> 8) as u8, seg[2] as u8,
+                ]);
+            }
+            if seg[0] == 0x0064 && seg[1] == 0xff9b {
+                return is_private_ipv4([
+                    (seg[6] >> 8) as u8, seg[6] as u8, (seg[7] >> 8) as u8, seg[7] as u8,
+                ]);
+            }
             v6.is_unspecified()
                 || v6.is_loopback()
                 || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique local
@@ -105,25 +126,28 @@ fn assert_safe_remote_url(url: &url::Url) -> Result<IpAddr, FetchError> {
     let lookup_host = hostname.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = lookup_host.parse::<IpAddr>() {
         if is_blocked_ip(&ip) {
-            return Err(FetchError::Blocked(
-                "Private or local network addresses are blocked".into(),
-            ));
+            return Err(FetchError::Blocked(format!(
+                "Address {ip} is a private or local network address"
+            )));
         }
         return Ok(ip);
     }
-    // Node's dns.lookup THROWS on NXDOMAIN, which archiveRemoteAsset records as
-    // a 'failed' asset (not 'blocked') with getaddrinfo's message — mirror it.
+    // A name that doesn't resolve is a transient/technical failure — recorded as
+    // 'failed', not 'blocked'. (Node surfaced the raw getaddrinfo message here; we
+    // use a readable one.)
     let addresses: Vec<IpAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(lookup_host, 80))
-        .map_err(|_| FetchError::Failed(format!("getaddrinfo ENOTFOUND {lookup_host}")))?
+        .map_err(|_| {
+            FetchError::Failed(format!("Could not resolve host '{lookup_host}' (DNS lookup failed)"))
+        })?
         .map(|sa| sa.ip())
         .collect();
     if addresses.is_empty() {
         return Err(FetchError::Blocked("Remote content host did not resolve".into()));
     }
-    if addresses.iter().any(is_blocked_ip) {
-        return Err(FetchError::Blocked(
-            "Private or local network addresses are blocked".into(),
-        ));
+    if let Some(blocked) = addresses.iter().find(|a| is_blocked_ip(a)) {
+        return Err(FetchError::Blocked(format!(
+            "{hostname} resolves to a private or local address ({blocked})"
+        )));
     }
     // Prefer IPv4 (v6 routes are often absent).
     addresses
@@ -167,6 +191,16 @@ fn detect_image_content_type(body: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// Human-readable byte size for failure reasons (e.g. "8.4 MB").
+fn human_size(bytes: usize) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 0.1 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 fn validate_archivable(body: &[u8], content_type_header: Option<&str>) -> Result<String, FetchError> {
     if body.is_empty() {
         return Err(FetchError::Blocked("Remote content is empty".into()));
@@ -176,14 +210,30 @@ fn validate_archivable(body: &[u8], content_type_header: Option<&str>) -> Result
     }
     if normalize_content_type(content_type_header).as_deref() == Some("text/css") {
         if body.len() > MAX_STYLESHEET_BYTES {
-            return Err(FetchError::Blocked("Remote stylesheet is too large".into()));
+            return Err(FetchError::Blocked(format!(
+                "Remote stylesheet is {} (over the {} limit)",
+                human_size(body.len()),
+                human_size(MAX_STYLESHEET_BYTES)
+            )));
         }
         if !looks_like_text(body) {
-            return Err(FetchError::Blocked("Remote stylesheet is not text".into()));
+            return Err(FetchError::Blocked("Remote stylesheet is not valid text".into()));
         }
         return Ok("text/css".into());
     }
-    Err(FetchError::Blocked("Remote content type is not archivable".into()))
+    // Not a recognized image and not archivable CSS — name the actual type so the
+    // reason is specific (SVG images, web fonts and HTML are the usual culprits).
+    let reported = normalize_content_type(content_type_header)
+        .or_else(|| content_type_header.map(|s| s.trim().to_lowercase()))
+        .filter(|s| !s.is_empty());
+    let message = match reported {
+        Some(t) if t.starts_with("image/") => format!(
+            "Remote image type '{t}' is not supported (archives PNG, JPEG, GIF, WebP, AVIF)"
+        ),
+        Some(t) => format!("Remote content type '{t}' is not archivable (only images and CSS)"),
+        None => "Remote content has no content type and is not a recognized image".to_string(),
+    };
+    Err(FetchError::Blocked(message))
 }
 
 struct Fetched {
@@ -203,6 +253,28 @@ fn extension_for(content_type: &str) -> &'static str {
     }
 }
 
+/// The innermost cause of a reqwest error. Its top-level Display is a verbose
+/// chain ("error sending request for url (...): ...: Connection refused"), while
+/// the deepest source ("Connection refused (os error 111)") is the useful part.
+fn innermost_cause(e: &reqwest::Error) -> String {
+    let mut msg = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        msg = s.to_string();
+        src = s.source();
+    }
+    msg
+}
+
+/// A readable reason for a non-success HTTP status, with the canonical reason
+/// phrase where the code has one (e.g. "Remote server returned HTTP 404 Not Found").
+fn describe_http_status(status: reqwest::StatusCode) -> String {
+    match status.canonical_reason() {
+        Some(reason) => format!("Remote server returned HTTP {} {reason}", status.as_u16()),
+        None => format!("Remote server returned HTTP {}", status.as_u16()),
+    }
+}
+
 /// fetchRemoteContent — blocking reqwest with manual redirects so every hop
 /// re-runs the SSRF checks, pinned to the resolved address.
 fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched, FetchError> {
@@ -210,7 +282,7 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
         return Err(FetchError::Blocked("Too many redirects".into()));
     }
     let url = url::Url::parse(raw_url)
-        .map_err(|e| FetchError::Failed(format!("Invalid URL: {e}")))?;
+        .map_err(|e| FetchError::Failed(format!("Invalid remote content URL: {e}")))?;
     let address = assert_safe_remote_url(&url)?;
 
     let port = url.port_or_known_default().unwrap_or(80);
@@ -223,23 +295,35 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
         )
         .user_agent(USER_AGENT)
         .build()
-        .map_err(|e| FetchError::Failed(e.to_string()))?;
+        .map_err(|e| FetchError::Failed(format!("Could not start remote fetch: {e}")))?;
     let mut response = client
         .get(url.as_str())
+        // Browser-like request headers, matching the User-Agent, so senders that
+        // gate remote content on a real-browser fingerprint still serve it.
         .header(
             reqwest::header::ACCEPT,
-            "image/avif,image/webp,image/png,image/jpeg,image/gif,*/*;q=0.1",
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
         )
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .header("Sec-Fetch-Dest", "image")
+        .header("Sec-Fetch-Mode", "no-cors")
+        .header("Sec-Fetch-Site", "cross-site")
         .send()
         .map_err(|e| {
             if e.is_timeout() {
                 FetchError::Blocked("Remote content fetch timed out".into())
+            } else if e.is_connect() {
+                FetchError::Failed(format!(
+                    "Could not connect to the remote server: {}",
+                    innermost_cause(&e)
+                ))
             } else {
-                FetchError::Failed(e.to_string())
+                FetchError::Failed(format!("Remote content request failed: {}", innermost_cause(&e)))
             }
         })?;
 
-    let status = response.status().as_u16();
+    let status_code = response.status();
+    let status = status_code.as_u16();
     if [301, 302, 303, 307, 308].contains(&status) {
         let location = response
             .headers()
@@ -249,15 +333,19 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
             .ok_or_else(|| FetchError::Blocked("Redirect without location header".into()))?;
         let redirected = url
             .join(&location)
-            .map_err(|e| FetchError::Failed(e.to_string()))?;
+            .map_err(|_| FetchError::Failed(format!("Invalid redirect target '{location}'")))?;
         return fetch_remote_content(redirected.as_str(), redirect_count + 1);
     }
     if !(200..300).contains(&status) {
-        return Err(FetchError::Failed(format!("Remote server returned {status}")));
+        return Err(FetchError::Failed(describe_http_status(status_code)));
     }
     if let Some(len) = response.content_length() {
         if len as usize > MAX_REMOTE_CONTENT_BYTES {
-            return Err(FetchError::Blocked("Remote content is too large".into()));
+            return Err(FetchError::Blocked(format!(
+                "Remote content is {} (over the {} limit)",
+                human_size(len as usize),
+                human_size(MAX_REMOTE_CONTENT_BYTES)
+            )));
         }
     }
     let content_type_header = response
@@ -271,12 +359,15 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
     let mut buf = [0u8; 8192];
     loop {
         let n = std::io::Read::read(&mut response, &mut buf)
-            .map_err(|e| FetchError::Failed(e.to_string()))?;
+            .map_err(|e| FetchError::Failed(format!("Error reading remote content: {e}")))?;
         if n == 0 {
             break;
         }
         if body.len() + n > MAX_REMOTE_CONTENT_BYTES {
-            return Err(FetchError::Blocked("Remote content is too large".into()));
+            return Err(FetchError::Blocked(format!(
+                "Remote content exceeds the {} limit",
+                human_size(MAX_REMOTE_CONTENT_BYTES)
+            )));
         }
         body.extend_from_slice(&buf[..n]);
     }
@@ -292,64 +383,78 @@ pub fn enqueue_archive(state: &AppState, email_ids: &[String]) -> Option<String>
             unique.push(id.clone());
         }
     }
-    if !unique.is_empty() {
-        let conn = state.pool.get().ok()?;
-        let placeholders = vec!["?"; unique.len()].join(", ");
-        conn.execute(
-            &format!(
-                "UPDATE archived_emails SET remote_content_status = 'pending' WHERE id IN ({placeholders})"
-            ),
-            rusqlite::params_from_iter(unique.iter()),
-        )
-        .ok();
-    }
-    queue::send_job(
+    // Enqueue FIRST, then flip to 'pending' only if the job was actually queued —
+    // marking pending before a (possibly failing) enqueue would strand emails
+    // showing "pending" with no worker to ever process them.
+    let job_id = queue::send_job(
         state,
         "remote-content",
         "archive-remote-content-batch",
         &json!({ "emailIds": unique }),
         queue::SendOptions::default(),
-    )
-}
-
-fn archive_remote_asset(state: &AppState, conn: &Connection, email_id: &str, original_url: &str) {
-    let url_hash = hash_value(original_url.as_bytes());
-    let existing: Option<(String, String, Option<String>)> = conn
-        .query_row(
-            "SELECT id, status, storage_path FROM remote_content_assets \
-             WHERE email_id = ? AND url_hash = ?",
-            rusqlite::params![email_id, url_hash],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .ok();
-    if let Some((_, status, storage_path)) = &existing {
-        if status == "archived" && storage_path.is_some() {
-            return;
-        }
-    }
-    let asset_id = match existing {
-        Some((id, _, _)) => id,
-        None => {
-            let id = uuid::Uuid::new_v4().to_string();
+    );
+    if job_id.is_some() && !unique.is_empty() {
+        if let Ok(conn) = state.pool.get() {
+            let placeholders = vec!["?"; unique.len()].join(", ");
             conn.execute(
-                "INSERT OR IGNORE INTO remote_content_assets (id, email_id, original_url, url_hash, status) \
-                 VALUES (?, ?, ?, ?, 'pending')",
-                rusqlite::params![id, email_id, original_url, url_hash],
+                &format!(
+                    "UPDATE archived_emails SET remote_content_status = 'pending' WHERE id IN ({placeholders})"
+                ),
+                rusqlite::params_from_iter(unique.iter()),
             )
             .ok();
-            // Re-read in case a concurrent writer won the insert race.
-            match conn.query_row(
-                "SELECT id FROM remote_content_assets WHERE email_id = ? AND url_hash = ?",
+        }
+    }
+    job_id
+}
+
+fn archive_remote_asset(state: &AppState, email_id: &str, original_url: &str) {
+    let url_hash = hash_value(original_url.as_bytes());
+    // Reserve the asset row, then RELEASE the pooled connection before the slow,
+    // blocking network fetch below — holding one across fetches starves the
+    // small connection pool during a large archive run.
+    let asset_id = {
+        let Ok(conn) = state.pool.get() else { return };
+        let existing: Option<(String, String, Option<String>)> = conn
+            .query_row(
+                "SELECT id, status, storage_path FROM remote_content_assets \
+                 WHERE email_id = ? AND url_hash = ?",
                 rusqlite::params![email_id, url_hash],
-                |r| r.get::<_, String>(0),
-            ) {
-                Ok(id) => id,
-                Err(_) => return,
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        if let Some((_, status, storage_path)) = &existing {
+            if status == "archived" && storage_path.is_some() {
+                return;
+            }
+        }
+        match existing {
+            Some((id, _, _)) => id,
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT OR IGNORE INTO remote_content_assets (id, email_id, original_url, url_hash, status) \
+                     VALUES (?, ?, ?, ?, 'pending')",
+                    rusqlite::params![id, email_id, original_url, url_hash],
+                )
+                .ok();
+                // Re-read in case a concurrent writer won the insert race.
+                match conn.query_row(
+                    "SELECT id FROM remote_content_assets WHERE email_id = ? AND url_hash = ?",
+                    rusqlite::params![email_id, url_hash],
+                    |r| r.get::<_, String>(0),
+                ) {
+                    Ok(id) => id,
+                    Err(_) => return,
+                }
             }
         }
     };
 
-    match fetch_remote_content(original_url, 0) {
+    let fetched = fetch_remote_content(original_url, 0);
+
+    let Ok(conn) = state.pool.get() else { return };
+    match fetched {
         Ok(fetched) => {
             let storage_path = format!(
                 "pea/remote-content/{email_id}/{asset_id}{}",
@@ -394,17 +499,10 @@ fn archive_remote_asset(state: &AppState, conn: &Connection, email_id: &str, ori
 }
 
 /// Second pass — archive url(...) images referenced by archived stylesheets.
-fn archive_stylesheet_subresources(state: &AppState, conn: &Connection, email_id: &str) {
+fn archive_stylesheet_subresources(state: &AppState, email_id: &str) {
     static URL_PAT: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?i)url\(\s*(?:"([^"]+)"|'([^']+)'|([^)]+))\s*\)"#).unwrap()
     });
-    let mut stmt = match conn.prepare(
-        "SELECT url_hash, status, storage_path, content_type, final_url, original_url \
-         FROM remote_content_assets WHERE email_id = ?",
-    ) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
     struct AssetRow {
         url_hash: String,
         status: String,
@@ -413,8 +511,18 @@ fn archive_stylesheet_subresources(state: &AppState, conn: &Connection, email_id
         final_url: Option<String>,
         original_url: String,
     }
-    let assets: Vec<AssetRow> = stmt
-        .query_map([email_id], |r| {
+    // Read the asset rows in a short scope and drop the connection: the CSS
+    // parsing and sub-resource fetches below must not pin a pooled connection.
+    let assets: Vec<AssetRow> = {
+        let Ok(conn) = state.pool.get() else { return };
+        let mut stmt = match conn.prepare(
+            "SELECT url_hash, status, storage_path, content_type, final_url, original_url \
+             FROM remote_content_assets WHERE email_id = ?",
+        ) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        stmt.query_map([email_id], |r| {
             Ok(AssetRow {
                 url_hash: r.get(0)?,
                 status: r.get(1)?,
@@ -425,7 +533,8 @@ fn archive_stylesheet_subresources(state: &AppState, conn: &Connection, email_id
             })
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
-        .unwrap_or_default();
+        .unwrap_or_default()
+    };
 
     let mut known: std::collections::HashSet<String> =
         assets.iter().map(|a| a.url_hash.clone()).collect();
@@ -470,7 +579,7 @@ fn archive_stylesheet_subresources(state: &AppState, conn: &Connection, email_id
         }
     }
     for url in sub_urls.into_iter().take(MAX_REMOTE_URLS_PER_EMAIL) {
-        archive_remote_asset(state, conn, email_id, &url);
+        archive_remote_asset(state, email_id, &url);
     }
 }
 
@@ -488,21 +597,25 @@ fn summarize_status(archived: i64, failed: i64, blocked: i64) -> &'static str {
     "failed"
 }
 
-fn archive_email_remote_content(state: &AppState, conn: &Connection, email_id: &str) -> Result<(), String> {
-    let storage_path: Option<String> = conn
-        .query_row(
+fn archive_email_remote_content(state: &AppState, email_id: &str) -> Result<(), String> {
+    let storage_path: Option<String> = {
+        let Ok(conn) = state.pool.get() else { return Ok(()) };
+        conn.query_row(
             "SELECT storage_path FROM archived_emails WHERE id = ?",
             [email_id],
             |r| r.get(0),
         )
-        .ok();
+        .ok()
+    };
     let Some(storage_path) = storage_path else { return Ok(()) };
 
-    conn.execute(
-        "UPDATE archived_emails SET remote_content_status = 'pending' WHERE id = ?",
-        [email_id],
-    )
-    .ok();
+    if let Ok(conn) = state.pool.get() {
+        conn.execute(
+            "UPDATE archived_emails SET remote_content_status = 'pending' WHERE id = ?",
+            [email_id],
+        )
+        .ok();
+    }
 
     let raw = state.storage_get(&storage_path)?;
     let html = match mail_parser::MessageParser::default().parse(&raw) {
@@ -515,20 +628,35 @@ fn archive_email_remote_content(state: &AppState, conn: &Connection, email_id: &
         .collect();
 
     if remote_urls.is_empty() {
-        conn.execute(
-            "UPDATE archived_emails SET remote_content_status = 'skipped', \
-             remote_content_asset_count = 0, remote_content_archived_at = ? WHERE id = ?",
-            rusqlite::params![now_ms(), email_id],
-        )
-        .ok();
+        if let Ok(conn) = state.pool.get() {
+            conn.execute(
+                "UPDATE archived_emails SET remote_content_status = 'skipped', \
+                 remote_content_asset_count = 0, remote_content_archived_at = ? WHERE id = ?",
+                rusqlite::params![now_ms(), email_id],
+            )
+            .ok();
+        }
         return Ok(());
     }
 
+    // Each of these acquires/releases a connection per DB touch; the network
+    // fetches they perform hold no pooled connection.
     for url in &remote_urls {
-        archive_remote_asset(state, conn, email_id, url);
+        archive_remote_asset(state, email_id, url);
     }
-    archive_stylesheet_subresources(state, conn, email_id);
+    archive_stylesheet_subresources(state, email_id);
 
+    // Clear any stale tracker "failures" recorded before the tracking filter
+    // recognized them, then recompute the status from what remains.
+    prune_tracking_assets(state, email_id);
+    recompute_email_status(state, email_id);
+    Ok(())
+}
+
+/// Recompute an email's aggregate remote-content status + asset count from its
+/// current assets. Shared by the full archive pass and single-asset retry.
+fn recompute_email_status(state: &AppState, email_id: &str) {
+    let Ok(conn) = state.pool.get() else { return };
     let (archived, failed, blocked): (i64, i64, i64) = conn
         .query_row(
             "SELECT count(*) FILTER (WHERE status = 'archived'), \
@@ -545,12 +673,80 @@ fn archive_email_remote_content(state: &AppState, conn: &Connection, email_id: &
         rusqlite::params![summarize_status(archived, failed, blocked), archived, now_ms(), email_id],
     )
     .ok();
-    Ok(())
+}
+
+/// Retry a SINGLE remote asset by its original URL: re-fetch just this one, then
+/// recompute the email's status. archive_remote_asset skips already-archived
+/// assets, so a retry never re-fetches or overwrites content that already
+/// succeeded — only the targeted failed/blocked asset is re-attempted.
+pub fn retry_asset(state: &AppState, email_id: &str, original_url: &str) {
+    archive_remote_asset(state, email_id, original_url);
+    recompute_email_status(state, email_id);
+}
+
+/// Delete an email's failed/blocked remote assets whose URL is now recognized as
+/// tracking. Only failed/blocked rows are removed — they have no stored file — so
+/// this is storage-safe and never touches archived content. Returns the count.
+fn prune_tracking_assets(state: &AppState, email_id: &str) -> usize {
+    let Ok(conn) = state.pool.get() else { return 0 };
+    let rows: Vec<(String, String)> = {
+        let mut stmt = match conn.prepare(
+            "SELECT id, original_url FROM remote_content_assets \
+             WHERE email_id = ? AND status IN ('failed', 'blocked')",
+        ) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+        stmt.query_map([email_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    };
+    let mut removed = 0;
+    for (asset_id, url) in rows {
+        if preview::is_likely_tracking_url_pub(&url)
+            && conn
+                .execute("DELETE FROM remote_content_assets WHERE id = ?", [&asset_id])
+                .unwrap_or(0)
+                > 0
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// One-shot cleanup across ALL emails: remove failed/blocked remote assets whose
+/// URLs are now recognized as tracking (recorded before the filter existed) and
+/// recompute the affected emails' statuses. Self-limiting — once cleaned, later
+/// runs find nothing — and cheap (bounded by the failed/blocked asset count).
+pub fn sweep_tracking_assets(state: &AppState) {
+    let affected: Vec<String> = {
+        let Ok(conn) = state.pool.get() else { return };
+        let mut stmt = match conn.prepare(
+            "SELECT DISTINCT email_id FROM remote_content_assets WHERE status IN ('failed', 'blocked')",
+        ) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    };
+    let mut total = 0usize;
+    for email_id in &affected {
+        let removed = prune_tracking_assets(state, email_id);
+        if removed > 0 {
+            recompute_email_status(state, email_id);
+            total += removed;
+        }
+    }
+    if total > 0 {
+        eprintln!("[remote-content] swept {total} stale tracking asset(s)");
+    }
 }
 
 /// archive-remote-content-batch processor.
 pub fn archive_batch(state: &AppState, payload: &Value) -> Result<(), String> {
-    let conn = state.pool.get().map_err(|e| e.to_string())?;
     let ids: Vec<String> = payload
         .get("emailIds")
         .and_then(|v| v.as_array())
@@ -567,14 +763,18 @@ pub fn archive_batch(state: &AppState, payload: &Value) -> Result<(), String> {
             unique.push(id);
         }
     }
+    // No pooled connection is held across the loop: each email's DB touches are
+    // short scopes and its network fetches hold none.
     for email_id in unique {
-        if let Err(e) = archive_email_remote_content(state, &conn, &email_id) {
-            conn.execute(
-                "UPDATE archived_emails SET remote_content_status = 'failed', \
-                 remote_content_archived_at = ? WHERE id = ?",
-                rusqlite::params![now_ms(), email_id],
-            )
-            .ok();
+        if let Err(e) = archive_email_remote_content(state, &email_id) {
+            if let Ok(conn) = state.pool.get() {
+                conn.execute(
+                    "UPDATE archived_emails SET remote_content_status = 'failed', \
+                     remote_content_archived_at = ? WHERE id = ?",
+                    rusqlite::params![now_ms(), email_id],
+                )
+                .ok();
+            }
             eprintln!("[remote-content] archive failed for {email_id}: {e}");
         }
     }
@@ -607,6 +807,13 @@ mod tests {
         // the rest of those /16s is public
         assert!(!is_private_ipv4([198, 51, 1, 1]));
         assert!(!is_private_ipv4([203, 0, 1, 1]));
+        // 192.0.0.0/24 and TEST-NET-1 192.0.2.0/24 block; the rest of 192.0/16
+        // and all of the (public, globally-routable) 192.2/16 must NOT.
+        assert!(is_private_ipv4([192, 0, 0, 5]));
+        assert!(is_private_ipv4([192, 0, 2, 5]));
+        assert!(!is_private_ipv4([192, 0, 1, 5]));
+        assert!(!is_private_ipv4([192, 0, 99, 5]));
+        assert!(!is_private_ipv4([192, 2, 3, 4]));
     }
 
     #[test]
@@ -624,6 +831,23 @@ mod tests {
     }
 
     #[test]
+    fn http_status_reasons() {
+        assert_eq!(
+            describe_http_status(reqwest::StatusCode::NOT_FOUND),
+            "Remote server returned HTTP 404 Not Found"
+        );
+        assert_eq!(
+            describe_http_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            "Remote server returned HTTP 500 Internal Server Error"
+        );
+        // A code with no canonical reason phrase omits it.
+        assert_eq!(
+            describe_http_status(reqwest::StatusCode::from_u16(599).unwrap()),
+            "Remote server returned HTTP 599"
+        );
+    }
+
+    #[test]
     fn validate_archivable_sniffs_and_rejects() {
         let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
         assert_eq!(validate_archivable(&png, None).ok().as_deref(), Some("image/png"));
@@ -633,6 +857,11 @@ mod tests {
             validate_archivable(b"body { color: red }", Some("text/css")).ok().as_deref(),
             Some("text/css")
         );
+        // The block reason names the actual, specific content type.
+        let svg = validate_archivable(b"<svg></svg>", Some("image/svg+xml")).unwrap_err();
+        assert!(svg.message().contains("image/svg+xml"), "reason: {}", svg.message());
+        let html = validate_archivable(b"<html></html>", Some("text/html; charset=utf-8")).unwrap_err();
+        assert!(html.message().contains("text/html"), "reason: {}", html.message());
     }
 
     #[test]
@@ -640,6 +869,10 @@ mod tests {
         use std::net::IpAddr;
         assert!(is_blocked_ip(&"::1".parse::<IpAddr>().unwrap()), "loopback");
         assert!(is_blocked_ip(&"::ffff:127.0.0.1".parse::<IpAddr>().unwrap()), "mapped loopback");
+        assert!(is_blocked_ip(&"::127.0.0.1".parse::<IpAddr>().unwrap()), "ipv4-compatible loopback");
+        assert!(is_blocked_ip(&"2002:7f00:0001::".parse::<IpAddr>().unwrap()), "6to4 wrapping 127.0.0.1");
+        assert!(is_blocked_ip(&"64:ff9b::a00:1".parse::<IpAddr>().unwrap()), "NAT64 wrapping 10.0.0.1");
         assert!(!is_blocked_ip(&"2001:4860:4860::8888".parse::<IpAddr>().unwrap()), "public ipv6");
+        assert!(!is_blocked_ip(&"2002:0808:0808::".parse::<IpAddr>().unwrap()), "6to4 wrapping public 8.8.8.8");
     }
 }

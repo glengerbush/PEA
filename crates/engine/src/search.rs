@@ -1,4 +1,4 @@
-//! Port of the Node SearchService (FTS5) — must produce byte-identical JSON.
+//! Full-text search over archived emails (SQLite FTS5).
 
 use rusqlite::{types::Value as SqlValue, Connection};
 use serde_json::{json, Map, Value};
@@ -187,9 +187,9 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
-/// Port of IngestionService.findGroupSourceIds — root = mergedIntoId ?? id,
-/// plus all children of the root. `None` when the source id doesn't exist
-/// (Node throws 'Ingestion source not found' there).
+/// Source ids in a merge group — root = merged_into_id ?? id, plus all
+/// children of the root. `None` when the source id doesn't exist (the caller
+/// maps that to a 500).
 pub fn group_source_ids(conn: &Connection, source_id: &str) -> Option<Vec<String>> {
     let (id, merged): (String, Option<String>) = conn
         .query_row(
@@ -211,7 +211,7 @@ pub fn group_source_ids(conn: &Connection, source_id: &str) -> Option<Vec<String
     Some(ids)
 }
 
-/// Port of buildFilterSql — parameterized SQL over archived_emails (alias ae).
+/// Builds parameterized SQL over archived_emails (alias ae).
 pub fn build_filter_sql(conn: &Connection, q: &dyn Fn(&str) -> Option<String>) -> FilterSql {
     let mut parts: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
@@ -339,7 +339,7 @@ fn parse_json_or(row_value: Option<String>, default: Value) -> Value {
         .unwrap_or(default)
 }
 
-/// Port of rowToDocument — the EmailDocument JSON shape, key order preserved.
+/// Builds the EmailDocument JSON shape, key order preserved.
 pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Value {
     let recipients: Value =
         parse_json_or(row.get::<_, Option<String>>("recipients").unwrap_or(None), json!({}));
@@ -411,7 +411,7 @@ pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Valu
     Value::Object(doc)
 }
 
-/// Port of queryArchivedEmails. `q` looks up a query parameter by name.
+/// Runs the archived-email search/listing query. `q` looks up a query parameter by name.
 pub fn query_archived_emails(
     conn: &Connection,
     q: &dyn Fn(&str) -> Option<String>,

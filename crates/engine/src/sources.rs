@@ -1,5 +1,5 @@
-//! Port of IngestionService's source lifecycle: create (derive name, test
-//! connection, auto-trigger import), update (ready → initial import),
+//! Ingestion source lifecycle: create (derive name, test connection,
+//! auto-trigger import), update (ready → initial import),
 //! delete (children, storage, FTS, row), unmerge, and re-import.
 
 use crate::state::AppState;
@@ -140,7 +140,7 @@ pub fn safe_source_json(conn: &Connection, id: &str) -> Option<Value> {
 }
 
 /// Applies an update dto (status/name/lastImport* / providerConfig) and fires the
-/// initial import when status transitions to ready. Mirrors update().
+/// initial import when status transitions to ready.
 pub fn update_source(
     state: &AppState,
     conn: &Connection,
@@ -188,7 +188,7 @@ pub fn update_source(
         push(&mut sets, &mut params, "provider_config", config.to_string().into());
     }
     if !sets.is_empty() {
-        // drizzle .set() doesn't touch updated_at implicitly, so neither do we.
+        // Leave updated_at untouched on these updates.
         let sql = format!("UPDATE ingestion_sources SET {} WHERE id = ?", sets.join(", "));
         params.push(id.to_string().into());
         conn.execute(&sql, rusqlite::params_from_iter(params.iter()))
@@ -202,7 +202,7 @@ pub fn update_source(
     Ok(())
 }
 
-/// IngestionService.create — derive name, store provider config as plain JSON, insert
+/// Create a source — derive name, store provider config as plain JSON, insert
 /// pending, test the connection, then flip to ready (which
 /// triggers the initial import). On test failure the source is deleted and
 /// the error message is surfaced (the endpoint returns it as a 400).
@@ -303,7 +303,7 @@ pub fn trigger_reimport(state: &AppState, conn: &Connection, id: &str) -> Result
     Ok(())
 }
 
-/// delete() — children first, then a FK-safe DB teardown, then on-disk blobs.
+/// Delete a source — children first, then a FK-safe DB teardown, then on-disk blobs.
 ///
 /// The DB deletes run in dependency order *before* any file/FTS removal: a
 /// single `DELETE FROM ingestion_sources` cannot be relied upon, because
@@ -329,7 +329,7 @@ pub fn delete_source(state: &AppState, conn: &Connection, id: &str) -> Result<()
     delete_source_rows(conn, id, &mut files, &mut dirs)?;
     tx.commit().map_err(|e| e.to_string())?;
 
-    // The DB is now consistent; remove the blobs it used to reference.
+    // DB rows are gone; delete the now-orphaned blobs.
     for path in files {
         if let Ok(file) = state.storage_abs(&path) {
             std::fs::remove_file(file).ok();

@@ -1,5 +1,4 @@
-//! Write endpoints — ports of the Node controllers' POST/PUT/PATCH/DELETE
-//! surface, byte-matching response shapes and error messages.
+//! Write endpoints: POST/PUT/PATCH/DELETE handlers for the HTTP API.
 
 use crate::state::AppState;
 use crate::{emails, sources};

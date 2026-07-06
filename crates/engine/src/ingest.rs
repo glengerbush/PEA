@@ -1,15 +1,14 @@
-//! Port of the Node ingestion pipeline: IngestionService.processEmail
-//! (dedupe, fingerprints, attachment stripping + dedup, blob storage,
-//! DB rows) and IndexingService/SearchService (FTS document build + insert).
-//! Readers live in readers.rs / eml.rs; job orchestration in
-//! processors.rs. `import_mbox` drives the same queue pipeline from the CLI.
+//! The ingestion pipeline: process each email (dedupe, fingerprints,
+//! attachment stripping + dedup, blob storage, DB rows) and index it
+//! (FTS document build + insert). Readers live in readers.rs / eml.rs;
+//! job orchestration in processors.rs. `import_mbox` drives the same queue
+//! pipeline from the CLI.
 //!
-//! Known divergences from Node (verified by scripts/golden-import.mjs):
-//!  - stored .eml bytes for emails with attachments: Node re-composed the
-//!    message; this engine "hollows" it instead (original bytes with each
-//!    attachment body removed and an X-PEA-Attachment marker added; the
-//!    /eml endpoint splices the blobs back for download)
-//!  - extracted text for pdf/docx/xlsx attachments (different extractors)
+//! Two details worth knowing:
+//!  - stored .eml bytes for emails with attachments are "hollowed": the
+//!    original bytes with each attachment body removed and an X-PEA-Attachment
+//!    marker added; the /eml endpoint splices the blobs back for download.
+//!  - pdf/docx/xlsx attachment text is extracted so it is searchable.
 
 use crate::state::AppState;
 use mail_parser::{Message, MessageParser, MimeHeaders};
@@ -38,7 +37,7 @@ fn uuid() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Fingerprint helpers (IngestionService head)
+// Fingerprint helpers
 // ---------------------------------------------------------------------------
 
 fn normalize_source_path(path: &str) -> String {
@@ -94,7 +93,7 @@ fn sanitize_path_component(value: &str) -> String {
     }
 }
 
-/// IndexingService.sanitizeText — strips U+FFFD and control chars, trims.
+/// Strips U+FFFD and control chars, trims.
 pub(crate) fn sanitize_text(text: &str) -> String {
     static CTRL: LazyLock<Regex> =
         LazyLock::new(|| Regex::new("[\u{0000}-\u{0008}\u{000B}\u{000C}\u{000E}-\u{001F}\u{007F}]").unwrap());
@@ -145,8 +144,7 @@ pub struct EmailObj {
     pub raw: Vec<u8>,
 }
 
-/// Raw header value, trimmed. For the headers used here (message-id,
-/// references, x-folder, x-gmail-labels) this matches mailparser's strings.
+/// Raw header value, trimmed.
 fn header_string(msg: &Message, name: &str) -> Option<String> {
     let value = msg.header_raw(name)?;
     Some(value.trim().to_string())
@@ -198,11 +196,10 @@ pub(crate) fn part_content_type(part: &mail_parser::MessagePart) -> Option<Strin
     })
 }
 
-/// Minimal port of html-to-text v9 defaults (as mailparser calls it):
-/// paragraphs/blocks → blank lines, <br> → newline, headings uppercased,
-/// `<a href>` → "text [href]" (skipped for #anchors), `<img>` → "alt [src]".
-/// Whitespace details differ (no 80-col wrapping); consumers only need the
-/// token sequence (duplicate hashes normalize, FTS comparisons collapse ws).
+/// Render HTML to plain text: paragraphs/blocks → blank lines, <br> → newline,
+/// headings uppercased, `<a href>` → "text [href]" (skipped for #anchors),
+/// `<img>` → "alt [src]". No 80-col wrapping; consumers only need the token
+/// sequence (duplicate hashes normalize, FTS comparisons collapse ws).
 fn html_to_text(html: &str) -> String {
     static SCRIPT: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?is)<script\b[^>]*>.*?</script\s*>").unwrap());
@@ -305,15 +302,14 @@ fn html_to_text(html: &str) -> String {
     BLANKS.replace_all(&out, "\n\n").trim().to_string()
 }
 
-/// mailparser html/text semantics:
+/// Extract the message's html and text bodies:
 ///  - html: html parts joined with `<br/>\n`, with `cid:` image references
 ///    replaced by data: URIs for matching image/* attachments.
 ///  - text: text parts joined with `\n`; when the message is a bare text/html
-///    root with no text part, htmlToText(html); otherwise empty.
+///    root with no text part, the html rendered to text; otherwise empty.
 pub(crate) fn mailparser_text_and_html(msg: &Message) -> (String, String) {
     // mail-parser auto-converts (text_body points at the html part for
-    // html-only mail and vice versa) — filter by the part's REAL type so the
-    // semantics match mailparser exactly.
+    // html-only mail and vice versa) — filter by the part's REAL type.
     let html_parts: Vec<String> = msg
         .html_body
         .iter()
@@ -374,7 +370,7 @@ pub(crate) fn mailparser_text_and_html(msg: &Message) -> (String, String) {
             .into_owned();
     }
 
-    // Bare text/html root (mailparser: node.root && !hasText → htmlToText).
+    // Bare text/html root with no plain-text part → render its HTML.
     let root_is_html = msg
         .part(0)
         .map_or(false, |p| part_content_type(p).as_deref() == Some("text/html"));
@@ -463,7 +459,7 @@ pub(crate) fn parse_message(
         .collect();
 
     let thread_id = thread_id_for(&msg);
-    // mailparser keeps the <> brackets on messageId.
+    // Keep the <> brackets on the message-id.
     let header_message_id = msg.message_id().map(|mid| format!("<{}>", mid));
     let message_id = header_message_id
         .clone()
@@ -902,7 +898,7 @@ pub fn import_mbox(
     })
 }
 
-/// IngestionService.processEmail — returns the archived email id, or None for
+/// Process one email — returns the archived email id, or None for
 /// an intra-group duplicate (same message-id). `effective` is the merge-group
 /// root that owns storage and DB rows; `group_ids` scope the dedupe check.
 pub(crate) fn process_email(
@@ -914,7 +910,7 @@ pub(crate) fn process_email(
     email: &EmailObj,
     import_source: &str,
 ) -> Result<Option<String>, String> {
-    // Node: header value if present, else generated-<sha(raw)>-<sourceId>-<email.id>.
+    // Header value if present, else generated-<sha(raw)>-<sourceId>-<email.id>.
     let message_id = &email.header_message_id.clone().unwrap_or_else(|| {
         format!("generated-{}-{}-{}", sha256_hex(&email.raw), source_id, email.id)
     });
@@ -1153,7 +1149,7 @@ pub(crate) fn process_email(
     Ok(Some(archived_id))
 }
 
-/// IndexingService.indexEmailById + SearchService.addDocuments for one email.
+/// Index one email: build its FTS document and insert it.
 pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -> Result<(), String> {
     struct Row {
         subject: Option<String>,
@@ -1234,8 +1230,7 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
         }
     }
 
-    // Assemble columns exactly as SearchService.addDocuments does, after
-    // IndexingService's sanitizeObject pass (sanitizeText on every string).
+    // Assemble the FTS columns after sanitizing every string field.
     let recipients: Value = row
         .recipients
         .as_deref()

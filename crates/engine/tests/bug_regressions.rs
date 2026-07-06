@@ -1,5 +1,5 @@
 //! Regression tests for bugs found by the correctness audit. Each asserts the
-//! CORRECT (spec) behavior — they failed before the fix.
+//! correct (spec) behavior.
 mod common;
 use common::*;
 
@@ -106,8 +106,8 @@ async fn malformed_pdf_attachment_does_not_abort_import() {
     assert_eq!(n, Ok(1), "import completes despite the bad PDF");
 }
 
-// BUG (silent no-op): ISO-8601 date-range filters must actually constrain the
-// query (to_timestamp previously returned None for any non-integer string).
+// ISO-8601 date-range filters must actually constrain the query: to_timestamp
+// parses date strings, not only integer timestamps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn iso_date_range_filters_apply() {
     let a = TempArchive::new();
@@ -161,8 +161,8 @@ async fn iso_offset_and_adversarial_values_are_safe() {
     a.import_mbox_str(&mbox_msg("<d@x>", "A <a@x.com>", "b@x.com", "D", &[], "body")); // sent 2024-01-01
     let app = a.router();
     // negative-offset ISO must be parsed (offset stripped) and the filter applied:
-    // a June cutoff excludes the January email — before the fix the '-08:00' broke
-    // parsing and the filter was silently ignored (would return 1).
+    // a June cutoff excludes the January email (the '-08:00' offset must not break
+    // parsing).
     let (_, b) = get_json(&app, "/api/v1/archived-emails?sentAfter=2024-06-01T00:00:00-08:00").await;
     assert_eq!(b["total"], json!(0), "negative-offset ISO date filter applies");
     // absurd year must not overflow/panic
@@ -285,10 +285,9 @@ async fn approve_exact_duplicates_are_recoverable_from_trash() {
     assert_eq!(trash["hits"][0]["id"], json!(dups[0]));
 }
 
-// After the tracking filter learned to recognize a tracker (e.g. Amazon's
-// gp/r.html open-redirect), the startup sweep must clear the stale failed/blocked
-// asset it recorded before the filter existed — but must NOT remove a genuine
-// failed asset the user might still want to retry.
+// When the tracking filter recognizes a tracker (e.g. Amazon's gp/r.html
+// open-redirect), the startup sweep clears the matching failed/blocked assets —
+// but must NOT remove a genuine failed asset the user might still want to retry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sweep_clears_stale_tracking_assets_only() {
     let a = TempArchive::new();
@@ -300,7 +299,7 @@ async fn sweep_clears_stale_tracking_assets_only() {
     };
 
     a.with_conn(|conn| {
-        // A tracker recorded as 'failed' before the filter existed…
+        // A tracker the filter recognizes, stored as a 'failed' asset…
         conn.execute(
             "INSERT INTO remote_content_assets (id, email_id, original_url, url_hash, status) \
              VALUES (?,?,?,?,'failed')",

@@ -1,5 +1,4 @@
-//! Job processors — ports of jobs/processors/*.processor.ts, dispatched by
-//! (queue, job name) exactly like the Node makeDispatcher maps.
+//! Job processors, dispatched by (queue, job name).
 
 use crate::state::AppState;
 use crate::{readers, ingest, queue, search, sessions, sources};
@@ -124,8 +123,7 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
         let group_ids = search::group_source_ids(&conn, &source_id)
             .ok_or("Ingestion source not found")?;
 
-        // Collect archived ids, then flush in indexing-batch-sized chunks
-        // (Node flushes mid-stream; the resulting job set is identical).
+        // Collect archived ids, then flush in indexing-batch-sized chunks.
         let mut pending: Vec<String> = Vec::new();
         {
             // Streaming a large mbox can take much longer than the 30-min
@@ -187,7 +185,7 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
             Ok(())
         }
         Err(message) => {
-            // Node wraps the reader failure with the mailbox context.
+            // Wrap the reader failure with the mailbox context.
             let message = format!("Failed to process import {import_source}: {message}");
             let outcome = sessions::record_mailbox_result(&conn, &session_id, Err(&message))?;
             if outcome.is_last {

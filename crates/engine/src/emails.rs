@@ -1,5 +1,4 @@
-//! Ports of ArchivedEmailService.deleteArchivedEmail, ArchiveTagService, and
-//! ContactsService (csv/vcf import).
+//! Archived-email deletion, tag updates, and contacts (csv/vcf import).
 
 use crate::state::AppState;
 use std::sync::LazyLock;
@@ -129,7 +128,7 @@ pub fn delete_archived_email(state: &AppState, conn: &Connection, email_id: &str
 }
 
 // ---------------------------------------------------------------------------
-// ArchiveTagService
+// Tag updates
 // ---------------------------------------------------------------------------
 
 const MAX_BULK_TAG_SIZE: usize = 1000;
@@ -195,7 +194,7 @@ fn apply_tag_changes(current: &Value, add: &[String], remove: &[String]) -> Vec<
     next
 }
 
-/// updateEmailTags — returns the Node response body or an error message
+/// updateEmailTags — returns the updated-email response body or an error message
 /// (the endpoint maps errors to 400 {message}).
 pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String> {
     let mut email_ids: Vec<String> = Vec::new();
@@ -293,7 +292,7 @@ pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String
 }
 
 // ---------------------------------------------------------------------------
-// ContactsService import (csv / vcf)
+// Contacts import (csv / vcf)
 // ---------------------------------------------------------------------------
 
 static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").unwrap());

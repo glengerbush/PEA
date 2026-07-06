@@ -1,8 +1,7 @@
-//! Port of RemoteContentService's archive side: SSRF-guarded fetching of
-//! remote images/stylesheets referenced by archived emails, stored on disk
-//! and recorded in remote_content_assets. Statuses mirror the Node
-//! implementation; the human-readable block/fail reasons are intentionally more
-//! specific than Node's (they name the offending type / size / address).
+//! Archive side of remote content: SSRF-guarded fetching of remote
+//! images/stylesheets referenced by archived emails, stored on disk and
+//! recorded in remote_content_assets. The human-readable block/fail reasons
+//! name the offending type / size / address.
 
 use crate::preview::{self, normalize_content_type};
 use crate::state::AppState;
@@ -107,8 +106,8 @@ fn is_default_port(url: &url::Url) -> bool {
     }
 }
 
-/// assertSafeRemoteUrl — protocol/credentials/port/hostname checks + DNS
-/// resolution with private-range blocking. Returns the pinned address.
+/// Protocol/credentials/port/hostname checks + DNS resolution with
+/// private-range blocking. Returns the pinned address.
 fn assert_safe_remote_url(url: &url::Url) -> Result<IpAddr, FetchError> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(FetchError::Blocked("Unsupported remote content protocol".into()));
@@ -133,8 +132,7 @@ fn assert_safe_remote_url(url: &url::Url) -> Result<IpAddr, FetchError> {
         return Ok(ip);
     }
     // A name that doesn't resolve is a transient/technical failure — recorded as
-    // 'failed', not 'blocked'. (Node surfaced the raw getaddrinfo message here; we
-    // use a readable one.)
+    // 'failed', not 'blocked'.
     let addresses: Vec<IpAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(lookup_host, 80))
         .map_err(|_| {
             FetchError::Failed(format!("Could not resolve host '{lookup_host}' (DNS lookup failed)"))
@@ -275,8 +273,8 @@ fn describe_http_status(status: reqwest::StatusCode) -> String {
     }
 }
 
-/// fetchRemoteContent — blocking reqwest with manual redirects so every hop
-/// re-runs the SSRF checks, pinned to the resolved address.
+/// Blocking reqwest fetch with manual redirects so every hop re-runs the SSRF
+/// checks, pinned to the resolved address.
 fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched, FetchError> {
     if redirect_count > MAX_REDIRECTS {
         return Err(FetchError::Blocked("Too many redirects".into()));
@@ -375,7 +373,7 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
     Ok(Fetched { body, content_type, final_url: url.to_string() })
 }
 
-/// enqueueRemoteContentArchive — flips emails to 'pending' and queues a batch.
+/// Flips emails to 'pending' and queues an archive batch.
 pub fn enqueue_archive(state: &AppState, email_ids: &[String]) -> Option<String> {
     let mut unique: Vec<String> = Vec::new();
     for id in email_ids {
@@ -646,8 +644,8 @@ fn archive_email_remote_content(state: &AppState, email_id: &str) -> Result<(), 
     }
     archive_stylesheet_subresources(state, email_id);
 
-    // Clear any stale tracker "failures" recorded before the tracking filter
-    // recognized them, then recompute the status from what remains.
+    // Remove any failed/blocked assets whose URLs match the tracking filter,
+    // then recompute the status from what remains.
     prune_tracking_assets(state, email_id);
     recompute_email_status(state, email_id);
     Ok(())
@@ -684,8 +682,8 @@ pub fn retry_asset(state: &AppState, email_id: &str, original_url: &str) {
     recompute_email_status(state, email_id);
 }
 
-/// Delete an email's failed/blocked remote assets whose URL is now recognized as
-/// tracking. Only failed/blocked rows are removed — they have no stored file — so
+/// Delete an email's failed/blocked remote assets whose URL matches the tracking
+/// filter. Only failed/blocked rows are removed — they have no stored file — so
 /// this is storage-safe and never touches archived content. Returns the count.
 fn prune_tracking_assets(state: &AppState, email_id: &str) -> usize {
     let Ok(conn) = state.pool.get() else { return 0 };
@@ -716,9 +714,9 @@ fn prune_tracking_assets(state: &AppState, email_id: &str) -> usize {
 }
 
 /// One-shot cleanup across ALL emails: remove failed/blocked remote assets whose
-/// URLs are now recognized as tracking (recorded before the filter existed) and
-/// recompute the affected emails' statuses. Self-limiting — once cleaned, later
-/// runs find nothing — and cheap (bounded by the failed/blocked asset count).
+/// URLs match the tracking filter and recompute the affected emails' statuses.
+/// Self-limiting — once cleaned, later runs find nothing — and cheap (bounded by
+/// the failed/blocked asset count).
 pub fn sweep_tracking_assets(state: &AppState) {
     let affected: Vec<String> = {
         let Ok(conn) = state.pool.get() else { return };

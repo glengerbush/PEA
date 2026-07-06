@@ -184,17 +184,126 @@ async fn handle_native_update_check(app: tauri::AppHandle) -> http::Response<Vec
     json_response(200, &payload.to_string())
 }
 
+/// Webview-pollable state for an in-progress self-update. The install runs in a
+/// background task (below); it writes phase + byte counts here and the Settings
+/// page polls GET /api/v1/native/update-progress to render a progress bar and
+/// announce the restart before the process is replaced.
+#[derive(Clone, Copy)]
+enum UpdatePhase {
+    Idle,
+    Downloading,
+    Installing,
+    Restarting,
+    Error,
+}
+
+impl UpdatePhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            UpdatePhase::Idle => "idle",
+            UpdatePhase::Downloading => "downloading",
+            UpdatePhase::Installing => "installing",
+            UpdatePhase::Restarting => "restarting",
+            UpdatePhase::Error => "error",
+        }
+    }
+}
+
+struct UpdateProgress {
+    phase: UpdatePhase,
+    downloaded: u64,
+    content_length: u64,
+    error: Option<String>,
+}
+
+impl UpdateProgress {
+    const fn new() -> Self {
+        Self {
+            phase: UpdatePhase::Idle,
+            downloaded: 0,
+            content_length: 0,
+            error: None,
+        }
+    }
+}
+
+static UPDATE_PROGRESS: std::sync::Mutex<UpdateProgress> =
+    std::sync::Mutex::new(UpdateProgress::new());
+
+fn set_update_error(message: String) {
+    if let Ok(mut progress) = UPDATE_PROGRESS.lock() {
+        progress.phase = UpdatePhase::Error;
+        progress.error = Some(message);
+    }
+}
+
+/// Current self-update progress, exposed as GET /api/v1/native/update-progress.
+/// Polled by the Settings page after it POSTs update-install so it can show the
+/// download bar and, finally, the "restarting" notice.
+async fn handle_native_update_progress() -> http::Response<Vec<u8>> {
+    let payload = match UPDATE_PROGRESS.lock() {
+        Ok(progress) => serde_json::json!({
+            "phase": progress.phase.as_str(),
+            "downloaded": progress.downloaded,
+            "contentLength": progress.content_length,
+            "error": progress.error.clone(),
+        }),
+        Err(_) => serde_json::json!({ "phase": "error", "error": "progress unavailable" }),
+    };
+    json_response(200, &payload.to_string())
+}
+
 /// Download + install the available signed release and relaunch, exposed as
-/// POST /api/v1/native/update-install. The install runs in the background so
-/// the HTTP response returns immediately; the app restarts once it finishes.
+/// POST /api/v1/native/update-install. The install runs in the background so the
+/// HTTP response returns immediately; download progress is written to
+/// UPDATE_PROGRESS (polled via update-progress) and the app restarts once it
+/// finishes — after a short beat so the webview can render the restart notice.
 async fn handle_native_update_install(app: tauri::AppHandle) -> http::Response<Vec<u8>> {
     use tauri_plugin_updater::UpdaterExt;
+    if let Ok(mut progress) = UPDATE_PROGRESS.lock() {
+        *progress = UpdateProgress::new();
+        progress.phase = UpdatePhase::Downloading;
+    }
     tauri::async_runtime::spawn(async move {
-        let Ok(updater) = app.updater() else { return };
-        let Ok(Some(update)) = updater.check().await else { return };
-        match update.download_and_install(|_, _| {}, || {}).await {
-            Ok(()) => app.restart(),
-            Err(error) => eprintln!("update failed: {error}"),
+        let updater = match app.updater() {
+            Ok(updater) => updater,
+            Err(error) => return set_update_error(error.to_string()),
+        };
+        let update = match updater.check().await {
+            Ok(Some(update)) => update,
+            Ok(None) => return set_update_error("No update available".into()),
+            Err(error) => return set_update_error(error.to_string()),
+        };
+        let outcome = update
+            .download_and_install(
+                |chunk_length, content_length| {
+                    if let Ok(mut progress) = UPDATE_PROGRESS.lock() {
+                        progress.phase = UpdatePhase::Downloading;
+                        progress.downloaded += chunk_length as u64;
+                        progress.content_length = content_length.unwrap_or(0);
+                    }
+                },
+                || {
+                    if let Ok(mut progress) = UPDATE_PROGRESS.lock() {
+                        progress.phase = UpdatePhase::Installing;
+                    }
+                },
+            )
+            .await;
+        match outcome {
+            Ok(()) => {
+                if let Ok(mut progress) = UPDATE_PROGRESS.lock() {
+                    progress.phase = UpdatePhase::Restarting;
+                }
+                // Give the webview a beat to poll the "restarting" phase and show
+                // its notice before the running process is replaced.
+                let _ = tauri::async_runtime::spawn_blocking(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                })
+                .await;
+                app.restart();
+            }
+            Err(error) => set_update_error(error.to_string()),
         }
     });
     json_response(202, "{\"started\":true}")
@@ -271,6 +380,10 @@ fn main() {
                 }
                 if request.uri().path() == "/api/v1/native/update-install" {
                     responder.respond(handle_native_update_install(app).await);
+                    return;
+                }
+                if request.uri().path() == "/api/v1/native/update-progress" {
+                    responder.respond(handle_native_update_progress().await);
                     return;
                 }
                 let router: axum::Router = {

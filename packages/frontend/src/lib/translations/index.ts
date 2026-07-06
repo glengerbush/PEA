@@ -1,9 +1,8 @@
 import { readable } from 'svelte/store';
 import en from './en.json';
 
-// Single-user local app — English only, no locale switching. This replaces
-// the sveltekit-i18n runtime with a ~30-line dot-path lookup. Existing
-// `$t('app.x.y')` and `$t('app.x.y', { count })` call sites work unchanged.
+// Single-user local app — English only, no locale switching. A small dot-path
+// lookup backing `$t('app.x.y')` and `$t('app.x.y', { count })`.
 
 type Params = Record<string, string | number>;
 

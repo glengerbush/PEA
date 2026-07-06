@@ -119,7 +119,7 @@ async fn from_filter_matches_sender_email() {
 }
 
 // ---- pagination: total is consistent across pages; slices don't overlap ----
-//  (regression guard: page 1 previously returned 0 due to COUNT(*) OVER () + bm25)
+//  (guards against COUNT(*) OVER () + bm25 dropping page 1's rows)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pagination_total_consistent_and_slices_disjoint() {
     let a = TempArchive::new();

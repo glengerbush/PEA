@@ -1,8 +1,7 @@
-//! Fresh-data-dir provisioning — the Rust twin of embedded.ts + drizzle's
-//! migrator + SearchService.ensureReady. Single-user local app: no user record.
-//! Drizzle bookkeeping is reproduced exactly (same "__drizzle_migrations"
-//! table, same sha256 hashes, same journal `when` ordering) so the Node and
-//! Rust engines can run migrations interchangeably on the same archive.db.
+//! Fresh-data-dir provisioning: run schema migrations, set up FTS, and create
+//! the storage dir. Single-user local app: no user record. Applied migrations
+//! are tracked in the `__drizzle_migrations` table by sha256 hash, in journal
+//! `when` order.
 
 use include_dir::{include_dir, Dir};
 use rusqlite::Connection;
@@ -13,7 +12,8 @@ use std::path::Path;
 static MIGRATIONS: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
-/// drizzle-orm better-sqlite3 migrate(): identical table, hash, and ordering.
+/// Apply pending migrations, recording each in `__drizzle_migrations` by
+/// sha256 hash in journal `when` order.
 pub fn run_migrations(conn: &Connection) -> Result<usize, String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS \"__drizzle_migrations\" (\n\
@@ -84,7 +84,7 @@ pub fn run_migrations(conn: &Connection) -> Result<usize, String> {
     }
 }
 
-/// SearchService.ensureReady — FTS5 DDL + orphan sweep.
+/// ensureReady — FTS5 DDL + orphan sweep.
 pub fn ensure_fts(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS email_fts USING fts5( \

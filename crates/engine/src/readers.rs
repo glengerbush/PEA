@@ -334,7 +334,7 @@ pub fn for_each_email(
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("[reader] failed to read input {}: {e}", input.file_path);
-                    continue; // Node logs + skips the input
+                    continue; // log and skip this input
                 }
             };
             if input.is_emlx {

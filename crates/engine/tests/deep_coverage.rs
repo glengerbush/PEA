@@ -80,7 +80,7 @@ async fn attachment_hollow_rebuild_round_trips() {
     let app = a.router();
     let id = { let (_, b) = get_json(&app, "/api/v1/archived-emails").await; b["hits"][0]["id"].as_str().unwrap().to_string() };
 
-    // the stored (hollowed) .eml no longer carries the attachment body inline...
+    // the stored (hollowed) .eml omits the attachment body inline...
     let (_, raw) = send(&app, "GET", &format!("/api/v1/archived-emails/{id}/raw"), None).await;
     assert!(!String::from_utf8_lossy(&raw).contains("SEVMTE9XT1JMRA=="), "attachment hollowed out of storage");
     // ...but the downloadable .eml splices it back in.

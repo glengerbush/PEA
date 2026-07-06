@@ -33,7 +33,7 @@ fn clamp_positive(value: Option<&str>, fallback: i64, max: i64) -> i64 {
     }
 }
 
-/// mapEmail — the shared per-email shape of both duplicate listings.
+/// The shared per-email shape of both duplicate listings.
 fn map_email(row: &rusqlite::Row) -> rusqlite::Result<Map<String, Value>> {
     let mut doc = Map::new();
     doc.insert("id".into(), json!(row.get::<_, String>("id")?));
@@ -104,7 +104,7 @@ pub fn list_exact_groups(
     let reason = reason.filter(|r| allowed.contains(r));
 
     // Pull every email's duplicate signals in one pass, then group by CONNECTED
-    // COMPONENT (union-find), exactly like the Node implementation.
+    // COMPONENT (union-find).
     let mut stmt = conn
         .prepare(
             "WITH attachment_sets AS ( \
@@ -189,7 +189,7 @@ pub fn list_exact_groups(
         }
     }
 
-    // Assemble connected components in first-seen order (JS Map semantics).
+    // Assemble connected components in first-seen (insertion) order.
     let mut component_order: Vec<usize> = Vec::new();
     let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
     for idx in 0..signal_rows.len() {
@@ -270,7 +270,7 @@ pub fn list_exact_groups(
             .unwrap_or("")
             .to_string();
         if emails.len() <= 1 || keeper.is_empty() {
-            continue; // groups.filter(...) in Node
+            continue; // skip clusters that collapse to a single keeper
         }
         let primary = REASON_KEYS
             .iter()

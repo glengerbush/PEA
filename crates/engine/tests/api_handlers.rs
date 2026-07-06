@@ -1,8 +1,8 @@
 //! HTTP handler smoke tests. Builds the real axum router over a temp archive
-//! (provisioned + populated from the golden mbox) and drives it with
+//! (provisioned + populated from the sample mbox) and drives it with
 //! `tower::ServiceExt::oneshot` — no socket, no reqwest. This covers the
 //! request→handler→DB path that the ingest smoke test does not touch, and
-//! exercises the contacts write path against the current (post-reclaim) schema.
+//! exercises the contacts write path.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -34,12 +34,12 @@ async fn get_json(app: &Router, uri: &str) -> (StatusCode, Value) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn api_handlers_smoke() {
-    // ---- setup: fresh archive populated from the golden fixture ----
+    // ---- setup: fresh archive populated from the sample fixture ----
     let tmp = std::env::temp_dir().join(format!("pea-api-smoke-{}", std::process::id()));
     std::fs::remove_dir_all(&tmp).ok();
     std::fs::create_dir_all(&tmp).unwrap();
     let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/golden.mbox");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/sample.mbox");
     pea_engine::provision::provision(&tmp).expect("provision");
     pea_engine::ingest::import_mbox(&tmp, &fixture, None).expect("import");
 

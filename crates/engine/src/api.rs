@@ -1,5 +1,5 @@
 //! HTTP surface — read handlers that live at the router root, plus the
-//! router assembly (each nested under /v1 and /api/v1, like the Node server).
+//! router assembly (each nested under /v1 and /api/v1).
 
 use crate::state::AppState;
 use crate::{duplicates, handlers, preview, writes};
@@ -244,8 +244,8 @@ async fn duplicates_exact(
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
-        // Express (non-strict routing) matched both forms; the mailbox page
-        // fetches the list WITHOUT the trailing slash, so serve both.
+        // The mailbox page fetches the list WITHOUT the trailing slash;
+        // serve both forms so either matches.
         .route("/archived-emails", get(archived_emails))
         .route("/archived-emails/", get(archived_emails))
         .route("/archived-emails/facets", get(facets))
@@ -345,8 +345,8 @@ fn content_type_for(path: &std::path::Path) -> &'static str {
     }
 }
 
-/// SPA static serving — the Rust twin of the Node bootstrap's express.static +
-/// index.html fallback (API paths excluded). Active only when a frontend build
+/// SPA static serving: serve built assets, fall back to index.html for
+/// client-side routes (API paths excluded). Active only when a frontend build
 /// dir is configured (the desktop shell and --serve mode set it).
 async fn static_files(
     State(app): State<AppState>,

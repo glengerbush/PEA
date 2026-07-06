@@ -1,5 +1,5 @@
-//! PEA engine (Rust) — headless CLI/server entry point,
-//! operating on the same archive.db. Run standalone for golden-diffing:
+//! PEA engine (Rust) — headless CLI/server entry point for an archive.db.
+//! Runs the same HTTP API as the desktop app against a chosen data dir:
 //!   pea-engine --data-dir ~/.local/share/pea --port 47200 [--read-only]
 
 use pea_engine::{ingest, provision, queue, state_for_dir};

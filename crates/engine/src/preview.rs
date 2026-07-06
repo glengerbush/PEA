@@ -1,11 +1,9 @@
-//! Port of RemoteContentService.buildPreview + remote-asset endpoints.
+//! Builds the sanitized HTML preview for an archived email, plus the
+//! remote-asset endpoints.
 //!
-//! The CSS sanitization, URL rewriting, cid inlining, and tracking heuristics
-//! are exact ports of the Node code. The final HTML pass uses ammonia with the
-//! same policy sanitize-html enforced (allowed tags/attributes/schemes,
-//! link hardening, img rewriting) — the *serialized markup* can differ in
-//! insignificant ways (attribute order, entity escaping), so the golden-diff
-//! harness compares the preview HTML semantically, not byte-for-byte.
+//! Covers CSS sanitization, URL rewriting, cid inlining, and tracking
+//! heuristics. The final HTML pass uses ammonia under an allow-list policy
+//! (allowed tags/attributes/schemes, link hardening, img rewriting).
 
 use crate::state::AppState;
 use mail_parser::MimeHeaders;
@@ -79,9 +77,9 @@ fn escape_html(value: &str) -> String {
 
 /// Decodes the handful of HTML entities we care about in a URL/attribute value,
 /// in a SINGLE pass — a '&' produced by decoding one entity is never re-scanned
-/// as the start of another. (The old sequential replace_all double-decoded e.g.
-/// `&amp;#38;` → `&` and `&#38;amp;` → `&`, so the archive and preview could key
-/// the same asset differently.)
+/// as the start of another. Double-decoding (e.g. `&amp;#38;` → `&` and
+/// `&#38;amp;` → `&`) would let the archive and preview key the same asset
+/// differently.
 pub fn decode_html_attribute(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let bytes = value.as_bytes();
@@ -167,8 +165,8 @@ fn extract_css_urls(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// url(...) with optionally matching quotes — the JS regex uses a backreference,
-/// which the regex crate lacks, so quoted/unquoted forms are separate branches.
+/// url(...) with optionally matching quotes — the regex crate lacks
+/// backreferences, so quoted/unquoted forms are separate branches.
 static CSS_URL_REWRITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)url\(\s*'([^'")]*)'\s*\)|url\(\s*"([^'")]*)"\s*\)|url\(\s*([^'")]*)\s*\)"#)
         .unwrap()
@@ -372,7 +370,7 @@ fn get_attribute_map(raw_attributes: &str) -> HashMap<String, String> {
             .or_else(|| m.get(4))
             .map(|g| g.as_str())
             .unwrap_or("");
-        // JS Map.set: last occurrence wins — insert unconditionally.
+        // Last occurrence wins — insert unconditionally.
         attributes.insert(name, decode_html_attribute(value));
     }
     attributes
@@ -480,8 +478,8 @@ pub fn is_likely_tracking_url_pub(url: &str) -> bool {
     is_likely_tracking_url(url)
 }
 
-/// Port of extractRemoteUrls — unique non-tracking remote URLs in JS-Set
-/// insertion order (the archive pipeline fetches them in this order).
+/// Unique non-tracking remote URLs referenced by the email, in insertion
+/// order (the archive pipeline fetches them in this order).
 pub fn extract_remote_urls_ordered(html: &str) -> Vec<String> {
     let set = extract_remote_urls(html);
     set.ordered
@@ -663,8 +661,8 @@ const SAFE_GLOBAL_ATTRIBUTES: [&str; 16] = [
     "height", "lang", "rowspan", "style", "title", "valign", "width",
 ];
 
-/// Port of sanitizeEmailPreviewHtml. CSS handling is an exact port; the HTML
-/// pass runs ammonia under the equivalent policy.
+/// Sanitizes the email preview HTML: cleans the CSS and runs the HTML through
+/// ammonia under the allow-listed tag/attribute/scheme policy.
 fn sanitize_email_preview_html(
     email_id: &str,
     html: &str,
@@ -890,8 +888,8 @@ pub async fn email_preview(
         read_storage(&app, path)
     };
 
-    // Same text/html semantics as mailparser (shared with the ingest pipeline);
-    // parsedEmail.html already has cid: images replaced with data: URIs.
+    // Reuses the ingest pipeline's text/html extraction; the HTML already has
+    // cid: images replaced with data: URIs.
     let html_source = match &message {
         Some(msg) => crate::ingest::mailparser_text_and_html(msg).1,
         None => String::new(),
@@ -992,7 +990,7 @@ pub async fn list_remote_assets(
         "pending" => 3,
         _ => 9,
     };
-    assets.sort_by_key(|a| rank(&a.status)); // stable, like JS Array.sort
+    assets.sort_by_key(|a| rank(&a.status)); // stable sort
     let out: Vec<Value> = assets
         .iter()
         .map(|a| {

@@ -10,7 +10,7 @@
 
 pkgname=pea-bin
 _pkgname=PEA
-pkgver=1.0.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Personal email archiving — self-contained desktop app"
 arch=('x86_64')

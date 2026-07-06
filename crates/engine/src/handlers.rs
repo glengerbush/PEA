@@ -1,6 +1,5 @@
 //! R1 read handlers beyond search: email detail / per-source listing,
 //! dashboard summaries, queue details, source detail, storage download.
-//! Every shape mirrors the Node engine byte-for-byte (key order aside).
 
 use crate::state::AppState;
 use crate::{iso, search};
@@ -19,8 +18,8 @@ fn internal_error() -> Response {
         .into_response()
 }
 
-/// mapRecipients — flattens {to,cc,bcc} into [{name?, email?}]. `None` mirrors
-/// the Node TypeError (destructuring null) that surfaces as a 500.
+/// Flattens {to,cc,bcc} into [{name?, email?}]. `None` when the recipients JSON
+/// is absent or unparseable; the caller maps that to a 500.
 fn flatten_recipients(raw: Option<&str>) -> Option<Vec<Value>> {
     let parsed: Value = match raw {
         Some(s) => serde_json::from_str(s).ok()?,
@@ -34,7 +33,7 @@ fn flatten_recipients(raw: Option<&str>) -> Option<Vec<Value>> {
         };
         for r in list {
             let mut entry = Map::new();
-            // JSON.stringify drops undefined: keys appear only when present.
+            // Keys appear only when present.
             if let Some(name) = r.get("name") {
                 entry.insert("name".into(), name.clone());
             }
@@ -50,13 +49,12 @@ fn flatten_recipients(raw: Option<&str>) -> Option<Vec<Value>> {
     Some(out)
 }
 
-/// Full drizzle archived_emails row shape (as spread by the Node services),
-/// with the controller-level overrides applied (recipients flattened,
-/// sourceLabels/tags parsed-or-null, path empty→null).
+/// Full archived_emails row shape, with controller-level overrides applied
+/// (recipients flattened, sourceLabels/tags parsed-or-null, path empty→null).
 fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Value>>> {
     let recipients_raw: Option<String> = row.get("recipients")?;
     let Some(recipients) = flatten_recipients(recipients_raw.as_deref()) else {
-        return Ok(None); // Node throws here → 500
+        return Ok(None); // caller maps this to a 500
     };
     let mut doc = Map::new();
     doc.insert("id".into(), json!(row.get::<_, String>("id")?));
@@ -117,8 +115,7 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
     Ok(Some(doc))
 }
 
-/// Full ingestion_sources row (drizzle mapping) — includes `provider_config`,
-/// exactly like the relation spread in the Node email-detail response.
+/// Full ingestion_sources row — includes `provider_config`.
 fn source_full_row(conn: &Connection, id: &str) -> Option<Value> {
     conn.query_row(
         "SELECT id, name, provider, provider_config, status, last_import_started_at, \
@@ -172,7 +169,7 @@ pub async fn email_detail(
     };
     let mut doc = doc;
 
-    // Relation: full ingestion source row (provider_config included, as in Node).
+    // Relation: full ingestion source row (provider_config included).
     let source_id = doc["ingestionSourceId"].as_str().unwrap_or_default().to_string();
     doc.insert(
         "ingestionSource".into(),
@@ -272,7 +269,7 @@ pub async fn dashboard_sources(State(app): State<AppState>) -> Json<Value> {
         .unwrap();
     let rows: Vec<Value> = stmt
         .query_map([], |row| {
-            // drizzle's mapWith(Number) passes NULL through untouched.
+            // A NULL sum (source with no emails) is passed through untouched.
             let storage_used: Option<i64> = row.get(4)?;
             Ok(json!({
                 "id": row.get::<_, String>(0)?,
@@ -429,7 +426,7 @@ pub async fn remote_content_issues(
 const QUEUE_NAMES: [&str; 3] = ["ingestion", "indexing", "remote-content"];
 
 fn jobs_error() -> Response {
-    // res.json({ message, error }) — an Error serializes to {}.
+    // Body is { message, error } with error as an empty object {}.
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({ "message": "Error fetching queue jobs", "error": {} })),
@@ -453,7 +450,7 @@ pub async fn jobs_queue_details(
         "waiting" => format!("state = 'pending' AND run_at <= {now}"),
         "delayed" => format!("state = 'pending' AND run_at > {now}"),
         "paused" => "0 = 1".to_string(),
-        _ => return jobs_error(), // statusPredicate throws on unknown status
+        _ => return jobs_error(), // unknown status → error response
     };
     let page = params
         .get("page")
@@ -511,7 +508,7 @@ pub async fn jobs_queue_details(
             job.insert("name".into(), json!(row.get::<_, String>(1)?));
             job.insert("data".into(), payload.clone());
             job.insert("state".into(), json!(status));
-            // undefined keys are dropped by JSON.stringify — mirror that.
+            // Only included when there's an error.
             if let Some(err) = &error {
                 job.insert(
                     "failedReason".into(),
@@ -580,7 +577,7 @@ pub async fn jobs_queue_details(
 // GET /storage/download?path=...
 // ---------------------------------------------------------------------------
 
-/// Express res.send(string) responds text/html — match it on error bodies.
+/// Builds a text/html string response — used for error bodies.
 fn text_response(status: StatusCode, body: &'static str) -> Response {
     (
         status,

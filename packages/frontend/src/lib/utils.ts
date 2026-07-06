@@ -5,7 +5,7 @@ export function cn(...inputs: ClassValue[]) {
 	return twMerge(clsx(inputs));
 }
 
-// --- Owned class-variance helper (replaces tailwind-variants) -----------------
+// --- Class-variance helper ----------------------------------------------------
 // Covers the subset the UI wrappers use: a base string plus variant→class maps
 // and default selections. Conflicts resolve through cn()'s twMerge, so callers
 // can still pass an overriding `class`.
@@ -35,7 +35,7 @@ export function tv<V extends VariantShape>(config: TVConfig<V>) {
 	};
 }
 
-/** Mirrors tailwind-variants' VariantProps: the variant keys a `tv()` result accepts. */
+/** The variant props a class-variance helper's result accepts (minus class/className). */
 export type VariantProps<T extends (...args: never[]) => string> = Omit<
 	NonNullable<Parameters<T>[0]>,
 	'class' | 'className'

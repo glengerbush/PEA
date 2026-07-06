@@ -11,6 +11,7 @@
 	import type { SupportedLanguage, NativeUpdateInfo, DateFormat } from '@pea/types';
 	import { t } from '$lib/translations';
 	import { api } from '$lib/api.client';
+	import { formatBytes } from '$lib/utils';
 	import { setDateTimePrefs } from '$lib/stores/datetime.svelte';
 
 	let { data }: { data: PageData } = $props();
@@ -21,6 +22,15 @@
 	let installStarted = $state(false);
 	let updateInfo = $state<NativeUpdateInfo | null>(null);
 	let updateError = $state<string | null>(null);
+	type UpdatePhase = 'idle' | 'downloading' | 'installing' | 'restarting' | 'error';
+	let updatePhase = $state<UpdatePhase>('idle');
+	let updateDownloaded = $state(0);
+	let updateTotalBytes = $state(0);
+	const updatePercent = $derived(
+		updateTotalBytes > 0
+			? Math.min(100, Math.round((updateDownloaded / updateTotalBytes) * 100))
+			: 0
+	);
 
 	const languageOptions: { value: SupportedLanguage; label: string }[] = [
 		{ value: 'en', label: '🇬🇧 English' },
@@ -152,19 +162,57 @@
 	async function installUpdate() {
 		isInstalling = true;
 		updateError = null;
+		updatePhase = 'downloading';
+		updateDownloaded = 0;
+		updateTotalBytes = 0;
 		try {
 			const response = await api('/native/update-install', { method: 'POST' });
 			if (response.ok) {
 				// The shell downloads + installs in the background, then relaunches.
+				// Poll its shared progress so we can show a bar and announce the
+				// restart before the process is replaced.
 				installStarted = true;
+				void pollUpdateProgress();
 			} else {
 				updateError = $t('app.system_settings.updates.check_failed');
+				updatePhase = 'idle';
 			}
 		} catch {
 			updateError = $t('app.system_settings.updates.check_failed');
+			updatePhase = 'idle';
 		} finally {
 			isInstalling = false;
 		}
+	}
+
+	async function pollUpdateProgress() {
+		let response: Response;
+		try {
+			response = await api('/native/update-progress');
+		} catch {
+			// The webview is likely being torn down for the restart — stop polling.
+			return;
+		}
+		if (response.ok) {
+			const p = (await response.json()) as {
+				phase: UpdatePhase;
+				downloaded: number;
+				contentLength: number;
+				error: string | null;
+			};
+			updatePhase = p.phase;
+			updateDownloaded = p.downloaded ?? 0;
+			updateTotalBytes = p.contentLength ?? 0;
+			if (p.phase === 'error') {
+				updateError = p.error || $t('app.system_settings.updates.check_failed');
+				return;
+			}
+			// Restart is imminent — leave the notice on screen, stop polling.
+			if (p.phase === 'restarting') {
+				return;
+			}
+		}
+		setTimeout(() => void pollUpdateProgress(), 400);
 	}
 </script>
 
@@ -320,9 +368,37 @@
 							>
 						{/if}
 						{#if installStarted}
-							<p class="text-muted-foreground">
-								{$t('app.system_settings.updates.install_started')}
-							</p>
+							<div class="space-y-2">
+								{#if updatePhase === 'restarting'}
+									<p class="text-primary text-sm font-medium">
+										{$t('app.system_settings.updates.restarting')}
+									</p>
+								{:else if updatePhase === 'installing'}
+									<p class="text-muted-foreground text-sm">
+										{$t('app.system_settings.updates.installing_update')}
+									</p>
+									<div class="bg-muted h-2 w-full overflow-hidden rounded-full">
+										<div class="bg-primary h-full w-full animate-pulse"></div>
+									</div>
+								{:else}
+									<p class="text-muted-foreground text-sm">
+										{$t('app.system_settings.updates.downloading')}
+										{#if updateTotalBytes > 0}
+											· {formatBytes(updateDownloaded)} / {formatBytes(
+												updateTotalBytes
+											)} ({updatePercent}%)
+										{:else}
+											· {formatBytes(updateDownloaded)}
+										{/if}
+									</p>
+									<div class="bg-muted h-2 w-full overflow-hidden rounded-full">
+										<div
+											class="bg-primary h-full transition-all duration-300"
+											style="width: {updateTotalBytes > 0 ? updatePercent : 15}%"
+										></div>
+									</div>
+								{/if}
+							</div>
 						{:else}
 							<div>
 								<Button type="button" disabled={isInstalling} onclick={installUpdate}>

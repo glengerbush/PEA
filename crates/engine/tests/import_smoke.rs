@@ -1,18 +1,17 @@
 //! End-to-end import smoke test: provisions a fresh data dir, imports the
-//! golden fixture mbox through the real queue pipeline (initial-import →
+//! sample mbox through the real queue pipeline (initial-import →
 //! process-mailbox → index-email-batch → sync-cycle-finished), and asserts
-//! the archive contents. This inherits the assertions the Node-parity
-//! golden harnesses covered before the Node engine was retired.
+//! the archive contents.
 
 use std::path::PathBuf;
 
 #[test]
-fn imports_the_golden_mbox() {
+fn imports_the_sample_mbox() {
     let tmp = std::env::temp_dir().join(format!("pea-import-smoke-{}", std::process::id()));
     std::fs::remove_dir_all(&tmp).ok();
     std::fs::create_dir_all(&tmp).unwrap();
     let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/golden.mbox");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/sample.mbox");
 
     pea_engine::provision::provision(&tmp).expect("provision");
     let stats = pea_engine::ingest::import_mbox(&tmp, &fixture, None).expect("import");

@@ -1,4 +1,4 @@
-//! Port of jobs/queue.ts — the in-process SQLite job queue: claim loop with
+//! In-process SQLite job queue: claim loop with
 //! per-queue concurrency, exponential backoff (1s·2^n, cap 5min), singleton
 //! suppression, boot recovery of interrupted jobs, and the retention sweep.
 
@@ -44,7 +44,7 @@ pub fn no_retry() -> SendOptions<'static> {
     SendOptions { retry_limit: 0, singleton_key: None, start_after: None }
 }
 
-/// sendJob — returns the job id, or None when singleton-suppressed.
+/// Enqueue a job — returns the job id, or None when singleton-suppressed.
 pub fn send_job(
     state: &AppState,
     queue: &str,
@@ -91,7 +91,7 @@ pub fn send_job(
     Some(id)
 }
 
-/// removeJobsBySourceId — clears queued/failed ingestion jobs for a source.
+/// Clears queued/failed ingestion jobs for a source.
 pub fn remove_jobs_by_source_id(conn: &Connection, source_id: &str) -> i64 {
     conn.execute(
         "DELETE FROM jobs WHERE queue = 'ingestion' AND state IN ('pending', 'failed') \
@@ -250,9 +250,8 @@ pub async fn start_queue(state: AppState) {
         QUEUE_NAMES.iter().map(|q| (*q, AtomicI64::new(0))).collect(),
     );
 
-    // Retention + stale-session sweep every 10 minutes. (The Node engine's
-    // continuous-sync cron is gone: every provider is a one-time file import,
-    // so the minutely schedule only produced no-op or unprocessable jobs.)
+    // Retention + stale-session sweep every 10 minutes. Every provider is a
+    // one-time file import, so there's no per-minute sync to run.
     {
         let state = state.clone();
         tokio::spawn(async move {

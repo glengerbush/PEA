@@ -35,7 +35,7 @@ pub struct AppState {
     /// Wakes the queue loop when a job is enqueued locally.
     pub queue_nudge: Arc<tokio::sync::Notify>,
     /// When set, the router serves this SPA build for non-API paths
-    /// (express.static + index.html fallback in the Node bootstrap).
+    /// (static assets with an index.html fallback).
     pub frontend_dir: Option<PathBuf>,
 }
 
@@ -69,8 +69,8 @@ impl AppState {
     }
 }
 
-/// Opens the same archive.db the Node engine uses. Read-only mode lets both
-/// engines read concurrently while Node remains the writer (golden-diffing).
+/// Opens the archive.db connection pool. Read-only mode opens without creating
+/// or writing, so another process can read the archive concurrently.
 pub fn open_pool(db_path: &PathBuf, read_only: bool) -> Result<DbPool, String> {
     let flags = if read_only {
         OpenFlags::SQLITE_OPEN_READ_ONLY

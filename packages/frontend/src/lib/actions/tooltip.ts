@@ -1,8 +1,7 @@
 /**
- * Minimal hover/focus tooltip action — replaces tippy.js (which was pulled in
- * for a single plain-text tooltip). Shows a themed popover after a short delay,
- * positioned below (or above, if it would overflow) the target, and cleans up
- * on leave/blur/destroy. Content is plain text.
+ * Minimal hover/focus tooltip action. Shows a themed popover after a short
+ * delay, positioned below (or above, if it would overflow) the target, and
+ * cleans up on leave/blur/destroy. Content is plain text.
  */
 export function tooltip(node: HTMLElement, content: string) {
 	let tip: HTMLDivElement | null = null;

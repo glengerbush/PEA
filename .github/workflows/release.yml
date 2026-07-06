@@ -33,6 +33,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Fail fast if the tag and the committed version disagree. tauri.conf.json
+      # reads its version from the root package.json, so package.json is the
+      # source of truth; a v1.2.0 tag on a commit still at 1.1.0 would ship a
+      # release whose in-app updater never fires. Bump with scripts/set-version.mjs.
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Git tag v$tag does not match package.json version $pkg. Run 'node scripts/set-version.mjs $tag', commit, and re-tag."
+            exit 1
+          fi
+          echo "✓ Tag and package.json agree on $pkg"
+
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         run: |

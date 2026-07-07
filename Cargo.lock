@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "pea-desktop"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "arboard",
  "axum",
@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "pea-engine"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "ammonia",
  "axum",

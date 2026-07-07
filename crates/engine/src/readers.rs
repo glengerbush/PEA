@@ -1,6 +1,9 @@
 //! Mbox/eml input discovery + email iteration, driven by the source's
-//! localFilePath (file or directory). Apple Mail .emlx messages inside .mbox
-//! bundles are supported.
+//! localFilePath (file or directory). Two Apple Mail bundle layouts inside a
+//! `.mbox` package are supported: live-store `.emlx` messages
+//! (`Foo.mbox/Data/N/Messages/*.emlx`) and "Export Mailbox" packages, which
+//! hold a single raw Unix mbox file named literally `mbox` (`Foo.mbox/mbox`,
+//! alongside `Info.plist` / `Table of Contents` index files that we ignore).
 
 use crate::ingest::{parse_message, EmailObj, EmlxMeta};
 use std::sync::LazyLock;
@@ -21,6 +24,13 @@ pub struct MboxInput {
 
 fn is_mbox_path(p: &str) -> bool {
     p.to_lowercase().ends_with(".mbox")
+}
+/// Apple Mail's "Export Mailbox" writes each mailbox as a `Foo.mbox/` package
+/// whose message data is a single raw Unix mbox file named literally `mbox`
+/// (no extension). Matched only inside a `.mbox` bundle (see `find_local_inputs`)
+/// so a stray file called `mbox` elsewhere is never imported.
+fn is_bare_mbox_file(name: &str) -> bool {
+    name.eq_ignore_ascii_case("mbox")
 }
 fn is_emlx_path(p: &str) -> bool {
     p.to_lowercase().ends_with(".emlx")
@@ -80,6 +90,12 @@ fn find_local_inputs(import_root: &Path, dir: &Path, out: &mut Vec<MboxInput>) -
         if name.starts_with("._") {
             continue;
         }
+        // True when this entry lives inside an Apple Mail `.mbox` package —
+        // either the import root itself is one, or some ancestor segment ends
+        // in `.mbox`. Gates the two bundle-only layouts (`.emlx` messages and
+        // the bare `mbox` export file) so neither is picked up loose on disk.
+        let inside_mbox_bundle = is_mbox_path(&import_root.to_string_lossy())
+            || rel.split(['\\', '/']).any(is_mbox_path);
         if path.is_dir() {
             find_local_inputs(import_root, &path, out)?;
         } else if path.is_file() && is_mbox_path(&name) {
@@ -89,11 +105,17 @@ fn find_local_inputs(import_root: &Path, dir: &Path, out: &mut Vec<MboxInput>) -
                 is_emlx: false,
                 is_eml: false,
             });
-        } else if path.is_file()
-            && is_emlx_path(&name)
-            && (is_mbox_path(&import_root.to_string_lossy())
-                || rel.split(['\\', '/']).any(is_mbox_path))
-        {
+        } else if path.is_file() && is_bare_mbox_file(&name) && inside_mbox_bundle {
+            // Apple "Export Mailbox" package: Foo.mbox/mbox is a classic Unix
+            // mbox. The bundle's `.mbox` segment(s) become the folder path (the
+            // `mbox` filename is not itself a mailbox), matching the .emlx case.
+            out.push(MboxInput {
+                file_path: path.to_string_lossy().to_string(),
+                source_path: to_apple_mail_source_path(&rel),
+                is_emlx: false,
+                is_eml: false,
+            });
+        } else if path.is_file() && is_emlx_path(&name) && inside_mbox_bundle {
             out.push(MboxInput {
                 file_path: path.to_string_lossy().to_string(),
                 source_path: to_apple_mail_source_path(&rel),
@@ -137,7 +159,16 @@ pub fn get_mbox_inputs(provider_config: &Value) -> Result<Vec<MboxInput>, String
     if !meta.is_file() {
         return Err(format!("Mbox path is not a file or directory: {local}"));
     }
-    if !is_mbox_path(local) && !is_eml_path(local) {
+    // A directly-selected inner `mbox` file counts only when its parent is a
+    // `.mbox` export package (Foo.mbox/mbox), so a random `mbox` file is still
+    // rejected with the same error as before.
+    let bare_mbox_in_bundle = is_bare_mbox_file(&path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+        && path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| is_mbox_path(&n.to_string_lossy()))
+            .unwrap_or(false);
+    if !is_mbox_path(local) && !is_eml_path(local) && !bare_mbox_in_bundle {
         return Err("Provided local file is not in the MBOX or EML format.".into());
     }
     Ok(vec![MboxInput {
@@ -155,10 +186,21 @@ pub fn mbox_import_source(provider_config: &Value) -> String {
 
 fn mbox_display_name(provider_config: &Value) -> String {
     if let Some(local) = provider_config.get("localFilePath").and_then(|v| v.as_str()) {
-        let base = Path::new(local)
+        let path = Path::new(local);
+        let file = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
+        // Foo.mbox/mbox: the bare export file is named after its package, not
+        // the generic "mbox" filename.
+        let base = if is_bare_mbox_file(&file) {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(file)
+        } else {
+            file
+        };
         let base = MBOX_EXT.replace(&base, "").to_string();
         return base.strip_suffix(".eml").unwrap_or(&base).to_string();
     }
@@ -415,9 +457,123 @@ mod tests {
     fn path_predicates_and_derivations() {
         assert!(is_mbox_path("X.MBOX") && is_emlx_path("a.EMLX") && is_eml_path("b.Eml"));
         assert!(!is_mbox_path("x.txt"));
+        assert!(is_bare_mbox_file("mbox") && is_bare_mbox_file("MBOX"));
+        assert!(!is_bare_mbox_file("mbox.txt") && !is_bare_mbox_file("A.mbox"));
         assert_eq!(to_eml_source_path("a/b/c.eml"), "a/b");
         assert_eq!(to_eml_source_path("root.eml"), "");
         assert_eq!(to_apple_mail_source_path("Parent.mbox/Data/msg.emlx"), "Parent");
+        // The bare `mbox` filename is not a `.mbox` segment, so it never becomes
+        // a folder — only the enclosing package name(s) do.
+        assert_eq!(to_apple_mail_source_path("Parent.mbox/mbox"), "Parent");
+        assert_eq!(to_apple_mail_source_path("A.mbox/Sub.mbox/mbox"), "A/Sub");
+    }
+
+    #[test]
+    fn apple_export_mailbox_bare_mbox_is_discovered() {
+        // Apple Mail "Export Mailbox" package layout: Foo.mbox/mbox is the real
+        // Unix mbox, sitting next to Info.plist / Table of Contents index files
+        // that must be ignored. Reproduces selecting a parent folder holding two
+        // exported mailboxes, one nested inside another package.
+        let dir = std::env::temp_dir().join(format!("pea-apple-export-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let archive = dir.join("Archive.mbox");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(archive.join("mbox"), b"From a\n\nbody").unwrap();
+        std::fs::write(archive.join("Info.plist"), b"<plist/>").unwrap();
+        std::fs::write(archive.join("Table of Contents"), b"junk").unwrap();
+        let nested = dir.join("Parent.mbox/Child.mbox");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("mbox"), b"From b\n\nbody").unwrap();
+
+        let mut inputs = Vec::new();
+        find_local_inputs(&dir, &dir, &mut inputs).unwrap();
+        inputs.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+
+        assert_eq!(inputs.len(), 2, "only the two `mbox` files, not plist/TOC");
+        assert!(
+            inputs.iter().all(|i| !i.is_emlx && !i.is_eml),
+            "bare mbox is treated as a raw mbox stream"
+        );
+        let top = inputs.iter().find(|i| i.file_path.contains("Archive.mbox")).unwrap();
+        assert_eq!(top.source_path, "Archive", "package name becomes the folder");
+        let child = inputs.iter().find(|i| i.file_path.contains("Parent.mbox")).unwrap();
+        assert_eq!(child.source_path, "Parent/Child", "nested packages nest the folder");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bare_mbox_outside_a_package_is_ignored() {
+        // A file literally named `mbox` that is NOT inside a `.mbox` package is
+        // not email data — importing it would fail to parse. Only .eml counts.
+        let dir = std::env::temp_dir().join(format!("pea-bare-mbox-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mbox"), b"not in a bundle").unwrap();
+        std::fs::write(dir.join("keep.eml"), b"From: a@x\r\n\r\nhi").unwrap();
+
+        let mut inputs = Vec::new();
+        find_local_inputs(&dir, &dir, &mut inputs).unwrap();
+
+        assert_eq!(inputs.len(), 1, "the stray `mbox` file is skipped");
+        assert!(inputs[0].is_eml && inputs[0].file_path.ends_with("keep.eml"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn selecting_the_export_package_directly_names_it_after_the_package() {
+        // Selecting the Foo.mbox package (a directory) discovers its inner `mbox`
+        // with an empty folder path (the package itself is the import root).
+        let dir = std::env::temp_dir().join(format!("pea-export-pkg-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let pkg = dir.join("Sent Messages.mbox");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("mbox"), b"From a\n\nbody").unwrap();
+
+        let cfg = serde_json::json!({ "localFilePath": pkg.to_string_lossy() });
+        let inputs = get_mbox_inputs(&cfg).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].source_path, "", "package is the root, no folder prefix");
+        assert_eq!(mbox_display_name(&cfg), "Sent Messages");
+
+        // Selecting the inner `mbox` file directly is also accepted and named
+        // after its package rather than the generic "mbox".
+        let inner = serde_json::json!({ "localFilePath": pkg.join("mbox").to_string_lossy() });
+        assert_eq!(get_mbox_inputs(&inner).unwrap().len(), 1);
+        assert_eq!(mbox_display_name(&inner), "Sent Messages");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_package_messages_import_end_to_end() {
+        // The bare `mbox` file is streamed like any Unix mbox: both messages come
+        // through, tagged with the package's folder name.
+        let dir = std::env::temp_dir().join(format!("pea-export-e2e-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let pkg = dir.join("Archive.mbox");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("mbox"),
+            b"From a@x Thu Jan  1 00:00:00 2020\r\n\
+              From: a@x\r\nSubject: One\r\nMessage-ID: <a@x>\r\n\r\nbody one\r\n\
+              From b@x Thu Jan  1 00:00:00 2020\r\n\
+              From: b@x\r\nSubject: Two\r\nMessage-ID: <b@x>\r\n\r\nbody two\r\n",
+        )
+        .unwrap();
+
+        let cfg = serde_json::json!({ "localFilePath": dir.to_string_lossy() });
+        let mut emails = Vec::new();
+        for_each_email(&cfg, |e| emails.push(e)).unwrap();
+        emails.sort_by(|a, b| a.subject.cmp(&b.subject));
+
+        assert_eq!(emails.len(), 2, "both mbox messages imported");
+        assert_eq!(emails[0].subject, "One");
+        assert_eq!(emails[1].subject, "Two");
+        assert!(emails.iter().all(|e| e.path == "Archive"), "folder tag is the package name");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

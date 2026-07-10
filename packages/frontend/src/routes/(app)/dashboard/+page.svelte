@@ -25,14 +25,15 @@
 		(data.stats?.remoteContentFailed ?? 0) + (data.stats?.remoteContentPartial ?? 0)
 	);
 
-	// Chart drill-downs
+	// Chart drill-downs. `from=/dashboard` lets the mailbox list (and the email
+	// detail page behind it) offer a "Back to dashboard" return path.
 	function searchSender(sender: string) {
 		goto(
-			`/mailbox?q=${encodeURIComponent(sender)}&fields=${encodeURIComponent('from,senderName')}`
+			`/mailbox?q=${encodeURIComponent(sender)}&fields=${encodeURIComponent('from,senderName')}&from=%2Fdashboard`
 		);
 	}
 	function openSourceMailbox(source: IngestionSourceStats) {
-		goto(`/mailbox?ingestionSourceId=${source.id}`);
+		goto(`/mailbox?ingestionSourceId=${source.id}&from=%2Fdashboard`);
 	}
 </script>
 
@@ -61,7 +62,7 @@
 		<div class="space-y-4">
 			{#if data.stats}
 				<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-					<a href="/mailbox" class="block">
+					<a href="/mailbox?from=%2Fdashboard" class="block">
 						<Card.Root class="hover:border-primary/60 h-full transition-colors">
 							<Card.Header
 								class="flex flex-row items-center justify-between space-y-0 pb-2"

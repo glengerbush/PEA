@@ -63,7 +63,14 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
         "ingestionSourceId".into(),
         json!(row.get::<_, String>("ingestion_source_id")?),
     );
-    doc.insert("importSource".into(), json!(row.get::<_, String>("import_source")?));
+    // Live ingestion-source name when the caller joined it (import_source_name),
+    // else the filename-derived string frozen at ingest.
+    let import_source = row
+        .get::<_, Option<String>>("import_source_name")
+        .ok()
+        .flatten()
+        .unwrap_or(row.get::<_, String>("import_source")?);
+    doc.insert("importSource".into(), json!(import_source));
     doc.insert(
         "messageIdHeader".into(),
         json!(row.get::<_, Option<String>>("message_id_header")?),
@@ -151,7 +158,10 @@ pub async fn email_detail(
 ) -> Response {
     let conn = app.pool.get().unwrap();
     let row = conn.query_row(
-        "SELECT * FROM archived_emails WHERE id = ?",
+        "SELECT ae.*, COALESCE(src.name, ae.import_source) AS import_source_name \
+         FROM archived_emails ae \
+         LEFT JOIN ingestion_sources src ON src.id = ae.ingestion_source_id \
+         WHERE ae.id = ?",
         [&id],
         |row| email_full_row(row),
     );
@@ -214,7 +224,9 @@ pub async fn email_detail(
     if doc["hasAttachments"] == Value::Bool(true) {
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.filename, a.mime_type, a.size_bytes, a.storage_path, \
+                // DISTINCT: a read-only launch never runs migrations, so an
+                // archive written before 0013 can still hold duplicate links.
+                "SELECT DISTINCT a.id, a.filename, a.mime_type, a.size_bytes, a.storage_path, \
                  a.content_description, a.original_created_at, a.original_modified_at \
                  FROM email_attachments ea \
                  INNER JOIN attachments a ON ea.attachment_id = a.id \
@@ -587,32 +599,26 @@ fn text_response(status: StatusCode, body: &'static str) -> Response {
         .into_response()
 }
 
-/// POST /attachments/quicklook {path} — opens the attachment in the
-/// OS quick-look previewer (qlmanage on macOS, sushi/xdg-open on Linux).
-/// Desktop-only by nature: the file is materialized in the OS temp dir for
-/// the previewer and removed again a few minutes later.
-pub async fn quicklook_attachment(
-    State(app): State<AppState>,
-    Json(body): Json<Value>,
-) -> Response {
-    let Some(unsafe_path) = body
-        .get("path")
-        .and_then(|v| v.as_str())
-        .filter(|p| !p.is_empty())
-    else {
-        return text_response(StatusCode::BAD_REQUEST, "File path is required");
-    };
-    let file = match app.storage_abs(unsafe_path) {
-        Ok(file) => file,
-        Err(_) => return text_response(StatusCode::BAD_REQUEST, "Invalid file path"),
-    };
-    if !file.is_file() {
-        return text_response(StatusCode::NOT_FOUND, "File not found");
+/// Materializes the storage-relative attachment at `unsafe_path` into the OS
+/// temp dir for an external previewer, scheduling best-effort removal after 10
+/// minutes. Returns the temp file path; errors are (status, message) pairs so
+/// both the HTTP handler below and the desktop shell's native Quick Look
+/// endpoint can map them directly.
+pub fn materialize_quicklook_temp(
+    app: &AppState,
+    unsafe_path: &str,
+) -> Result<std::path::PathBuf, (StatusCode, &'static str)> {
+    if unsafe_path.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "File path is required"));
     }
-    let content = match std::fs::read(&file) {
-        Ok(content) => content,
-        _ => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "Error reading file"),
-    };
+    let file = app
+        .storage_abs(unsafe_path)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid file path"))?;
+    if !file.is_file() {
+        return Err((StatusCode::NOT_FOUND, "File not found"));
+    }
+    let content = std::fs::read(&file)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Error reading file"))?;
 
     // The storage basename is already `<hash7>-<sanitized original name>`, so
     // it is collision-free and keeps the extension the previewer needs.
@@ -622,13 +628,36 @@ pub async fn quicklook_attachment(
         .unwrap_or("attachment")
         .to_string();
     let dir = std::env::temp_dir().join("pea-quicklook");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return internal_error();
-    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "An internal server error occurred"))?;
     let target = dir.join(name);
-    if std::fs::write(&target, &content).is_err() {
-        return internal_error();
-    }
+    std::fs::write(&target, &content)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "An internal server error occurred"))?;
+
+    // Best-effort cleanup once the previewer has had time to read it.
+    let cleanup = target.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(600));
+        let _ = std::fs::remove_file(&cleanup);
+    });
+    Ok(target)
+}
+
+/// POST /attachments/quicklook {path} — opens the attachment in the
+/// OS quick-look previewer (qlmanage on macOS, sushi/xdg-open on Linux).
+/// Desktop-only by nature: the file is materialized in the OS temp dir for
+/// the previewer and removed again a few minutes later. The macOS desktop
+/// shell presents a native QLPreviewPanel via /api/v1/native/quicklook
+/// instead; this endpoint is the web/Linux fallback.
+pub async fn quicklook_attachment(
+    State(app): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    let unsafe_path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let target = match materialize_quicklook_temp(&app, unsafe_path) {
+        Ok(target) => target,
+        Err((status, message)) => return text_response(status, message),
+    };
 
     let quiet = |mut cmd: std::process::Command| {
         cmd.stdout(std::process::Stdio::null())
@@ -655,12 +684,6 @@ pub async fn quicklook_attachment(
             "No preview application available",
         );
     }
-
-    // Best-effort cleanup once the previewer has had time to read it.
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(600));
-        let _ = std::fs::remove_file(&target);
-    });
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -767,7 +790,10 @@ pub async fn download_all_attachments(
 ) -> Response {
     let conn = app.pool.get().unwrap();
     let mut stmt = match conn.prepare(
-        "SELECT a.filename, a.storage_path FROM email_attachments ea \
+        // DISTINCT, or a duplicate link would add the same file to the zip twice
+        // — the second copy renamed by the collision loop below, planting a
+        // filename the email never contained.
+        "SELECT DISTINCT a.filename, a.storage_path FROM email_attachments ea \
          INNER JOIN attachments a ON ea.attachment_id = a.id WHERE ea.email_id = ?",
     ) {
         Ok(stmt) => stmt,

@@ -52,8 +52,22 @@
 	/** Where "back" should go: the explicit origin passed in `?from=` (e.g. the
 	 *  duplicates page with its filters/page), else the last mailbox list view,
 	 *  else the mailbox root when the email was opened directly. */
+	const backTargetUrl = $derived(
+		page.url.searchParams.get('from') || get(lastMailboxListUrl) || '/mailbox'
+	);
+
+	// The back button names its destination so returning to Duplicates or the
+	// dashboard doesn't claim to go "back to mailbox".
+	const backLabelKey = $derived(
+		backTargetUrl.startsWith('/dashboard/duplicates')
+			? 'app.archive.back_to_duplicates'
+			: backTargetUrl.startsWith('/dashboard')
+				? 'app.archive.back_to_dashboard'
+				: 'app.archive.back_to_mailbox'
+	);
+
 	function backTarget(): string {
-		return page.url.searchParams.get('from') || get(lastMailboxListUrl) || '/mailbox';
+		return backTargetUrl;
 	}
 
 	function goBack() {
@@ -229,7 +243,7 @@
 		retryingAssetId = assetId;
 		try {
 			const response = await api(`/archived-emails/${id}/remote-assets/${assetId}/retry`, {
-				method: 'POST'
+				method: 'POST',
 			});
 			if (!response.ok) throw new Error('Retry failed');
 			// Reflect the new status and refresh the preview in case it now renders.
@@ -243,7 +257,7 @@
 				title: 'Retry failed',
 				message: error instanceof Error ? error.message : 'Could not retry this item',
 				duration: 5000,
-				show: true
+				show: true,
 			});
 		} finally {
 			retryingAssetId = null;
@@ -378,13 +392,17 @@
 		}
 	}
 
-	/** Opens an attachment in the OS quick-look previewer (qlmanage / sushi). */
+	/** Opens an attachment in the OS previewer: the desktop shell's native
+	 *  Quick Look panel where available (macOS), else the engine's fallback
+	 *  previewer (qlmanage / sushi / xdg-open). The native endpoint 404s
+	 *  outside the mac desktop shell, which routes us to the fallback. */
 	async function quickLook(storagePath: string) {
 		try {
-			const response = await api('/attachments/quicklook', {
-				method: 'POST',
-				body: JSON.stringify({ path: storagePath }),
-			});
+			const body = JSON.stringify({ path: storagePath });
+			let response = await api('/native/quicklook', { method: 'POST', body });
+			if (response.status === 404) {
+				response = await api('/attachments/quicklook', { method: 'POST', body });
+			}
 			if (!response.ok) {
 				throw new Error((await response.text()) || 'Failed to open preview');
 			}
@@ -779,7 +797,7 @@
 	<div class="mb-4">
 		<Button variant="ghost" size="sm" class="gap-2" onclick={goBack}>
 			<ArrowLeft class="h-4 w-4" />
-			{$t('app.archive.back_to_mailbox')}
+			{$t(backLabelKey)}
 		</Button>
 	</div>
 	<div class="grid grid-cols-3 gap-6">
@@ -880,10 +898,14 @@
 				<Card.Content>
 					<div class="space-y-4">
 						<!-- Tags stay here; the rest of the metadata is in the collapsible Metadata panel on the right. -->
-						<div class="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
+						<div
+							class="text-muted-foreground flex flex-wrap items-center gap-2 text-sm"
+						>
 							<span>{$t('app.archive.tags')}:</span>
 							{#each localTags as tag (tag)}
-								<span class="bg-muted flex items-center gap-1 rounded py-1 pl-1.5 pr-1 text-xs">
+								<span
+									class="bg-muted flex items-center gap-1 rounded py-1 pl-1.5 pr-1 text-xs"
+								>
 									{tag}
 									<button
 										type="button"
@@ -913,7 +935,9 @@
 			{#snippet metaRow(label: string, value: string | null | undefined, mono = false)}
 				{#if value}
 					<div class="flex flex-col gap-0.5 sm:flex-row sm:gap-3">
-						<dt class="text-muted-foreground w-44 flex-shrink-0 font-medium">{label}</dt>
+						<dt class="text-muted-foreground w-44 flex-shrink-0 font-medium">
+							{label}
+						</dt>
 						<dd class="min-w-0 break-all {mono ? 'font-mono' : ''}">{value}</dd>
 					</div>
 				{/if}
@@ -928,22 +952,40 @@
 					onclick={() => (metadataOpen = !metadataOpen)}
 				>
 					<Card.Title>{$t('app.archive.meta_data')}</Card.Title>
-					<ChevronDown class="text-muted-foreground h-4 w-4 flex-shrink-0 transition-transform {metadataOpen ? 'rotate-180' : ''}" />
+					<ChevronDown
+						class="text-muted-foreground h-4 w-4 flex-shrink-0 transition-transform {metadataOpen
+							? 'rotate-180'
+							: ''}"
+					/>
 				</button>
 				{#if metadataOpen}
 					<Card.Content class="pb-4 pt-0">
 						<dl class="space-y-2 text-xs">
-							{@render metaRow('Size', `${formatBytes(email.sizeBytes)} (${email.sizeBytes.toLocaleString()} bytes)`)}
+							{@render metaRow(
+								'Size',
+								`${formatBytes(email.sizeBytes)} (${email.sizeBytes.toLocaleString()} bytes)`
+							)}
 							{@render metaRow('Sent', formatDateTime(email.sentAt))}
 							{@render metaRow('Archived', formatDateTime(email.archivedAt))}
 							{@render metaRow('Import Source', email.importSource)}
 							{@render metaRow('Storage path', email.storagePath, true)}
 							{@render metaRow('Original Folder', email.sourcePath)}
 
-							{@render metaRow('Has attachments', email.hasAttachments ? 'Yes' : 'No')}
+							{@render metaRow(
+								'Has attachments',
+								email.hasAttachments ? 'Yes' : 'No'
+							)}
 							{@render metaRow('Remote content status', email.remoteContentStatus)}
-							{@render metaRow('Remote assets archived', String(email.remoteContentAssetCount))}
-							{@render metaRow('Remote content archived', email.remoteContentArchivedAt ? formatDateTime(email.remoteContentArchivedAt) : null)}
+							{@render metaRow(
+								'Remote assets archived',
+								String(email.remoteContentAssetCount)
+							)}
+							{@render metaRow(
+								'Remote content archived',
+								email.remoteContentArchivedAt
+									? formatDateTime(email.remoteContentArchivedAt)
+									: null
+							)}
 
 							{@render metaRow('Ingestion source ID', email.ingestionSourceId, true)}
 							{@render metaRow('Email ID', email.id, true)}
@@ -951,12 +993,28 @@
 							{@render metaRow('Message-ID header', email.messageIdHeader, true)}
 							{@render metaRow('Provider message ID', email.providerMessageId, true)}
 
-							{@render metaRow('Storage hash (SHA-256)', email.storageHashSha256, true)}
+							{@render metaRow(
+								'Storage hash (SHA-256)',
+								email.storageHashSha256,
+								true
+							)}
 
-							{@render metaRow('Duplicate: subject hash', email.duplicateSubjectHash, true)}
+							{@render metaRow(
+								'Duplicate: subject hash',
+								email.duplicateSubjectHash,
+								true
+							)}
 							{@render metaRow('Duplicate: body hash', email.duplicateBodyHash, true)}
-							{@render metaRow('Duplicate: recipient fingerprint', email.duplicateRecipientFingerprint, true)}
-							{@render metaRow('Duplicate: attachment fingerprint', email.duplicateAttachmentFingerprint, true)}
+							{@render metaRow(
+								'Duplicate: recipient fingerprint',
+								email.duplicateRecipientFingerprint,
+								true
+							)}
+							{@render metaRow(
+								'Duplicate: attachment fingerprint',
+								email.duplicateAttachmentFingerprint,
+								true
+							)}
 						</dl>
 					</Card.Content>
 				{/if}
@@ -1097,20 +1155,32 @@
 											</Tooltip.Root>
 											<div class="flex flex-shrink-0 items-center gap-1">
 												<Badge
-													variant={asset.status === 'blocked' ? 'secondary' : 'destructive'}
+													variant={asset.status === 'blocked'
+														? 'secondary'
+														: 'destructive'}
 													class="capitalize">{asset.status}</Badge
 												>
 												<Tooltip.Root>
 													<Tooltip.Trigger
 														type="button"
-														class="{buttonVariants({ variant: 'ghost', size: 'icon' })} h-6 w-6"
+														class="{buttonVariants({
+															variant: 'ghost',
+															size: 'icon',
+														})} h-6 w-6"
 														disabled={retryingAssetId === asset.id}
 														onclick={() => retryAsset(asset.id)}
 														aria-label="Retry this item"
 													>
-														<RotateCw class="h-3.5 w-3.5 {retryingAssetId === asset.id ? 'animate-spin' : ''}" />
+														<RotateCw
+															class="h-3.5 w-3.5 {retryingAssetId ===
+															asset.id
+																? 'animate-spin'
+																: ''}"
+														/>
 													</Tooltip.Trigger>
-													<Tooltip.Content>Retry this item</Tooltip.Content>
+													<Tooltip.Content
+														>Retry this item</Tooltip.Content
+													>
 												</Tooltip.Root>
 											</div>
 										</div>

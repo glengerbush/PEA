@@ -35,26 +35,65 @@ if (!SEMVER.test(version)) {
 const edits = [
 	// name, path, matcher, replacement
 	['package.json (root)', 'package.json', /("version":\s*)"[^"]*"/, `$1"${version}"`],
-	['apps/desktop/package.json', 'apps/desktop/package.json', /("version":\s*)"[^"]*"/, `$1"${version}"`],
-	['packages/frontend/package.json', 'packages/frontend/package.json', /("version":\s*)"[^"]*"/, `$1"${version}"`],
-	['packages/types/package.json', 'packages/types/package.json', /("version":\s*)"[^"]*"/, `$1"${version}"`],
+	[
+		'apps/desktop/package.json',
+		'apps/desktop/package.json',
+		/("version":\s*)"[^"]*"/,
+		`$1"${version}"`,
+	],
+	[
+		'packages/frontend/package.json',
+		'packages/frontend/package.json',
+		/("version":\s*)"[^"]*"/,
+		`$1"${version}"`,
+	],
+	[
+		'packages/types/package.json',
+		'packages/types/package.json',
+		/("version":\s*)"[^"]*"/,
+		`$1"${version}"`,
+	],
 	// Cargo [package] version: the only `version = "..."` at column 0 (deps are inline).
-	['apps/desktop/src-tauri/Cargo.toml', 'apps/desktop/src-tauri/Cargo.toml', /^version = "[^"]*"/m, `version = "${version}"`],
-	['crates/engine/Cargo.toml', 'crates/engine/Cargo.toml', /^version = "[^"]*"/m, `version = "${version}"`],
+	[
+		'apps/desktop/src-tauri/Cargo.toml',
+		'apps/desktop/src-tauri/Cargo.toml',
+		/^version = "[^"]*"/m,
+		`version = "${version}"`,
+	],
+	[
+		'crates/engine/Cargo.toml',
+		'crates/engine/Cargo.toml',
+		/^version = "[^"]*"/m,
+		`version = "${version}"`,
+	],
 	// PKGBUILD drives the release download URL, so it must match the tag.
 	['packaging/arch/PKGBUILD', 'packaging/arch/PKGBUILD', /^pkgver=.*/m, `pkgver=${version}`],
 	// Keep Cargo.lock's two workspace-crate entries in step so `cargo build` is a no-op.
-	['Cargo.lock (pea-desktop)', 'Cargo.lock', /(name = "pea-desktop"\nversion = )"[^"]*"/, `$1"${version}"`],
-	['Cargo.lock (pea-engine)', 'Cargo.lock', /(name = "pea-engine"\nversion = )"[^"]*"/, `$1"${version}"`],
+	[
+		'Cargo.lock (pea-desktop)',
+		'Cargo.lock',
+		/(name = "pea-desktop"\nversion = )"[^"]*"/,
+		`$1"${version}"`,
+	],
+	[
+		'Cargo.lock (pea-engine)',
+		'Cargo.lock',
+		/(name = "pea-engine"\nversion = )"[^"]*"/,
+		`$1"${version}"`,
+	],
 ];
 
 let failed = false;
 for (const [label, rel, find, replace] of edits) {
 	const path = join(repoRoot, rel);
 	const before = readFileSync(path, 'utf8');
-	const matches = before.match(new RegExp(find, find.flags.includes('g') ? find.flags : find.flags + 'g'));
+	const matches = before.match(
+		new RegExp(find, find.flags.includes('g') ? find.flags : find.flags + 'g')
+	);
 	if (!matches || matches.length !== 1) {
-		console.error(`✗ ${label}: expected exactly one version match, found ${matches ? matches.length : 0} — not touched.`);
+		console.error(
+			`✗ ${label}: expected exactly one version match, found ${matches ? matches.length : 0} — not touched.`
+		);
 		failed = true;
 		continue;
 	}
@@ -64,9 +103,13 @@ for (const [label, rel, find, replace] of edits) {
 }
 
 if (failed) {
-	console.error('\nSome files were not updated — review the errors above and fix them before releasing.');
+	console.error(
+		'\nSome files were not updated — review the errors above and fix them before releasing.'
+	);
 	process.exit(1);
 }
 
-console.log(`\nAll set to ${version}. tauri.conf.json and the frontend read root package.json, so they update automatically.`);
+console.log(
+	`\nAll set to ${version}. tauri.conf.json and the frontend read root package.json, so they update automatically.`
+);
 console.log(`Next: verify locally, then \`git tag v${version} && git push --tags\` to release.`);

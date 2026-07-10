@@ -129,8 +129,7 @@
 									: 'N/A'}</Table.Cell
 							>
 							<Table.Cell>
-								<a
-									href="/mailbox?ingestionSourceId={job.ingestionSourceId}"
+								<a href="/mailbox?ingestionSourceId={job.ingestionSourceId}"
 									>{job.ingestionSourceId || 'N/A'}</a
 								>
 							</Table.Cell>

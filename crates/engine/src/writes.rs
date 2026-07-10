@@ -1,7 +1,7 @@
 //! Write endpoints: POST/PUT/PATCH/DELETE handlers for the HTTP API.
 
 use crate::state::AppState;
-use crate::{emails, sources};
+use crate::{duplicates, emails, sources};
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -290,6 +290,72 @@ pub async fn approve_exact_duplicates(State(app): State<AppState>, Json(dto): Js
         "approvedGroups": approved_groups,
         "deletedEmails": deleted_emails,
         "keeperEmails": keeper_emails,
+    }))
+    .into_response()
+}
+
+/// POST /archived-emails/duplicates/exact/approve-all — body {"reason"?: string}.
+/// Deletes the duplicates of EVERY non-ignored cluster matching the reason
+/// filter (all clusters when no reason is given), across all pages. Each
+/// cluster keeps its default keeper — the oldest copy, exactly what the
+/// listing shows — since per-group keeper overrides only exist client-side on
+/// the visible page.
+pub async fn approve_all_exact_duplicates(
+    State(app): State<AppState>,
+    Json(dto): Json<Value>,
+) -> Response {
+    let reason = dto
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
+    // A destructive endpoint must not quietly widen its scope: an unknown
+    // reason is a 400, not a fallback to "delete everything".
+    if let Some(r) = reason {
+        if !duplicates::ALLOWED_REASONS.contains(&r) {
+            return message_response(StatusCode::BAD_REQUEST, "Unknown reason");
+        }
+    }
+
+    let conn = app.pool.get().unwrap();
+    // One transaction: clustering and deletion see a single snapshot, and the
+    // whole approval is atomic.
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(error) => {
+            return message_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())
+        }
+    };
+    let mut approved_groups = 0usize;
+    let mut deleted_emails = 0usize;
+    for cluster in duplicates::collect_exact_clusters(&tx) {
+        if reason.map_or(false, |r| !cluster.reasons.contains(&r)) {
+            continue;
+        }
+        let keeper = &cluster.default_keeper_id;
+        if keeper.is_empty() {
+            continue;
+        }
+        let mut deleted_here = 0usize;
+        // Approved duplicate copies go to the trash (recoverable), consistent
+        // with every other delete; empty the trash to reclaim their storage.
+        for id in cluster.ids.iter().filter(|id| *id != keeper) {
+            if emails::soft_delete_archived_email(&tx, id).is_ok() {
+                deleted_here += 1;
+            }
+        }
+        if deleted_here > 0 {
+            deleted_emails += deleted_here;
+            approved_groups += 1;
+        }
+    }
+    if let Err(error) = tx.commit() {
+        return message_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    Json(json!({
+        "approvedGroups": approved_groups,
+        "deletedEmails": deleted_emails,
+        "keeperEmails": approved_groups,
     }))
     .into_response()
 }

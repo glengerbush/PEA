@@ -61,9 +61,16 @@
 		busy = `restore-${id}`;
 		try {
 			const response = await postJson('/archived-emails/trash/restore', { emailIds: [id] });
-			if (!response.ok) throw new Error((await response.json()).message || 'Failed to restore');
+			if (!response.ok)
+				throw new Error((await response.json()).message || 'Failed to restore');
 			await reload();
-			setAlert({ type: 'success', title: 'Restored', message: 'Email restored', duration: 2500, show: true });
+			setAlert({
+				type: 'success',
+				title: 'Restored',
+				message: 'Email restored',
+				duration: 2500,
+				show: true,
+			});
 		} catch (error) {
 			setAlert({
 				type: 'error',
@@ -83,7 +90,8 @@
 		busy = `delete-${id}`;
 		try {
 			const response = await postJson('/archived-emails/trash/delete', { emailIds: [id] });
-			if (!response.ok) throw new Error((await response.json()).message || 'Failed to delete');
+			if (!response.ok)
+				throw new Error((await response.json()).message || 'Failed to delete');
 			deleteForeverId = null;
 			await reload();
 		} catch (error) {
@@ -137,7 +145,8 @@
 		<h1 class="text-2xl font-bold">Trash</h1>
 		<p class="text-muted-foreground text-sm">
 			{trash.total}
-			{trash.total === 1 ? 'item' : 'items'} · deleted emails are kept here until you empty the trash
+			{trash.total === 1 ? 'item' : 'items'} · deleted emails are kept here until you empty the
+			trash
 		</p>
 	</div>
 	{#if trash.hits.length > 0}
@@ -169,9 +178,14 @@
 			<Table.Body class="text-sm">
 				{#each trash.hits as email (email.id)}
 					<Table.Row class={email.id === $lastOpenedEmailId ? 'bg-primary/10' : ''}>
-						<Table.Cell class="whitespace-nowrap">{formatDateTime(email.timestamp)}</Table.Cell>
+						<Table.Cell class="whitespace-nowrap"
+							>{formatDateTime(email.timestamp)}</Table.Cell
+						>
 						<Table.Cell>
-							<a href={viewUrl(email.id)} class="block max-w-80 truncate hover:underline">
+							<a
+								href={viewUrl(email.id)}
+								class="block max-w-80 truncate hover:underline"
+							>
 								{email.subject || '(no subject)'}
 							</a>
 						</Table.Cell>
@@ -233,12 +247,18 @@
 		<Dialog.Header>
 			<Dialog.Title>Empty trash?</Dialog.Title>
 			<Dialog.Description>
-				This permanently deletes all {trash.total} email{trash.total === 1 ? '' : 's'} in the trash,
-				along with any attachments no longer used by a remaining email. This cannot be undone.
+				This permanently deletes all {trash.total} email{trash.total === 1 ? '' : 's'} in the
+				trash, along with any attachments no longer used by a remaining email. This cannot be
+				undone.
 			</Dialog.Description>
 		</Dialog.Header>
 		<Dialog.Footer class="sm:justify-start">
-			<Button type="button" variant="destructive" onclick={emptyTrash} disabled={busy !== null}>
+			<Button
+				type="button"
+				variant="destructive"
+				onclick={emptyTrash}
+				disabled={busy !== null}
+			>
 				{busy === 'empty' ? 'Emptying…' : 'Permanently delete'}
 			</Button>
 			<Dialog.Close>
@@ -259,12 +279,17 @@
 		<Dialog.Header>
 			<Dialog.Title>Delete this email forever?</Dialog.Title>
 			<Dialog.Description>
-				This permanently removes the email and any attachments no longer used by a remaining email.
-				This cannot be undone.
+				This permanently removes the email and any attachments no longer used by a remaining
+				email. This cannot be undone.
 			</Dialog.Description>
 		</Dialog.Header>
 		<Dialog.Footer class="sm:justify-start">
-			<Button type="button" variant="destructive" onclick={deleteForever} disabled={busy !== null}>
+			<Button
+				type="button"
+				variant="destructive"
+				onclick={deleteForever}
+				disabled={busy !== null}
+			>
 				{busy?.startsWith('delete-') ? 'Deleting…' : 'Permanently delete'}
 			</Button>
 			<Dialog.Close>

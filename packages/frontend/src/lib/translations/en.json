@@ -26,6 +26,8 @@
 			"cancel": "Cancel",
 			"not_found": "Email not found.",
 			"back_to_mailbox": "Back to mailbox",
+			"back_to_dashboard": "Back to dashboard",
+			"back_to_duplicates": "Back to Duplicates",
 			"remote_content": "Remote content",
 			"remote_content_failed": "{{count}} failed or blocked"
 		},

@@ -25,7 +25,10 @@ export const load: PageLoad = async (event) => {
 	const exactParams = new URLSearchParams({ page: String(exactPage), limit: String(limit) });
 	if (reason) exactParams.set('reason', reason);
 
-	const response = await api(`/archived-emails/duplicates/exact?${exactParams.toString()}`, event);
+	const response = await api(
+		`/archived-emails/duplicates/exact?${exactParams.toString()}`,
+		event
+	);
 	const body = await response.json();
 	if (!response.ok) {
 		return error(response.status, body.message || 'Failed to load duplicate groups.');

@@ -33,9 +33,13 @@ pub fn validate(provider_config: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Iterates every .eml entry of the zip. `on_bytes` receives each visited
+/// entry's compressed size — including skipped non-.eml entries, so progress
+/// keeps moving through junk (it approximates the archive size from below).
 pub fn for_each_email(
     provider_config: &Value,
     mut handle: impl FnMut(EmailObj),
+    mut on_bytes: impl FnMut(u64),
 ) -> Result<(), String> {
     let local = provider_config.get("localFilePath").and_then(|v| v.as_str()).unwrap_or("");
     let bytes = std::fs::read(local).map_err(|e| e.to_string())?;
@@ -51,6 +55,7 @@ pub fn for_each_email(
                 continue;
             }
         };
+        on_bytes(entry.compressed_size());
         let name = entry.name().to_string();
         if name.starts_with("__MACOSX/") || name.ends_with('/') {
             continue;
@@ -126,9 +131,13 @@ mod tests {
         std::fs::write(&path, &buf).unwrap();
 
         let mut seen: Vec<(String, String)> = Vec::new();
-        for_each_email(&json!({ "localFilePath": path.to_str().unwrap() }), |email| {
-            seen.push((email.subject.clone(), email.path.clone()));
-        })
+        for_each_email(
+            &json!({ "localFilePath": path.to_str().unwrap() }),
+            |email| {
+                seen.push((email.subject.clone(), email.path.clone()));
+            },
+            |_| {},
+        )
         .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 

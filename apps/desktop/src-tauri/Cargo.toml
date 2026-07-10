@@ -1,6 +1,6 @@
 [package]
 name = "pea-desktop"
-version = "1.2.2"
+version = "1.2.3"
 description = "PEA (Personal Email Archive) desktop shell"
 edition = "2021"
 
@@ -21,3 +21,10 @@ pea-engine = { path = "../../../crates/engine" }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 http = "1"
+
+# Native Quick Look: the shared QLPreviewPanel (the same panel Finder shows on
+# Space) is an AppKit API, reachable only via Objective-C from the app process.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-quick-look-ui = "0.3"

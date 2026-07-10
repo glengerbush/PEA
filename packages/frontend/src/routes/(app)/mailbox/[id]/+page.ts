@@ -11,7 +11,10 @@ export const load: PageLoad = async (event) => {
 
 		if (!emailResponse.ok) {
 			const responseText = await emailResponse.json();
-			return error(emailResponse.status, responseText.message || 'Unable to read this email.');
+			return error(
+				emailResponse.status,
+				responseText.message || 'Unable to read this email.'
+			);
 		}
 
 		const email: ArchivedEmail = await emailResponse.json();

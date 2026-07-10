@@ -12,7 +12,7 @@
 		placeholder = 'Select…',
 		name,
 		class: className,
-		onValueChange
+		onValueChange,
 	}: {
 		/** Selected option value (two-way bindable). */
 		value?: string;
@@ -61,7 +61,14 @@
 		<Combobox.Input
 			{placeholder}
 			oninput={(e) => (searchValue = e.currentTarget.value)}
-			onfocus={(e) => e.currentTarget.select()}
+			onfocus={(e) => {
+				// Select-all so typing overwrites the current selection. When focus
+				// comes from a mouse click, the browser's mouseup collapses a
+				// selection made during the focus event — defer one frame so the
+				// select lands after the click gesture completes.
+				const input = e.currentTarget;
+				requestAnimationFrame(() => input.select());
+			}}
 			onclick={() => (open = true)}
 			class={cn(
 				'border-input focus-visible:border-ring focus-visible:ring-ring/50 dark:bg-input/30 shadow-xs flex h-9 w-full cursor-pointer rounded-md border bg-transparent px-3 py-2 pr-9 text-sm outline-none transition-[color,box-shadow] focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50',
@@ -90,7 +97,9 @@
 						class="data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground outline-hidden relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-2 pr-8 text-sm data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
 					>
 						{#snippet children({ selected })}
-							<span class="absolute right-2 flex size-3.5 items-center justify-center">
+							<span
+								class="absolute right-2 flex size-3.5 items-center justify-center"
+							>
 								{#if selected}
 									<Check class="size-4" />
 								{/if}

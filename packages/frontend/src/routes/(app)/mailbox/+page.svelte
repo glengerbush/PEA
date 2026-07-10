@@ -23,6 +23,7 @@
 	import Paperclip from '@lucide/svelte/icons/paperclip';
 	import Search from '@lucide/svelte/icons/search';
 	import Filter from '@lucide/svelte/icons/filter';
+	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
@@ -60,14 +61,20 @@
 	let limit = $derived(String(filters.limit));
 	let matchingStrategy: MatchingStrategy = $derived(filters.matchingStrategy);
 
+	// Origin breadcrumb: dashboard drill-downs (charts/stat cards) land here with
+	// ?from=/dashboard so the list can offer a way back up. Preserved by
+	// buildArchiveUrl() so it survives searching/filtering on the way.
+	const fromParam = $derived(appPage.url.searchParams.get('from') || '');
+	const cameFromDashboard = $derived(fromParam.startsWith('/dashboard'));
+
 	// The Clear button resets to the pristine /mailbox view, so it should show
 	// whenever any filter/search is active. buildArchiveUrl() only writes a query
 	// param when its value deviates from the default, so "any param present that
 	// isn't display/pagination" is exactly the set of active filters. Listing the
 	// non-filter params (rather than the filters) means a filter added to
 	// buildArchiveUrl() in the future lights up Clear automatically — only a new
-	// display/pagination param would need to be added to this set.
-	const DISPLAY_PARAMS = new Set(['sort', 'direction', 'limit', 'page']);
+	// display/pagination/origin param would need to be added to this set.
+	const DISPLAY_PARAMS = new Set(['sort', 'direction', 'limit', 'page', 'from']);
 	let hasActiveFilters = $derived(
 		[...appPage.url.searchParams.keys()].some((key) => !DISPLAY_PARAMS.has(key))
 	);
@@ -227,18 +234,41 @@
 		}
 	}
 
-	function buildArchiveUrl(pageNumber = 1): string {
+	// Overrides let change callbacks pass their fresh value directly: the bound
+	// vars are $derived from loader data, so a navigation racing this build (e.g.
+	// a debounced search keystroke) can reset them before the URL is assembled.
+	type FilterOverrides = Partial<{
+		fields: string;
+		ingestionSourceId: string;
+		hasAttachments: string;
+		attachmentExt: string;
+		tags: string;
+		matchingStrategy: string;
+	}>;
+
+	function buildArchiveUrl(pageNumber = 1, overrides: FilterOverrides = {}): string {
 		const params = new URLSearchParams();
 		setParam(params, 'q', q);
-		setParam(params, 'fields', fields, 'all');
-		setParam(params, 'ingestionSourceId', ingestionSourceId, 'all');
-		setParam(params, 'hasAttachments', hasAttachments, 'any');
-		setParam(params, 'attachmentExt', attachmentExt);
-		setParam(params, 'tags', tags);
+		setParam(params, 'fields', overrides.fields ?? fields, 'all');
+		setParam(
+			params,
+			'ingestionSourceId',
+			overrides.ingestionSourceId ?? ingestionSourceId,
+			'all'
+		);
+		setParam(params, 'hasAttachments', overrides.hasAttachments ?? hasAttachments, 'any');
+		setParam(params, 'attachmentExt', overrides.attachmentExt ?? attachmentExt);
+		setParam(params, 'tags', overrides.tags ?? tags);
 		setParam(params, 'sort', sort, 'sentAt');
 		setParam(params, 'direction', direction, 'desc');
 		setParam(params, 'limit', limit, '25');
-		setParam(params, 'matchingStrategy', matchingStrategy, 'last');
+		setParam(
+			params,
+			'matchingStrategy',
+			overrides.matchingStrategy ?? matchingStrategy,
+			'last'
+		);
+		setParam(params, 'from', fromParam);
 		if (pageNumber > 1) {
 			params.set('page', String(pageNumber));
 		}
@@ -249,10 +279,10 @@
 	// Search-as-you-type / instant filtering. Navigation re-derives all inputs
 	// from the URL, so an apply after each change round-trips cleanly (no loops).
 	let searchDebounce: ReturnType<typeof setTimeout> | undefined;
-	function applyNow() {
+	function applyNow(overrides: FilterOverrides = {}) {
 		if (searchDebounce) clearTimeout(searchDebounce);
 		selectedIds = [];
-		goto(buildArchiveUrl(1), { keepFocus: true, replaceState: true });
+		goto(buildArchiveUrl(1, overrides), { keepFocus: true, replaceState: true });
 	}
 	// Keystrokes: FTS5 prefix search answers in ~10-30ms; a short debounce just
 	// avoids piling a navigation on every character.
@@ -265,11 +295,6 @@
 	onDestroy(() => {
 		if (searchDebounce) clearTimeout(searchDebounce);
 	});
-	// Select bindings update after their change callbacks fire — defer one tick
-	// so buildArchiveUrl() sees the new value.
-	function applyAfterUpdate() {
-		setTimeout(applyNow, 0);
-	}
 
 	// Enter in the search box applies immediately (skips the debounce).
 	function handleApplyFilters(event: SubmitEvent) {
@@ -428,6 +453,15 @@
 	<title>{$t('app.archived_emails_page.title')} - PEA</title>
 </svelte:head>
 
+{#if cameFromDashboard}
+	<div class="mb-2">
+		<Button variant="ghost" size="sm" class="gap-2" onclick={() => goto(fromParam)}>
+			<ArrowLeft class="h-4 w-4" />
+			{$t('app.archive.back_to_dashboard')}
+		</Button>
+	</div>
+{/if}
+
 <div class="mb-4 flex flex-col gap-1">
 	<h1 class="text-2xl font-bold">{$t('app.archived_emails_page.header')}</h1>
 	<p class="text-muted-foreground text-sm">
@@ -460,7 +494,7 @@
 			type="single"
 			name="fields"
 			bind:value={fields}
-			onValueChange={applyAfterUpdate}
+			onValueChange={(value) => applyNow({ fields: value })}
 		>
 			<Tooltip.Root>
 				<Tooltip.Trigger>
@@ -482,7 +516,7 @@
 			type="single"
 			name="matchingStrategy"
 			bind:value={matchingStrategy}
-			onValueChange={applyAfterUpdate}
+			onValueChange={(value) => applyNow({ matchingStrategy: value })}
 		>
 			<Tooltip.Root>
 				<Tooltip.Trigger>
@@ -518,7 +552,7 @@
 			{/if}
 		</Button>
 		{#if hasActiveFilters}
-			<a href="/mailbox">
+			<a href="/mailbox{fromParam ? `?from=${encodeURIComponent(fromParam)}` : ''}">
 				<Button type="button" variant="ghost" class="gap-2">
 					<X class="h-4 w-4" />
 					Clear
@@ -535,7 +569,7 @@
 					type="single"
 					name="ingestionSourceId"
 					bind:value={ingestionSourceId}
-					onValueChange={applyAfterUpdate}
+					onValueChange={(value) => applyNow({ ingestionSourceId: value })}
 				>
 					<Select.Trigger class="w-full">{sourceLabel}</Select.Trigger>
 					<Select.Content>
@@ -555,13 +589,16 @@
 					bind:value={tags}
 					options={tagFilterOptions}
 					placeholder="Any tag"
-					onValueChange={applyAfterUpdate}
+					onValueChange={(value) => applyNow({ tags: value })}
 				/>
 			</label>
 
 			<label class="flex min-w-[12rem] flex-col gap-1 text-sm font-medium">
 				<span>Attachment types</span>
-				<AttachmentTypeFilter bind:value={attachmentExt} onValueChange={applyAfterUpdate} />
+				<AttachmentTypeFilter
+					bind:value={attachmentExt}
+					onValueChange={(value) => applyNow({ attachmentExt: value })}
+				/>
 			</label>
 
 			<div class="flex h-9 items-center gap-2">
@@ -801,7 +838,8 @@
 					: 's'} to the Trash?</Dialog.Title
 			>
 			<Dialog.Description>
-				This moves the selected email{selectedVisibleIds.length === 1 ? '' : 's'} to the Trash, where
+				This moves the selected email{selectedVisibleIds.length === 1 ? '' : 's'} to the Trash,
+				where
 				{selectedVisibleIds.length === 1 ? 'it' : 'they'} can be restored or permanently deleted.
 			</Dialog.Description>
 		</Dialog.Header>

@@ -10,7 +10,7 @@
 		buildHref,
 		prevLabel = 'Previous',
 		nextLabel = 'Next',
-		class: className = 'mt-8'
+		class: className = 'mt-8',
 	}: {
 		/** Total item count. */
 		count: number;

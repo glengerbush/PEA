@@ -83,8 +83,8 @@
 			<Card.Title>Import contacts</Card.Title>
 			<Card.Description>
 				Accepts a <strong>.csv</strong> (with an email column — and optionally name / first
-				/ last columns) or a <strong>.vcf / vCard</strong> file. Existing contacts with the
-				same email are updated.
+				/ last columns) or a <strong>.vcf / vCard</strong> file. Existing contacts with the same
+				email are updated.
 			</Card.Description>
 		</Card.Header>
 		<Card.Content class="space-y-4">

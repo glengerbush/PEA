@@ -14,6 +14,10 @@ fn field_to_column(field: &str) -> Option<&'static str> {
         "from" | "senderName" => Some("sender"),
         "to" | "cc" | "bcc" => Some("recipients"),
         "attachments.filename" | "attachments.content" => Some("attachments"),
+        // importSource searches the FTS `meta` column, which is indexed at
+        // ingest time from the filename-derived archived_emails.import_source —
+        // NOT the live ingestion-source name shown in listings (reindexing on
+        // every source rename isn't worth it).
         "importSource" | "sourcePath" | "tags" => Some("meta"),
         _ => None,
     }
@@ -240,6 +244,8 @@ pub fn build_filter_sql(conn: &Connection, q: &dyn Fn(&str) -> Option<String>) -
         }
     }
     for (key, column) in [
+        // Filters on the raw ingest-time value, not the live source name
+        // (listings display the latter; use ingestionSourceId to filter by source).
         ("importSource", "ae.import_source"),
         ("from", "ae.sender_email"),
         ("sourcePath", "ae.source_path"),
@@ -345,10 +351,16 @@ pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Valu
         parse_json_or(row.get::<_, Option<String>>("recipients").unwrap_or(None), json!({}));
     let mut doc = Map::new();
     doc.insert("id".into(), json!(row.get::<_, String>("id").unwrap_or_default()));
-    doc.insert(
-        "importSource".into(),
-        json!(row.get::<_, String>("import_source").unwrap_or_default()),
-    );
+    // Prefer the live ingestion-source name (joined as import_source_name) so
+    // renames in the Import tab show immediately; fall back to the
+    // filename-derived string frozen at ingest.
+    let import_source = row
+        .get::<_, Option<String>>("import_source_name")
+        .ok()
+        .flatten()
+        .or_else(|| row.get::<_, String>("import_source").ok())
+        .unwrap_or_default();
+    doc.insert("importSource".into(), json!(import_source));
     doc.insert(
         "from".into(),
         json!(row.get::<_, String>("sender_email").unwrap_or_default()),
@@ -433,7 +445,9 @@ pub fn query_archived_emails(
     let run = |match_expr: Option<&str>| -> (Vec<Value>, i64) {
         if let Some(expr) = match_expr {
             let base = format!(
-                "FROM email_fts f JOIN archived_emails ae ON ae.rowid = f.rowid WHERE email_fts MATCH ?{}",
+                "FROM email_fts f JOIN archived_emails ae ON ae.rowid = f.rowid \
+                 LEFT JOIN ingestion_sources src ON src.id = ae.ingestion_source_id \
+                 WHERE email_fts MATCH ?{}",
                 filter.clause
             );
             // The total is a SEPARATE count query. A window function
@@ -443,7 +457,8 @@ pub fn query_archived_emails(
             // filter_map below) silently zeroed every page-1 search. The count
             // is JOIN-free when unfiltered, so it only walks the FTS doclist.
             let sql = format!(
-                "SELECT ae.*, snippet(email_fts, 2, '', '', '…', 24) AS snippet {base} \
+                "SELECT ae.*, COALESCE(src.name, ae.import_source) AS import_source_name, \
+                 snippet(email_fts, 2, '', '', '…', 24) AS snippet {base} \
                  ORDER BY {sort_col} {direction}, bm25(email_fts, {BM25_WEIGHTS}) ASC LIMIT ? OFFSET ?"
             );
             let mut stmt = conn.prepare(&sql).unwrap();
@@ -472,9 +487,15 @@ pub fn query_archived_emails(
                 .unwrap_or(0);
             (hits, total)
         } else {
-            let base = format!("FROM archived_emails ae WHERE 1=1{}", filter.clause);
+            let base = format!(
+                "FROM archived_emails ae \
+                 LEFT JOIN ingestion_sources src ON src.id = ae.ingestion_source_id \
+                 WHERE 1=1{}",
+                filter.clause
+            );
             let sql = format!(
-                "SELECT ae.* {base} ORDER BY {sort_col} {direction} LIMIT ? OFFSET ?"
+                "SELECT ae.*, COALESCE(src.name, ae.import_source) AS import_source_name \
+                 {base} ORDER BY {sort_col} {direction} LIMIT ? OFFSET ?"
             );
             let mut stmt = conn.prepare(&sql).unwrap();
             let mut params: Vec<SqlValue> = filter.params.clone();

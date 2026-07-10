@@ -114,8 +114,28 @@ pub fn find_by_id(conn: &Connection, id: &str) -> Result<SourceRow, String> {
     })
 }
 
+/// Byte progress of the source's live import session as JSON, or Null when no
+/// session exists or the total is unknown (sessions are deleted on finish, so
+/// a non-null value means an import is running).
+pub fn import_progress_json(conn: &Connection, id: &str) -> Value {
+    conn.query_row(
+        "SELECT total_bytes, processed_bytes FROM import_sessions \
+         WHERE ingestion_source_id = ? ORDER BY created_at DESC LIMIT 1",
+        [id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    )
+    .ok()
+    .filter(|(total, _)| *total > 0)
+    .map(|(total, processed)| {
+        let percent = processed.saturating_mul(100).checked_div(total).unwrap_or(0).clamp(0, 100);
+        json!({ "processedBytes": processed, "totalBytes": total, "percent": percent })
+    })
+    .unwrap_or(Value::Null)
+}
+
 /// The toSafeIngestionSource JSON (provider config omitted) for a source id.
 pub fn safe_source_json(conn: &Connection, id: &str) -> Option<Value> {
+    let progress = import_progress_json(conn, id);
     conn.query_row(
         "SELECT id, name, provider, status, last_import_started_at, \
          last_import_finished_at, last_import_status_message, merged_into_id, \
@@ -133,6 +153,7 @@ pub fn safe_source_json(conn: &Connection, id: &str) -> Option<Value> {
                 "mergedIntoId": row.get::<_, Option<String>>(7)?,
                 "createdAt": crate::iso(row.get::<_, i64>(8)?),
                 "updatedAt": crate::iso(row.get::<_, i64>(9)?),
+                "importProgress": progress,
             }))
         },
     )

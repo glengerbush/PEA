@@ -9,9 +9,7 @@
 	"plugins": {
 		"updater": {
 			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFREM1RTkyMThBNzNENEUKUldST1BhY1lrbDdjam5ySlhmR1RoQXhFaGtyaWROZnNRSm5QTmc4OFFqWWlZUjYrbTcvUnFHckQK",
-			"endpoints": [
-				"https://github.com/glengerbush/PEA/releases/latest/download/latest.json"
-			]
+			"endpoints": ["https://github.com/glengerbush/PEA/releases/latest/download/latest.json"]
 		}
 	},
 	"app": {
@@ -31,23 +29,12 @@
 	"bundle": {
 		"active": true,
 		"createUpdaterArtifacts": true,
-		"targets": [
-			"deb",
-			"rpm",
-			"appimage"
-		],
-		"resources": [
-			"resources"
-		],
+		"targets": ["deb", "rpm", "appimage"],
+		"resources": ["resources"],
 		"category": "Utility",
 		"shortDescription": "Personal Email Archive",
 		"longDescription": "PEA (Personal Email Archive): a self-contained personal email archive. Import mbox/eml, full-text search, attachment indexing. All data stays on your machine.",
-		"icon": [
-			"icons/32x32.png",
-			"icons/128x128.png",
-			"icons/128x128@2x.png",
-			"icons/icon.ico"
-		],
+		"icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
 		"linux": {
 			"deb": {
 				"depends": []

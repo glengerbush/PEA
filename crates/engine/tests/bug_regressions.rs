@@ -328,3 +328,105 @@ async fn sweep_clears_stale_tracking_assets_only() {
         assert_eq!(real, 1, "genuine failed asset preserved");
     });
 }
+
+// BUG (false data): a message can carry the same file as several MIME parts —
+// Apple Mail forwards repeat an inline image once per Content-Id. The
+// attachments row is deduped by content hash, so linking per part recorded the
+// same (email, attachment) fact twice. The detail payload then claimed two
+// attachments and handed back the same id for both (crashing the keyed each
+// block that renders them), and the zip bundled the file twice, renaming the
+// second copy to a filename the email never contained.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_identical_mime_part_links_attachment_once() {
+    let a = TempArchive::new();
+    // Two image parts, identical bytes, distinct Content-Ids — the Swan email.
+    let ct = r#"Content-Type: multipart/related; boundary="XB""#;
+    let part = "--XB\nContent-Type: image/jpeg; name=\"photo.jpg\"\n\
+                Content-Disposition: inline; filename=\"photo.jpg\"\n\
+                Content-Id: <cid-%N%>\n\nSAMEBYTES\n";
+    let mime = format!(
+        "--XB\nContent-Type: text/html; charset=utf-8\n\n<p>hi</p>\n{}{}--XB--\n",
+        part.replace("%N%", "one"),
+        part.replace("%N%", "two"),
+    );
+    a.import_mbox_str(&mbox_msg("<dup@x>", "A <a@x.com>", "b@x.com", "Dup parts", &[ct], &mime));
+    let app = a.router();
+
+    let id = {
+        let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
+        b["hits"][0]["id"].as_str().unwrap().to_string()
+    };
+
+    // Exactly one link row, and the DB refuses a second one.
+    a.with_conn(|conn| {
+        let links: i64 = conn
+            .query_row("SELECT count(*) FROM email_attachments WHERE email_id = ?", [&id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(links, 1, "the repeated part must be linked once");
+        let att: String = conn
+            .query_row("SELECT attachment_id FROM email_attachments WHERE email_id = ?", [&id], |r| r.get(0))
+            .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO email_attachments (id, email_id, attachment_id) VALUES ('x', ?, ?)",
+            rusqlite::params![&id, &att],
+        );
+        assert!(dup.is_err(), "unique index must reject a duplicate link");
+    });
+
+    // The detail payload carries one attachment, with a key that is unique.
+    let (_, email) = get_json(&app, &format!("/api/v1/archived-emails/{id}")).await;
+    let attachments = email["attachments"].as_array().unwrap();
+    assert_eq!(attachments.len(), 1, "detail must not repeat the attachment");
+    assert_eq!(attachments[0]["filename"], json!("photo.jpg"));
+}
+
+// BUG (silent data loss in the preview): ammonia strips a disallowed-scheme
+// `src` before the attribute_filter runs, so `<img src="cid:...">` was deleted
+// before the preview could resolve it from the blob store. Ingest deliberately
+// leaves the cid: in place for hollowed parts, so every archived email that
+// referenced an inline image by Content-Id silently lost it in the body.
+//
+// This is the Swan email's exact shape: one photo embedded twice, each part
+// carrying its own Content-Id, both referenced by the HTML body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cid_referenced_inline_images_render_in_preview() {
+    // 1x1 transparent PNG, sent as two parts with identical bytes.
+    const PNG_B64: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    let ct = r#"Content-Type: multipart/related; boundary="R""#;
+    let body = format!(
+        "--R\nContent-Type: text/html; charset=utf-8\n\n\
+         <p>swans</p><img src=\"cid:ii_one\"><p>woodpecker</p><img src=\"cid:ii_two\">\n\
+         --R\nContent-Type: image/png; name=\"photo.png\"\n\
+         Content-Disposition: inline; filename=\"photo.png\"\n\
+         Content-Id: <ii_one>\nContent-Transfer-Encoding: base64\n\n{PNG_B64}\n\
+         --R\nContent-Type: image/png; name=\"photo.png\"\n\
+         Content-Disposition: inline; filename=\"photo.png\"\n\
+         Content-Id: <ii_two>\nContent-Transfer-Encoding: base64\n\n{PNG_B64}\n--R--\n"
+    );
+    let a = TempArchive::new();
+    a.import_mbox_str(&mbox_msg("<swan@x>", "A <a@x.com>", "b@x.com", "Swans", &[ct], &body));
+    let app = a.router();
+    let id = {
+        let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
+        b["hits"][0]["id"].as_str().unwrap().to_string()
+    };
+
+    // Identical bytes → one stored blob, linked once (see the dedupe test above).
+    let (_, email) = get_json(&app, &format!("/api/v1/archived-emails/{id}")).await;
+    assert_eq!(email["attachments"].as_array().unwrap().len(), 1, "one distinct attachment");
+
+    let (s, bytes) = send(&app, "GET", &format!("/api/v1/archived-emails/{id}/preview"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    let html = String::from_utf8_lossy(&bytes);
+
+    // Both references resolve, from the hollowed parts' markers, to the one blob.
+    assert_eq!(html.matches("<img").count(), 2, "both inline images render");
+    assert_eq!(
+        html.matches("data:image/png;base64,").count(),
+        2,
+        "each cid resolved to the stored bytes"
+    );
+    assert!(!html.contains("cid:"), "no unresolved cid: reaches the reader");
+    assert!(html.contains("swans") && html.contains("woodpecker"), "body text preserved");
+}

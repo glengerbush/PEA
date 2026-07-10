@@ -37,6 +37,29 @@ fn list_import_sources(source: &sources::SourceRow) -> Result<Vec<String>, Strin
     }
 }
 
+/// Sum of the source's input file sizes, known before streaming starts — the
+/// denominator for import progress percentages. 0 when enumeration fails
+/// (progress is then simply not shown).
+fn total_input_bytes(source: &sources::SourceRow) -> i64 {
+    let paths: Vec<String> = match source.provider.as_str() {
+        "mbox_import" => readers::get_mbox_inputs(&source.provider_config)
+            .map(|inputs| inputs.into_iter().map(|i| i.file_path).collect())
+            .unwrap_or_default(),
+        "eml_import" => source
+            .provider_config
+            .get("localFilePath")
+            .and_then(|v| v.as_str())
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    paths
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len() as i64)
+        .sum()
+}
+
 fn initial_import(state: &AppState, payload: &Value) -> Result<(), String> {
     let source_id = source_id_of(payload)?;
     let conn = state.pool.get().map_err(|e| e.to_string())?;
@@ -67,7 +90,13 @@ fn initial_import(state: &AppState, payload: &Value) -> Result<(), String> {
             )?;
             return Ok(());
         }
-        let session_id = sessions::create(&conn, &source_id, import_sources.len() as i64, true)?;
+        let session_id = sessions::create(
+            &conn,
+            &source_id,
+            import_sources.len() as i64,
+            true,
+            total_input_bytes(&source),
+        )?;
         for import_source in import_sources {
             queue::send_job(
                 state,
@@ -143,10 +172,29 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
                     last_beat = std::time::Instant::now();
                 }
             };
+            // Byte-progress flushes, throttled to ~2s: the imports page polls at
+            // 1s, so this keeps the percentage moving without a write per message.
+            let mut unflushed: u64 = 0;
+            let mut last_flush = std::time::Instant::now();
+            let on_bytes = |delta: u64| {
+                unflushed += delta;
+                if last_flush.elapsed().as_secs() >= 2 {
+                    sessions::add_progress(&conn, &session_id, unflushed as i64);
+                    unflushed = 0;
+                    last_flush = std::time::Instant::now();
+                }
+            };
             match source.provider.as_str() {
-                "mbox_import" => readers::for_each_email(&source.provider_config, handler)?,
-                "eml_import" => crate::eml::for_each_email(&source.provider_config, handler)?,
+                "mbox_import" => {
+                    readers::for_each_email(&source.provider_config, handler, on_bytes)?
+                }
+                "eml_import" => {
+                    crate::eml::for_each_email(&source.provider_config, handler, on_bytes)?
+                }
                 other => return Err(format!("Unsupported provider: {other}")),
+            }
+            if unflushed > 0 {
+                sessions::add_progress(&conn, &session_id, unflushed as i64);
             }
         }
         for chunk in pending.chunks(batch_size.max(1)) {
@@ -279,7 +327,13 @@ fn reimport_source(state: &AppState, payload: &Value) -> Result<(), String> {
         )?;
         return Ok(());
     }
-    let session_id = sessions::create(&conn, &source_id, import_sources.len() as i64, false)?;
+    let session_id = sessions::create(
+        &conn,
+        &source_id,
+        import_sources.len() as i64,
+        false,
+        total_input_bytes(&source),
+    )?;
     for import_source in import_sources {
         queue::send_job(
             state,

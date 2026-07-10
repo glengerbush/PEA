@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { Combobox } from 'bits-ui';
 	import Check from '@lucide/svelte/icons/check';
 	import Plus from '@lucide/svelte/icons/plus';
@@ -10,7 +11,7 @@
 		disabled = false,
 		placeholder = 'Add or search tags…',
 		onSelect,
-		class: className
+		class: className,
 	}: {
 		/** All known tags to offer as suggestions. */
 		existingTags?: string[];
@@ -36,13 +37,19 @@
 		trimmed !== '' && !existingTags.some((t) => t.toLowerCase() === trimmed.toLowerCase())
 	);
 
-	function choose(tag: string) {
+	async function choose(tag: string) {
 		const v = tag.trim();
-		// reset first so the field is ready for the next addition
-		value = '';
 		searchValue = '';
 		open = false;
 		if (v) onSelect(v);
+		// clearOnDeselect (on the input) clears the text when `value` transitions
+		// back to empty — but it watches from an $effect, so resetting
+		// synchronously inside onValueChange batches the selection away
+		// ('' → '' from the effect's view) and the input keeps the tag label.
+		// Wait a tick so the selection is observed, then deselect to trigger the
+		// clear and ready the field for the next addition.
+		await tick();
+		value = '';
 	}
 </script>
 
@@ -57,6 +64,7 @@
 >
 	<div class="relative">
 		<Combobox.Input
+			clearOnDeselect
 			{placeholder}
 			oninput={(e) => {
 				searchValue = e.currentTarget.value;

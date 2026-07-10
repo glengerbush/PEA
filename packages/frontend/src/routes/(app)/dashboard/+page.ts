@@ -22,10 +22,7 @@ export const load: PageLoad = async (event) => {
 		const response = await api('/dashboard/ingestion-history', event);
 		const responseText = await response.json();
 		if (!response.ok) {
-			return error(
-				response.status,
-				responseText.message || 'Failed to fetch import history'
-			);
+			return error(response.status, responseText.message || 'Failed to fetch import history');
 		}
 		return responseText;
 	};
@@ -34,10 +31,7 @@ export const load: PageLoad = async (event) => {
 		const response = await api('/dashboard/ingestion-sources', event);
 		const responseText = await response.json();
 		if (!response.ok) {
-			return error(
-				response.status,
-				responseText.message || 'Failed to fetch import sources'
-			);
+			return error(response.status, responseText.message || 'Failed to fetch import sources');
 		}
 		return responseText;
 	};
@@ -54,13 +48,12 @@ export const load: PageLoad = async (event) => {
 		return responseText;
 	};
 
-	const [stats, ingestionHistory, ingestionSources, indexedInsights] =
-		await Promise.all([
-			fetchStats(),
-			fetchIngestionHistory(),
-			fetchIngestionSources(),
-			fetchIndexedInsights(),
-		]);
+	const [stats, ingestionHistory, ingestionSources, indexedInsights] = await Promise.all([
+		fetchStats(),
+		fetchIngestionHistory(),
+		fetchIngestionSources(),
+		fetchIndexedInsights(),
+	]);
 
 	return {
 		stats,

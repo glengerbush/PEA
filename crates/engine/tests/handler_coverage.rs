@@ -33,6 +33,12 @@ async fn preview_sanitizes_and_inlines_cid() {
     assert!(!html.contains("alert(1)"), "script body stripped");
     // the inline image must not survive as a live cid: reference
     assert!(!html.contains("cid:Logo"), "cid reference resolved or removed");
+    // …and "removed" is not good enough: the image the sender embedded has to
+    // actually render. The stored .eml is hollowed, so this only passes when the
+    // preview resolves `cid:Logo` against the blob store (matching the part's
+    // `Content-ID: <logo>` case-insensitively) and inlines it as a data: URI.
+    assert!(html.contains("<img"), "the inline image survives sanitization");
+    assert!(html.contains("data:image/png;base64,"), "cid image inlined from the blob store");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

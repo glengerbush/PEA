@@ -4,7 +4,7 @@
 
 	let {
 		data,
-		onSelect = () => {}
+		onSelect = () => {},
 	}: {
 		data: IngestionSourceStats[];
 		onSelect?: (source: IngestionSourceStats) => void;
@@ -15,7 +15,7 @@
 		'var(--color-chart-2)',
 		'var(--color-chart-3)',
 		'var(--color-chart-4)',
-		'var(--color-chart-5)'
+		'var(--color-chart-5)',
 	];
 
 	const R = 80;
@@ -49,7 +49,12 @@
 	</div>
 {:else}
 	<div class="flex h-full w-full flex-col gap-3">
-		<svg viewBox="0 0 200 200" class="mx-auto h-40 w-40" role="img" aria-label="Storage by source">
+		<svg
+			viewBox="0 0 200 200"
+			class="mx-auto h-40 w-40"
+			role="img"
+			aria-label="Storage by source"
+		>
 			{#each slices as s (s.d.id)}
 				<path
 					d={arcPath(s.start, s.end)}
@@ -73,7 +78,10 @@
 						class="flex w-full items-center gap-2 hover:underline"
 						onclick={() => onSelect(s.d)}
 					>
-						<span class="h-2.5 w-2.5 flex-shrink-0 rounded-sm" style:background={s.color}></span>
+						<span
+							class="h-2.5 w-2.5 flex-shrink-0 rounded-sm"
+							style:background={s.color}
+						></span>
 						<span class="truncate">{s.d.name}</span>
 						<span class="text-muted-foreground ml-auto flex-shrink-0"
 							>{formatBytes(s.d.storageUsed ?? 0)}</span

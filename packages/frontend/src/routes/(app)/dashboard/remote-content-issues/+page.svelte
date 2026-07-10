@@ -3,11 +3,12 @@
 	import * as Table from '$lib/components/ui/table';
 	import * as Select from '$lib/components/ui/select';
 	import { Badge } from '$lib/components/ui/badge';
-	import { buttonVariants } from '$lib/components/ui/button';
+	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api.client';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
+	import { t } from '$lib/translations';
 	import { formatDateTime } from '$lib/stores/datetime.svelte';
 	import { disableTwoFingerSwipe } from '$lib/stores/swipe.store';
 	import { get } from 'svelte/store';
@@ -167,6 +168,12 @@
 {/if}
 
 <div class="space-y-4">
+	<div>
+		<Button variant="ghost" size="sm" class="-ml-2 gap-2" onclick={goBack}>
+			<ArrowLeft class="h-4 w-4" />
+			{$t('app.archive.back_to_dashboard')}
+		</Button>
+	</div>
 	<div class="flex flex-wrap items-center justify-between gap-3">
 		<div>
 			<h1 class="text-2xl font-bold">Remote content issues</h1>

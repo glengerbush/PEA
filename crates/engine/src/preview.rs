@@ -17,7 +17,15 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-const MAX_INLINE_CID_BYTES: usize = 1024 * 1024;
+/// Largest inline image the preview will embed. Not an attachment-size policy —
+/// ingest stores attachments of any size — but a payload bound: each reference
+/// is base64'd into the preview HTML (×4/3), JSON-encoded, run through the HTML
+/// sanitizer, and handed to the webview as one `srcdoc` string, on every open.
+/// Measured, release build, one reference: 1 MiB → 1.2 MiB / 0.16 s;
+/// 5 MiB → 6.7 MiB / 0.64 s; 25 MiB → 33.3 MiB / 3.4 s. 25 MiB is the ceiling
+/// most providers will deliver, so it covers real photo mail; above it the
+/// image is silently dropped (see `inline_images_without_reference`).
+const MAX_INLINE_CID_BYTES: usize = 25 * 1024 * 1024;
 
 const PREVIEW_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; \
 img-src 'self' data: http://localhost:* http://127.0.0.1:* http://[::1]:* \
@@ -745,8 +753,15 @@ fn sanitize_email_preview_html(
         .tags(tags)
         .generic_attributes(generic)
         .tag_attributes(tag_attrs)
+        // `cid` is allowed through only so the attribute_filter below can see it:
+        // ammonia drops disallowed-scheme src/href in clean_child, which runs
+        // BEFORE the filter, so without this the cid: reference is gone before
+        // rewrite_image_source can swap in the part's data: URI. A cid: that
+        // resolves to nothing still leaves — rewrite returns None, the attribute
+        // is dropped, and the source-less <img> is removed below. `a href="cid:"`
+        // is independently rejected by is_safe_link_url.
         .url_schemes(
-            ["http", "https", "mailto", "tel", "data"]
+            ["http", "https", "mailto", "tel", "data", "cid"]
                 .into_iter()
                 .collect(),
         )
@@ -1324,5 +1339,101 @@ mod hollow_tests {
             .expect("hollowed photo resolved and rendered");
         let text2 = html.find("Sent from my iPhone").expect("second text part");
         assert!(text1 < img && img < text2, "original MIME order");
+    }
+
+    /// ammonia strips disallowed-scheme src BEFORE the attribute_filter runs, so
+    /// a `cid:` image used to be deleted before it could be resolved from
+    /// cid_map. Allowing the scheme must inline it — without letting an
+    /// unresolvable cid, or a cid link, reach the reader.
+    #[test]
+    fn cid_image_is_inlined_from_cid_map() {
+        let mut cid_map = HashMap::new();
+        cid_map.insert(
+            "ii_abc".to_string(),
+            "data:image/jpeg;base64,/9j/4AAQSkZJRg==".to_string(),
+        );
+
+        let out = sanitize_email_preview_html(
+            "e1",
+            r#"<p>hi</p><img src="cid:ii_abc" alt="photo">"#,
+            &cid_map,
+            &[],
+            &HashMap::new(),
+        );
+        assert_eq!(out.matches("<img").count(), 1, "the cid image survives");
+        assert!(out.contains("data:image/jpeg;base64,/9j/4AAQSkZJRg=="), "resolved to its bytes");
+        assert!(!out.contains("cid:"), "no raw cid: reference reaches the reader");
+
+        // Uppercase reference against a lowercased map key (Content-ID: <Logo>).
+        let out = sanitize_email_preview_html(
+            "e1",
+            r#"<img src="CID:II_ABC">"#,
+            &cid_map,
+            &[],
+            &HashMap::new(),
+        );
+        assert!(out.contains("data:image/jpeg;base64,"), "cid match is case-insensitive");
+
+        // An unresolvable cid leaves nothing behind — not a broken <img>.
+        let out = sanitize_email_preview_html(
+            "e1",
+            r#"<img src="cid:missing">"#,
+            &cid_map,
+            &[],
+            &HashMap::new(),
+        );
+        assert_eq!(out.matches("<img").count(), 0, "source-less img removed");
+        assert!(!out.contains("cid:"));
+
+        // Allowing the scheme for <img src> must not make cid: a usable link.
+        let out = sanitize_email_preview_html(
+            "e1",
+            r#"<a href="cid:ii_abc">x</a>"#,
+            &cid_map,
+            &[],
+            &HashMap::new(),
+        );
+        assert!(!out.contains("cid:"), "cid href stripped by is_safe_link_url");
+    }
+
+    /// The inline cap is a preview-payload bound, not an attachment limit. An
+    /// image over it is dropped from the body entirely — no placeholder, no alt
+    /// text. Pinned here so that silent behavior is a deliberate choice rather
+    /// than something a future cap change re-introduces by accident.
+    #[test]
+    fn image_over_the_inline_cap_is_dropped_from_the_body() {
+        let eml = concat!(
+            "From: a@example.com\r\n",
+            "Subject: big photo\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=BOUND\r\n",
+            "\r\n",
+            "--BOUND\r\n",
+            "Content-Type: text/plain; charset=us-ascii\r\n",
+            "\r\n",
+            "Look at this!\r\n",
+            "--BOUND\r\n",
+            "Content-Type: image/jpeg; name=BIG.JPG\r\n",
+            "Content-Disposition: inline; filename=BIG.JPG\r\n",
+            "X-PEA-Attachment: bighash\r\n",
+            "\r\n",
+            "--BOUND--\r\n",
+        );
+        let msg = mail_parser::MessageParser::default().parse(eml.as_bytes()).unwrap();
+
+        // One byte over the cap: resolved from the blob store, then rejected.
+        let oversize = |_: &mail_parser::MessagePart| -> Option<Vec<u8>> {
+            Some(vec![0u8; MAX_INLINE_CID_BYTES + 1])
+        };
+        let html = build_preview_body(&msg, &oversize);
+        assert!(!html.contains("<img"), "over-cap image is dropped, silently");
+        assert!(html.contains("Look at this!"), "surrounding text still renders");
+
+        // Exactly at the cap: inlined.
+        let at_cap = |_: &mail_parser::MessagePart| -> Option<Vec<u8>> {
+            Some(vec![0u8; 64])
+        };
+        let html = build_preview_body(&msg, &at_cap);
+        assert!(html.contains("data:image/jpeg;base64,"), "an image within the cap inlines");
     }
 }

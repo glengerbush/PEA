@@ -1,7 +1,4 @@
 {
 	"files": [],
-	"references": [
-		{ "path": "packages/types" },
-		{ "path": "packages/frontend" }
-	]
+	"references": [{ "path": "packages/types" }, { "path": "packages/frontend" }]
 }

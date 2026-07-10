@@ -164,8 +164,8 @@ async fn ingestion_sources(State(app): State<AppState>) -> Json<Value> {
         .unwrap();
     let rows: Vec<Value> = stmt
         .query_map([], |row| {
+            let id = row.get::<_, String>(0)?;
             Ok(json!({
-                "id": row.get::<_, String>(0)?,
                 "name": row.get::<_, String>(1)?,
                 "provider": row.get::<_, String>(2)?,
                 "status": row.get::<_, String>(3)?,
@@ -175,6 +175,8 @@ async fn ingestion_sources(State(app): State<AppState>) -> Json<Value> {
                 "mergedIntoId": row.get::<_, Option<String>>(7)?,
                 "createdAt": iso(row.get::<_, i64>(8)?),
                 "updatedAt": iso(row.get::<_, i64>(9)?),
+                "importProgress": crate::sources::import_progress_json(&conn, &id),
+                "id": id,
             }))
         })
         .unwrap()
@@ -253,6 +255,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/archived-emails/duplicates/exact/approve",
             post(writes::approve_exact_duplicates),
+        )
+        .route(
+            "/archived-emails/duplicates/exact/approve-all",
+            post(writes::approve_all_exact_duplicates),
         )
         .route("/archived-emails/duplicates/exact/ignore", post(writes::ignore_exact))
         .route("/archived-emails/bulk/tags", post(writes::update_tags))

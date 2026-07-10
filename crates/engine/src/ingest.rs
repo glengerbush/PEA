@@ -1128,14 +1128,23 @@ pub(crate) fn process_email(
                     id
                 }
             };
+            // One message can carry the same file as several MIME parts (Apple
+            // Mail forwards repeat an inline image once per Content-Id). The
+            // attachments row is deduped by content hash above, so a link per
+            // part would record the same (email, attachment) fact twice —
+            // email_attachments is a set, with no column to tell the rows apart.
             conn
                 .execute(
-                    "INSERT INTO email_attachments (id, email_id, attachment_id) VALUES (?, ?, ?)",
+                    "INSERT OR IGNORE INTO email_attachments (id, email_id, attachment_id) \
+                     VALUES (?, ?, ?)",
                     rusqlite::params![uuid(), archived_id, attachment_id],
                 )
                 .map_err(|e| e.to_string())?;
         }
+        // Fingerprint the distinct attachments: a doubled part must not make an
+        // email fail to match an otherwise identical copy that carried it once.
         attachment_hashes.sort();
+        attachment_hashes.dedup();
         let fingerprint = duplicate_hash(&attachment_hashes.join("|"));
         conn
             .execute(

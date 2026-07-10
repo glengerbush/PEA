@@ -10,7 +10,7 @@ import type { SystemSettings, DateFormat } from '@pea/types';
 const prefs = $state<{ timeZone: string | undefined; hour12: boolean; dateFormat: DateFormat }>({
 	timeZone: undefined,
 	hour12: true,
-	dateFormat: 'system'
+	dateFormat: 'system',
 });
 
 export function setDateTimePrefs(
@@ -34,7 +34,7 @@ function ymdParts(date: Date): { y: string; m: string; d: string } {
 		timeZone: prefs.timeZone,
 		year: 'numeric',
 		month: '2-digit',
-		day: '2-digit'
+		day: '2-digit',
 	}).formatToParts(date);
 	const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
 	return { y: get('year'), m: get('month'), d: get('day') };
@@ -52,7 +52,7 @@ function formatFixedDate(date: Date): string | null {
 			timeZone: prefs.timeZone,
 			year: 'numeric',
 			month: 'long',
-			day: 'numeric'
+			day: 'numeric',
 		});
 	}
 	const { y, m, d } = ymdParts(date);
@@ -79,14 +79,14 @@ export function formatDateTime(value: DateInput, options: Intl.DateTimeFormatOpt
 			timeZone: prefs.timeZone,
 			hour12: prefs.hour12,
 			hour: 'numeric',
-			minute: '2-digit'
+			minute: '2-digit',
 		});
 		return `${fixed}, ${time}`;
 	}
 	return date.toLocaleString(undefined, {
 		timeZone: prefs.timeZone,
 		hour12: prefs.hour12,
-		...options
+		...options,
 	});
 }
 

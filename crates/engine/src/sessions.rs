@@ -22,15 +22,29 @@ pub fn create(
     ingestion_source_id: &str,
     total_mailboxes: i64,
     is_initial_import: bool,
+    total_bytes: i64,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO import_sessions (id, ingestion_source_id, is_initial_import, total_mailboxes, \
-         completed_mailboxes, failed_mailboxes, error_messages) VALUES (?, ?, ?, ?, 0, 0, '[]')",
-        rusqlite::params![id, ingestion_source_id, is_initial_import, total_mailboxes],
+         completed_mailboxes, failed_mailboxes, error_messages, total_bytes, processed_bytes) \
+         VALUES (?, ?, ?, ?, 0, 0, '[]', ?, 0)",
+        rusqlite::params![id, ingestion_source_id, is_initial_import, total_mailboxes, total_bytes],
     )
     .map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+/// Adds streamed input bytes to the session's progress counter and refreshes
+/// the heartbeat. Deltas (not absolute writes) stay correct if a session ever
+/// has more than one concurrent mailbox worker.
+pub fn add_progress(conn: &Connection, session_id: &str, delta_bytes: i64) {
+    conn.execute(
+        "UPDATE import_sessions SET processed_bytes = processed_bytes + ?, last_activity_at = ? \
+         WHERE id = ?",
+        rusqlite::params![delta_bytes, crate::search::now_ms(), session_id],
+    )
+    .ok();
 }
 
 pub fn find_by_id(conn: &Connection, session_id: &str) -> Result<SessionRecord, String> {

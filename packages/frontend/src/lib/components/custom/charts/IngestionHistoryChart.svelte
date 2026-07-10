@@ -14,7 +14,7 @@
 		return data.map((d, i) => ({
 			x: PAD.l + (n === 1 ? iw / 2 : (i / (n - 1)) * iw),
 			y: PAD.t + ih - (d.count / max) * ih,
-			d
+			d,
 		}));
 	});
 
@@ -35,7 +35,7 @@
 			month: 'short',
 			day: 'numeric',
 			hour: '2-digit',
-			minute: '2-digit'
+			minute: '2-digit',
 		});
 	}
 
@@ -53,12 +53,7 @@
 		No ingestion history yet
 	</div>
 {:else}
-	<svg
-		viewBox={`0 0 ${W} ${H}`}
-		class="h-auto w-full"
-		role="img"
-		aria-label="Ingestion history"
-	>
+	<svg viewBox={`0 0 ${W} ${H}`} class="h-auto w-full" role="img" aria-label="Ingestion history">
 		<path d={areaPath} fill="var(--color-chart-1)" opacity="0.15" />
 		<path
 			d={linePath}

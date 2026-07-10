@@ -25,6 +25,15 @@ const REASON_KEYS: [(&str, bool); 5] = [
     ("message_body", false),
 ];
 
+/// Reason values accepted as a filter (listing and approve-all).
+pub(crate) const ALLOWED_REASONS: [&str; 5] = [
+    "message_id",
+    "storage_hash",
+    "attachment_hash_set",
+    "sender_recipients_sent",
+    "message_body",
+];
+
 fn clamp_positive(value: Option<&str>, fallback: i64, max: i64) -> i64 {
     let parsed = value.and_then(|v| v.parse::<f64>().ok());
     match parsed {
@@ -61,11 +70,16 @@ fn find_emails_by_ids(conn: &Connection, ids: &[String]) -> Vec<Value> {
         return Vec::new();
     }
     let placeholders = vec!["?"; ids.len()].join(", ");
+    // import_source is aliased to the live ingestion-source name (falling back
+    // to the filename-derived value frozen at ingest) so renames show here too.
     let sql = format!(
-        "SELECT id, subject, sender_name, sender_email, import_source, sent_at, archived_at, \
-         has_attachments, source_path, message_id_header, storage_hash_sha256 \
-         FROM archived_emails WHERE id IN ({placeholders}) \
-         ORDER BY sent_at ASC, archived_at ASC, id ASC"
+        "SELECT ae.id, ae.subject, ae.sender_name, ae.sender_email, \
+         COALESCE(src.name, ae.import_source) AS import_source, ae.sent_at, ae.archived_at, \
+         ae.has_attachments, ae.source_path, ae.message_id_header, ae.storage_hash_sha256 \
+         FROM archived_emails ae \
+         LEFT JOIN ingestion_sources src ON src.id = ae.ingestion_source_id \
+         WHERE ae.id IN ({placeholders}) \
+         ORDER BY ae.sent_at ASC, ae.archived_at ASC, ae.id ASC"
     );
     let mut stmt = conn.prepare(&sql).unwrap();
     stmt.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
@@ -78,31 +92,28 @@ fn find_emails_by_ids(conn: &Connection, ids: &[String]) -> Vec<Value> {
 
 struct SignalRow {
     id: String,
+    sent_at: i64,
+    archived_at: i64,
     // per REASON_KEYS order: storage_hash, message_id, sender_recipients_sent,
     // attachment_hash_set, message_body
     values: [Option<String>; 5],
 }
 
-pub fn list_exact_groups(
-    conn: &Connection,
-    page: Option<&str>,
-    limit: Option<&str>,
-    reason: Option<&str>,
-) -> Value {
-    let normalized_page = clamp_positive(page, 1, i64::MAX);
-    let normalized_limit = clamp_positive(limit, DEFAULT_LIMIT, MAX_LIMIT);
-    // saturating_mul: a huge page number must yield an empty page, not overflow.
-    let offset = (normalized_page - 1).saturating_mul(normalized_limit) as usize;
+/// A non-ignored exact-duplicate cluster (>= 2 members), unfiltered and
+/// unpaginated. `default_keeper_id` is the oldest member by
+/// (sent_at, archived_at, id) — the same keeper the listing shows by default
+/// (find_emails_by_ids orders identically and the listing keeps the first).
+pub(crate) struct ExactCluster {
+    pub ids: Vec<String>,
+    pub min_id: String,
+    pub reasons: Vec<&'static str>,
+    pub default_keeper_id: String,
+}
 
-    let allowed: [&str; 5] = [
-        "message_id",
-        "storage_hash",
-        "attachment_hash_set",
-        "sender_recipients_sent",
-        "message_body",
-    ];
-    let reason = reason.filter(|r| allowed.contains(r));
-
+/// Computes every exact-duplicate cluster: one signal pass over
+/// archived_emails, union-find over the strong signals, then reason badges and
+/// ignore filtering. Shared by the paginated listing and approve-all.
+pub(crate) fn collect_exact_clusters(conn: &Connection) -> Vec<ExactCluster> {
     // Pull every email's duplicate signals in one pass, then group by CONNECTED
     // COMPONENT (union-find).
     let mut stmt = conn
@@ -117,6 +128,8 @@ pub fn list_exact_groups(
                 HAVING count(a.id) > 0 \
             ) \
             SELECT ae.id AS id, \
+                ae.sent_at AS sent_at, \
+                ae.archived_at AS archived_at, \
                 nullif(ae.message_id_header, '') AS message_id, \
                 nullif(ae.storage_hash_sha256, '') AS storage_hash, \
                 s.att_fp AS attachment_fp, \
@@ -135,6 +148,8 @@ pub fn list_exact_groups(
         .query_map([], |row| {
             Ok(SignalRow {
                 id: row.get("id")?,
+                sent_at: row.get("sent_at")?,
+                archived_at: row.get("archived_at")?,
                 values: [
                     row.get("storage_hash")?,
                     row.get("message_id")?,
@@ -204,12 +219,7 @@ pub fn list_exact_groups(
     // A cluster the user has ignored is keyed by its fingerprint (the min id).
     let ignored: HashSet<String> = load_ignored_fingerprints(conn);
 
-    struct Cluster {
-        ids: Vec<String>,
-        min_id: String,
-        reasons: Vec<&'static str>,
-    }
-    let mut clusters: Vec<Cluster> = Vec::new();
+    let mut clusters: Vec<ExactCluster> = Vec::new();
     for root in &component_order {
         let member_idxs = &components[root];
         if member_idxs.len() < 2 {
@@ -229,8 +239,36 @@ pub fn list_exact_groups(
                 reasons.push(key.0);
             }
         }
-        clusters.push(Cluster { ids, min_id, reasons });
+        let default_keeper_id = member_idxs
+            .iter()
+            .map(|i| &signal_rows[*i])
+            .min_by(|a, b| {
+                a.sent_at
+                    .cmp(&b.sent_at)
+                    .then_with(|| a.archived_at.cmp(&b.archived_at))
+                    .then_with(|| a.id.cmp(&b.id))
+            })
+            .map(|r| r.id.clone())
+            .unwrap_or_default();
+        clusters.push(ExactCluster { ids, min_id, reasons, default_keeper_id });
     }
+    clusters
+}
+
+pub fn list_exact_groups(
+    conn: &Connection,
+    page: Option<&str>,
+    limit: Option<&str>,
+    reason: Option<&str>,
+) -> Value {
+    let normalized_page = clamp_positive(page, 1, i64::MAX);
+    let normalized_limit = clamp_positive(limit, DEFAULT_LIMIT, MAX_LIMIT);
+    // saturating_mul: a huge page number must yield an empty page, not overflow.
+    let offset = (normalized_page - 1).saturating_mul(normalized_limit) as usize;
+
+    let reason = reason.filter(|r| ALLOWED_REASONS.contains(r));
+
+    let clusters = collect_exact_clusters(conn);
 
     // Per-badge group counts (over every non-ignored cluster, independent of the
     // active reason filter) plus an "all" total, so each filter pill can show its
@@ -242,7 +280,7 @@ pub fn list_exact_groups(
         reason_counts.insert(key.0.to_string(), json!(n));
     }
 
-    let mut filtered: Vec<&Cluster> = clusters
+    let mut filtered: Vec<&ExactCluster> = clusters
         .iter()
         .filter(|c| reason.map_or(true, |r| c.reasons.contains(&r)))
         .collect();

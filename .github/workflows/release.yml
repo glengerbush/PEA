@@ -13,91 +13,91 @@ name: Release desktop builds
 # key generated with `pnpm tauri signer generate`; password empty).
 
 on:
-  push:
-    tags:
-      - 'v*'
+    push:
+        tags:
+            - 'v*'
 
 jobs:
-  build:
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: ubuntu-22.04 # oldest glibc for AppImage compatibility
-            bundles: deb,rpm,appimage
-          - platform: macos-latest # Apple Silicon
-            bundles: dmg,app
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - uses: actions/checkout@v5
+    build:
+        permissions:
+            contents: write
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - platform: ubuntu-22.04 # oldest glibc for AppImage compatibility
+                      bundles: deb,rpm,appimage
+                    - platform: macos-latest # Apple Silicon
+                      bundles: dmg,app
+        runs-on: ${{ matrix.platform }}
+        steps:
+            - uses: actions/checkout@v5
 
-      # Fail fast if the tag and the committed version disagree. tauri.conf.json
-      # reads its version from the root package.json, so package.json is the
-      # source of truth; a v1.2.0 tag on a commit still at 1.1.0 would ship a
-      # release whose in-app updater never fires. Bump with scripts/set-version.mjs.
-      - name: Verify tag matches package.json version
-        shell: bash
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "::error::Git tag v$tag does not match package.json version $pkg. Run 'node scripts/set-version.mjs $tag', commit, and re-tag."
-            exit 1
-          fi
-          echo "✓ Tag and package.json agree on $pkg"
+            # Fail fast if the tag and the committed version disagree. tauri.conf.json
+            # reads its version from the root package.json, so package.json is the
+            # source of truth; a v1.2.0 tag on a commit still at 1.1.0 would ship a
+            # release whose in-app updater never fires. Bump with scripts/set-version.mjs.
+            - name: Verify tag matches package.json version
+              shell: bash
+              run: |
+                  tag="${GITHUB_REF_NAME#v}"
+                  pkg="$(node -p "require('./package.json').version")"
+                  if [ "$tag" != "$pkg" ]; then
+                    echo "::error::Git tag v$tag does not match package.json version $pkg. Run 'node scripts/set-version.mjs $tag', commit, and re-tag."
+                    exit 1
+                  fi
+                  echo "✓ Tag and package.json agree on $pkg"
 
-      - name: Install Linux dependencies
-        if: startsWith(matrix.platform, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+            - name: Install Linux dependencies
+              if: startsWith(matrix.platform, 'ubuntu')
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+            - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          # setup-node@v5 defaults package-manager-cache to true; since root
-          # package.json declares a pnpm packageManager, it runs `pnpm` to find
-          # the store cache BEFORE corepack installs pnpm (next step), failing with
-          # "Unable to locate executable file: pnpm". Corepack provisions pnpm, so
-          # we don't need setup-node's cache.
-          package-manager-cache: false
+            - uses: actions/setup-node@v5
+              with:
+                  node-version: 22
+                  # setup-node@v5 defaults package-manager-cache to true; since root
+                  # package.json declares a pnpm packageManager, it runs `pnpm` to find
+                  # the store cache BEFORE corepack installs pnpm (next step), failing with
+                  # "Unable to locate executable file: pnpm". Corepack provisions pnpm, so
+                  # we don't need setup-node's cache.
+                  package-manager-cache: false
 
-      - name: Enable pnpm
-        run: corepack enable
+            - name: Enable pnpm
+              run: corepack enable
 
-      - name: Install workspace
-        run: pnpm install --frozen-lockfile
+            - name: Install workspace
+              run: pnpm install --frozen-lockfile
 
-      - name: Build web app
-        run: pnpm --filter @pea/types build && pnpm --filter @pea/frontend build
+            - name: Build web app
+              run: pnpm --filter @pea/types build && pnpm --filter @pea/frontend build
 
-      - name: Assemble desktop bundle (static frontend — the engine is compiled in)
-        run: node scripts/build-desktop-bundle.mjs
+            - name: Assemble desktop bundle (static frontend — the engine is compiled in)
+              run: node scripts/build-desktop-bundle.mjs
 
-      - name: Build and publish with Tauri
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
-          # lets linuxdeploy run without FUSE (also required on FUSE-less hosts)
-          APPIMAGE_EXTRACT_AND_RUN: 1
-        with:
-          projectPath: apps/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: 'PEA ${{ github.ref_name }}'
-          releaseBody: |
-            ### Install
-            - **Linux (any distro):** download the `.AppImage`, `chmod +x`, run — or use `scripts/install-desktop.sh` for menu integration. `.deb`/`.rpm` also available.
-            - **Arch:** `git clone` the repo and `makepkg -si` in `packaging/arch/` (or use the AppImage).
-            - **macOS (Apple Silicon):** open the `.dmg`. The app is unsigned: on first launch use System Settings → Privacy & Security → "Open Anyway" (or run `xattr -cr /Applications/PEA.app`).
+            - name: Build and publish with Tauri
+              uses: tauri-apps/tauri-action@v0
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+                  # lets linuxdeploy run without FUSE (also required on FUSE-less hosts)
+                  APPIMAGE_EXTRACT_AND_RUN: 1
+              with:
+                  projectPath: apps/desktop
+                  tagName: ${{ github.ref_name }}
+                  releaseName: 'PEA ${{ github.ref_name }}'
+                  releaseBody: |
+                      ### Install
+                      - **Linux (any distro):** download the `.AppImage`, `chmod +x`, run — or use `scripts/install-desktop.sh` for menu integration. `.deb`/`.rpm` also available.
+                      - **Arch:** `git clone` the repo and `makepkg -si` in `packaging/arch/` (or use the AppImage).
+                      - **macOS (Apple Silicon):** open the `.dmg`. The app is unsigned: on first launch use System Settings → Privacy & Security → "Open Anyway" (or run `xattr -cr /Applications/PEA.app`).
 
-            Updates after install are one click: the app checks this repo's releases at launch.
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: true
-          args: --bundles ${{ matrix.bundles }}
+                      Updates after install are one click: the app checks this repo's releases at launch.
+                  releaseDraft: true
+                  prerelease: false
+                  includeUpdaterJson: true
+                  args: --bundles ${{ matrix.bundles }}

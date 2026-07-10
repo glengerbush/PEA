@@ -80,8 +80,13 @@ fn session_lifecycle_and_stale_cleanup() {
         .query_row("SELECT id FROM ingestion_sources LIMIT 1", [], |r| r.get(0))
         .unwrap();
 
-    let sid = pea_engine::sessions::create(&conn, &src, 2, true).unwrap();
+    let sid = pea_engine::sessions::create(&conn, &src, 2, true, 1000).unwrap();
     pea_engine::sessions::heartbeat(&conn, &sid);
+    pea_engine::sessions::add_progress(&conn, &sid, 250);
+    let progress = pea_engine::sources::import_progress_json(&conn, &src);
+    assert_eq!(progress["percent"], 25, "250 of 1000 bytes → 25%");
+    assert_eq!(progress["processedBytes"], 250);
+    assert_eq!(progress["totalBytes"], 1000);
     let r1 = pea_engine::sessions::record_mailbox_result(&conn, &sid, Ok(&serde_json::json!({}))).unwrap();
     assert!(!r1.is_last, "1 of 2 processed");
     let r2 = pea_engine::sessions::record_mailbox_result(&conn, &sid, Err("boom")).unwrap();

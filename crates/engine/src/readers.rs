@@ -327,18 +327,23 @@ fn unescape_mbox_quoting(buffer: &[u8]) -> Vec<u8> {
 fn for_each_mbox_message(
     path: &str,
     mut on_message: impl FnMut(Vec<u8>),
+    mut on_bytes: impl FnMut(u64),
 ) -> Result<(), String> {
     use std::io::{BufRead, BufReader};
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
     let mut msg: Vec<u8> = Vec::new();
     let mut line: Vec<u8> = Vec::new();
+    // Input bytes consumed since the last on_bytes flush (once per message, not
+    // per line) — this is what drives import progress percentages.
+    let mut pending_bytes: u64 = 0;
     loop {
         line.clear();
         let n = reader.read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
         if n == 0 {
             break; // EOF
         }
+        pending_bytes += n as u64;
         // A "From " at the start of a line begins a new message. The first
         // message's leading envelope is not a boundary (msg is still empty there).
         if line.starts_with(b"From ") && !msg.is_empty() {
@@ -346,19 +351,25 @@ fn for_each_mbox_message(
                 msg.pop(); // the '\n' before "From " is the delimiter, not content
             }
             on_message(std::mem::take(&mut msg));
+            on_bytes(std::mem::take(&mut pending_bytes));
         }
         msg.extend_from_slice(&line);
     }
     if !msg.is_empty() {
         on_message(msg);
     }
+    if pending_bytes > 0 {
+        on_bytes(pending_bytes);
+    }
     Ok(())
 }
 
-/// fetchEmails — iterates every message of every input.
+/// fetchEmails — iterates every message of every input. `on_bytes` receives
+/// consumed-input byte deltas as reading progresses (for progress reporting).
 pub fn for_each_email(
     provider_config: &Value,
     mut handle: impl FnMut(EmailObj),
+    mut on_bytes: impl FnMut(u64),
 ) -> Result<(), String> {
     let inputs = get_mbox_inputs(provider_config)?;
 
@@ -379,6 +390,7 @@ pub fn for_each_email(
                     continue; // log and skip this input
                 }
             };
+            on_bytes(bytes.len() as u64);
             if input.is_emlx {
                 match extract_emlx_message(&bytes, &input.file_path) {
                     Ok((eml, meta)) => match parse_message(eml, &input.source_path, Some(&meta)) {
@@ -396,13 +408,17 @@ pub fn for_each_email(
             continue;
         }
 
-        let read_result = for_each_mbox_message(&input.file_path, |chunk| {
-            let eml = unescape_mbox_quoting(strip_mbox_envelope(&chunk));
-            match parse_message(eml, &input.source_path, None) {
-                Ok(email) => handle(email),
-                Err(e) => eprintln!("[reader] mbox message parse failed: {e}"),
-            }
-        });
+        let read_result = for_each_mbox_message(
+            &input.file_path,
+            |chunk| {
+                let eml = unescape_mbox_quoting(strip_mbox_envelope(&chunk));
+                match parse_message(eml, &input.source_path, None) {
+                    Ok(email) => handle(email),
+                    Err(e) => eprintln!("[reader] mbox message parse failed: {e}"),
+                }
+            },
+            &mut on_bytes,
+        );
         if let Err(e) = read_result {
             eprintln!("[reader] failed to read input {}: {e}", input.file_path);
         }
@@ -447,9 +463,17 @@ mod tests {
             let path = dir.join("s.mbox");
             std::fs::write(&path, data).unwrap();
             let mut streamed: Vec<Vec<u8>> = Vec::new();
-            for_each_mbox_message(path.to_str().unwrap(), |c| streamed.push(c)).unwrap();
+            let mut reported_bytes: u64 = 0;
+            for_each_mbox_message(
+                path.to_str().unwrap(),
+                |c| streamed.push(c),
+                |n| reported_bytes += n,
+            )
+            .unwrap();
             std::fs::remove_dir_all(&dir).ok();
             assert_eq!(streamed, split_mbox(data), "streaming differs from split_mbox for {data:?}");
+            // Progress reporting must account for every input byte exactly once.
+            assert_eq!(reported_bytes, data.len() as u64, "byte progress mismatch for {data:?}");
         }
     }
 
@@ -565,7 +589,7 @@ mod tests {
 
         let cfg = serde_json::json!({ "localFilePath": dir.to_string_lossy() });
         let mut emails = Vec::new();
-        for_each_email(&cfg, |e| emails.push(e)).unwrap();
+        for_each_email(&cfg, |e| emails.push(e), |_| {}).unwrap();
         emails.sort_by(|a, b| a.subject.cmp(&b.subject));
 
         assert_eq!(emails.len(), 2, "both mbox messages imported");

@@ -119,7 +119,9 @@
 				<NavigationMenu.List class="flex items-center space-x-4">
 					{#each visibleItems as item (item.href || item.label)}
 						{#if item.subMenu && item.subMenu.length > 0}
-							<NavigationMenu.Item class={isItemActive(item) ? 'bg-accent rounded-md' : ''}>
+							<NavigationMenu.Item
+								class={isItemActive(item) ? 'bg-accent rounded-md' : ''}
+							>
 								<NavigationMenu.Trigger class="cursor-pointer font-normal">
 									{item.label}
 								</NavigationMenu.Trigger>
@@ -137,7 +139,9 @@
 							</NavigationMenu.Item>
 						{:else if item.href}
 							<NavigationMenu.Item
-								class={page.url.pathname === item.href ? 'bg-accent rounded-md' : ''}
+								class={page.url.pathname === item.href
+									? 'bg-accent rounded-md'
+									: ''}
 							>
 								<NavigationMenu.Link href={item.href}>
 									{item.label}
@@ -169,11 +173,15 @@
 									{#each overflowItems as item (item.href || item.label)}
 										{#if item.subMenu && item.subMenu.length > 0}
 											<DropdownMenu.Sub>
-												<DropdownMenu.SubTrigger>{item.label}</DropdownMenu.SubTrigger>
+												<DropdownMenu.SubTrigger
+													>{item.label}</DropdownMenu.SubTrigger
+												>
 												<DropdownMenu.SubContent>
 													{#each item.subMenu as subItem (subItem.href)}
 														<a href={subItem.href}>
-															<DropdownMenu.Item>{subItem.label}</DropdownMenu.Item>
+															<DropdownMenu.Item
+																>{subItem.label}</DropdownMenu.Item
+															>
 														</a>
 													{/each}
 												</DropdownMenu.SubContent>
@@ -200,7 +208,11 @@
 </header>
 
 <!-- Invisible full copy of the bar, only for measuring item widths. -->
-<div class="pointer-events-none fixed top-0 left-0 -z-50 h-0 overflow-hidden" aria-hidden="true" inert>
+<div
+	class="pointer-events-none fixed top-0 left-0 -z-50 h-0 overflow-hidden"
+	aria-hidden="true"
+	inert
+>
 	<NavigationMenu.Root viewport={false} delayDuration={0}>
 		<NavigationMenu.List class="flex items-center space-x-4">
 			{#each navItems as item, i (item.href || item.label)}

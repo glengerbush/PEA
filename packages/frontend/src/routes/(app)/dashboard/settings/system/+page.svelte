@@ -270,7 +270,11 @@
 
 				<div class="grid gap-2">
 					<Label.Root class="mb-1">Time format</Label.Root>
-					<RadioGroup.Root bind:value={settings.clockFormat} name="clockFormat" class="flex items-center gap-4">
+					<RadioGroup.Root
+						bind:value={settings.clockFormat}
+						name="clockFormat"
+						class="flex items-center gap-4"
+					>
 						<div class="flex items-center gap-2">
 							<RadioGroup.Item value="12h" id="clock-12h" />
 							<Label.Root for="clock-12h">12-hour (1:30 PM)</Label.Root>
@@ -394,14 +398,20 @@
 									<div class="bg-muted h-2 w-full overflow-hidden rounded-full">
 										<div
 											class="bg-primary h-full transition-all duration-300"
-											style="width: {updateTotalBytes > 0 ? updatePercent : 15}%"
+											style="width: {updateTotalBytes > 0
+												? updatePercent
+												: 15}%"
 										></div>
 									</div>
 								{/if}
 							</div>
 						{:else}
 							<div>
-								<Button type="button" disabled={isInstalling} onclick={installUpdate}>
+								<Button
+									type="button"
+									disabled={isInstalling}
+									onclick={installUpdate}
+								>
 									{isInstalling
 										? $t('app.system_settings.updates.installing')
 										: $t('app.system_settings.updates.install')}
@@ -437,15 +447,17 @@
 	<Card.Root>
 		<Card.Header>
 			<Card.Title>Preferences</Card.Title>
-			<Card.Description>Personal interface preferences, stored on this device.</Card.Description>
+			<Card.Description
+				>Personal interface preferences, stored on this device.</Card.Description
+			>
 		</Card.Header>
 		<Card.Content class="space-y-4 text-sm">
 			<div class="flex items-center justify-between gap-4">
 				<div class="space-y-1">
 					<Label.Root for="disable-two-finger-swipe">Disable two-finger swipe</Label.Root>
 					<p class="text-muted-foreground text-xs">
-						Turn off the trackpad two-finger horizontal swipe that returns from an email to
-						the previous list.
+						Turn off the trackpad two-finger horizontal swipe that returns from an email
+						to the previous list.
 					</p>
 				</div>
 				<Switch

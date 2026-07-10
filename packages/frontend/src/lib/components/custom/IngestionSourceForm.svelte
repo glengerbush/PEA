@@ -68,7 +68,11 @@
 
 	/** "…/Mail Exports/Inbox.mbox" → "Inbox"; empty for unusable paths. */
 	function nameFromPath(path: string): string {
-		const base = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+		const base =
+			path
+				.replace(/[\\/]+$/, '')
+				.split(/[\\/]/)
+				.pop() ?? '';
 		return base.replace(/\.(mbox|zip|eml)$/i, '').trim();
 	}
 

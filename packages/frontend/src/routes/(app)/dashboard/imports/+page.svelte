@@ -3,6 +3,7 @@
 	import * as Table from '$lib/components/ui/table';
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
 	import Trash from '@lucide/svelte/icons/trash';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -422,6 +423,12 @@
 </svelte:head>
 
 <div class="">
+	<div class="mb-2">
+		<Button variant="ghost" size="sm" class="-ml-2 gap-2" href="/dashboard">
+			<ArrowLeft class="h-4 w-4" />
+			{$t('app.archive.back_to_dashboard')}
+		</Button>
+	</div>
 	<div class="mb-4 flex items-center justify-between">
 		<div class="flex items-center gap-4">
 			<h1 class="text-2xl font-bold">{$t('app.imports.import_sources')}</h1>
@@ -505,7 +512,10 @@
 				<HoverCard.Root>
 					<HoverCard.Trigger>
 						<Badge class="{getStatusClasses(displayStatus)} cursor-pointer capitalize">
-							{displayStatus.split('_').join(' ')}
+							{displayStatus.split('_').join(' ')}{source.status === 'importing' &&
+							source.importProgress
+								? ` · ${source.importProgress.percent}%`
+								: ''}
 						</Badge>
 					</HoverCard.Trigger>
 					<HoverCard.Content class="{getStatusClasses(displayStatus)} ">
@@ -514,6 +524,13 @@
 								<b>{$t('app.imports.last_import_message')}:</b>
 								{source.lastImportStatusMessage || $t('app.imports.empty')}
 							</p>
+							{#if source.status === 'importing' && source.importProgress}
+								<p class=" font-mono">
+									{formatBytes(source.importProgress.processedBytes)} of {formatBytes(
+										source.importProgress.totalBytes
+									)} read ({source.importProgress.percent}%)
+								</p>
+							{/if}
 						</div>
 					</HoverCard.Content>
 				</HoverCard.Root>
@@ -588,7 +605,10 @@
 										child.status
 									)} cursor-pointer capitalize"
 								>
-									{child.status.split('_').join(' ')}
+									{child.status.split('_').join(' ')}{child.status ===
+										'importing' && child.importProgress
+										? ` · ${child.importProgress.percent}%`
+										: ''}
 								</Badge>
 							</HoverCard.Trigger>
 							<HoverCard.Content class="{getStatusClasses(child.status)} ">
@@ -620,8 +640,7 @@
 							<DropdownMenu.Trigger>
 								{#snippet child({ props })}
 									<Button {...props} variant="ghost" class="h-8 w-8 p-0">
-										<span class="sr-only">{$t('app.imports.open_menu')}</span
-										>
+										<span class="sr-only">{$t('app.imports.open_menu')}</span>
 										<MoreHorizontal class="h-4 w-4" />
 									</Button>
 								{/snippet}

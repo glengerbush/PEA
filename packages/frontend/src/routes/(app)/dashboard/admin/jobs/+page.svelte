@@ -28,8 +28,7 @@
 			<a href={`/dashboard/admin/jobs/${queue.name}`} class="block">
 				<Card.Root class=" hover:shadow-md">
 					<Card.Header>
-						<Card.Title class="capitalize">{queueLabel(queue.name)}</Card.Title
-						>
+						<Card.Title class="capitalize">{queueLabel(queue.name)}</Card.Title>
 					</Card.Header>
 					<Card.Content class="grid grid-cols-2 gap-2">
 						<div class="flex items-center justify-between">

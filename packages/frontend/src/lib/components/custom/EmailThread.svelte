@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import type { ArchivedEmail } from '@pea/types';
 	import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
 	import { t } from '$lib/translations';
@@ -13,6 +14,13 @@
 		thread: ArchivedEmail['thread'];
 		currentEmailId: string;
 	} = $props();
+
+	// Keep the ?from= origin (e.g. the Duplicates page) when hopping between
+	// thread emails, so the Back button still returns to where the user started.
+	const fromQuery = $derived.by(() => {
+		const from = page.url.searchParams.get('from');
+		return from ? `?from=${encodeURIComponent(from)}` : '';
+	});
 </script>
 
 <div>
@@ -51,10 +59,10 @@
 							>
 								{#if item.id !== currentEmailId}
 									<a
-										href="/mailbox/{item.id}"
+										href="/mailbox/{item.id}{fromQuery}"
 										onclick={(e) => {
 											e.preventDefault();
-											goto(`/mailbox/${item.id}`, {
+											goto(`/mailbox/${item.id}${fromQuery}`, {
 												invalidateAll: true,
 											});
 										}}>{item.subject || $t('app.archive.no_subject')}</a

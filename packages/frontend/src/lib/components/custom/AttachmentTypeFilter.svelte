@@ -14,27 +14,39 @@
 	const CATEGORIES: Category[] = [
 		{
 			label: 'Pictures',
-			exts: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'webp', 'heic', 'heif', 'svg']
+			exts: [
+				'jpg',
+				'jpeg',
+				'png',
+				'gif',
+				'bmp',
+				'tif',
+				'tiff',
+				'webp',
+				'heic',
+				'heif',
+				'svg',
+			],
 		},
 		{
 			label: 'Documents',
-			exts: ['pdf', 'doc', 'docx', 'rtf', 'txt', 'md', 'odt', 'pages', 'wpd']
+			exts: ['pdf', 'doc', 'docx', 'rtf', 'txt', 'md', 'odt', 'pages', 'wpd'],
 		},
 		{ label: 'Spreadsheets', exts: ['xls', 'xlsx', 'csv', 'ods', 'numbers'] },
 		{ label: 'Presentations', exts: ['ppt', 'pptx', 'odp', 'key'] },
 		{ label: 'Archives', exts: ['zip', 'rar', '7z', 'tar', 'gz', 'tgz'] },
 		{
 			label: '3D Printing',
-			exts: ['stl', '3mf', 'obj', 'gcode', 'step', 'stp', 'scad', 'f3d']
+			exts: ['stl', '3mf', 'obj', 'gcode', 'step', 'stp', 'scad', 'f3d'],
 		},
 		{ label: 'Audio', exts: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] },
 		{ label: 'Video', exts: ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'webm'] },
-		{ label: 'Email & Contacts', exts: ['eml', 'ics', 'vcf'] }
+		{ label: 'Email & Contacts', exts: ['eml', 'ics', 'vcf'] },
 	];
 
 	let {
 		value = $bindable(''),
-		onValueChange = undefined
+		onValueChange = undefined,
 	}: {
 		/** Comma-separated list of selected extensions (URL-param friendly). */
 		value?: string;
@@ -82,7 +94,7 @@
 			exts:
 				query === '' || cat.label.toLowerCase().includes(query)
 					? cat.exts
-					: cat.exts.filter((e) => e.includes(query))
+					: cat.exts.filter((e) => e.includes(query)),
 		})).filter((cat) => cat.exts.length > 0)
 	);
 
@@ -141,7 +153,9 @@
 
 	function scrollActiveIntoView(): void {
 		requestAnimationFrame(() => {
-			listEl?.querySelector(`[data-index="${activeIndex}"]`)?.scrollIntoView({ block: 'nearest' });
+			listEl
+				?.querySelector(`[data-index="${activeIndex}"]`)
+				?.scrollIntoView({ block: 'nearest' });
 		});
 	}
 	function move(dir: 1 | -1): void {
@@ -272,7 +286,9 @@
 							onclick={() => toggleRow(row)}
 						>
 							<span>{row.label}</span>
-							<span class="text-[11px] font-medium opacity-70">{allOn ? 'Clear' : 'All'}</span>
+							<span class="text-[11px] font-medium opacity-70"
+								>{allOn ? 'Clear' : 'All'}</span
+							>
 						</button>
 					{:else}
 						<button

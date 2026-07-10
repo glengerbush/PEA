@@ -106,6 +106,11 @@ export interface ApproveExactDuplicateGroupDto {
 	duplicateEmailIds: string[];
 }
 
+export interface ApproveAllExactDuplicatesDto {
+	/** Restrict to clusters matching this reason; omit to approve every cluster. */
+	reason?: ExactDuplicateReason;
+}
+
 export interface ApproveExactDuplicatesResult {
 	approvedGroups: number;
 	/** Duplicate copies permanently deleted (the keeper of each group is preserved). */
@@ -118,12 +123,7 @@ export interface IgnoreExactDuplicateGroupsResult {
 }
 
 export type RemoteContentStatus =
-	| 'not_started'
-	| 'pending'
-	| 'archived'
-	| 'partial'
-	| 'failed'
-	| 'skipped';
+	'not_started' | 'pending' | 'archived' | 'partial' | 'failed' | 'skipped';
 
 export type RemoteContentAssetStatus = 'pending' | 'archived' | 'blocked' | 'failed';
 

@@ -27,6 +27,15 @@ export interface MboxImportProviderConfig extends BaseProviderConfig {
 // Discriminated union for all possible provider-config shapes
 export type IngestionProviderConfig = EMLImportProviderConfig | MboxImportProviderConfig;
 
+/** Byte progress of a live import run (input bytes consumed vs. total input
+ *  size). Present only while an import session exists and its total is known. */
+export interface ImportProgress {
+	processedBytes: number;
+	totalBytes: number;
+	/** 0-100, clamped. */
+	percent: number;
+}
+
 export interface IngestionSource {
 	id: string;
 	name: string;
@@ -38,6 +47,7 @@ export interface IngestionSource {
 	lastImportStartedAt?: Date | null;
 	lastImportFinishedAt?: Date | null;
 	lastImportStatusMessage?: string | null;
+	importProgress?: ImportProgress | null;
 	/** The ID of the root ingestion source this child is merged into.
 	 *  Null or undefined when this source is a standalone root. */
 	mergedIntoId?: string | null;

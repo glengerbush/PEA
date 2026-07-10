@@ -9,9 +9,12 @@
 	import { page } from '$app/state';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import { saveListScroll, getListScroll, lastOpenedEmailId } from '$lib/stores/list-view-state';
-	import Check from '@lucide/svelte/icons/check';
-	import CheckCheck from '@lucide/svelte/icons/check-check';
+	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import { t } from '$lib/translations';
+	import * as Dialog from '$lib/components/ui/dialog';
 	import type {
+		ApproveAllExactDuplicatesDto,
 		ApproveExactDuplicateGroupDto,
 		ApproveExactDuplicatesResult,
 		ExactDuplicateGroup,
@@ -26,6 +29,16 @@
 	let activeReason = $derived(data.activeReason || '');
 	let keeperOverrides = $state<Record<string, string>>({});
 	let approvingKey = $state<string | null>(null);
+
+	// Holding Ctrl/Cmd upgrades the per-page delete button to "Delete all
+	// duplicates" (every page, scoped to the selected filter badge), behind a
+	// confirmation dialog.
+	let modifierHeld = $state(false);
+	let isApproveAllDialogOpen = $state(false);
+
+	function trackModifier(event: KeyboardEvent) {
+		modifierHeld = event.ctrlKey || event.metaKey;
+	}
 
 	const reasonFilters: { value: string; label: string }[] = [
 		{ value: '', label: 'All' },
@@ -144,6 +157,51 @@
 		}
 	}
 
+	/** Deletes the duplicates of every group matching the selected badge, across
+	 *  all pages. The server recomputes the clusters and keeps each group's
+	 *  default (oldest) copy — per-group "Keep" choices only exist on this page. */
+	async function approveAllDuplicates() {
+		approvingKey = 'all';
+		try {
+			const dto: ApproveAllExactDuplicatesDto = activeReason
+				? { reason: activeReason as ExactDuplicateReason }
+				: {};
+			const response = await api('/archived-emails/duplicates/exact/approve-all', {
+				method: 'POST',
+				body: JSON.stringify(dto),
+			});
+			const body = await response.json();
+			if (!response.ok) {
+				throw new Error(body.message || 'Failed to delete duplicates');
+			}
+
+			const result = body as ApproveExactDuplicatesResult;
+			isApproveAllDialogOpen = false;
+			await goto(buildExactPageUrl(1), {
+				invalidateAll: true,
+				keepFocus: true,
+				replaceState: true,
+			});
+			setAlert({
+				type: 'success',
+				title: 'Duplicates deleted',
+				message: `${result.deletedEmails} duplicate email${result.deletedEmails === 1 ? '' : 's'} deleted`,
+				duration: 3000,
+				show: true,
+			});
+		} catch (error) {
+			setAlert({
+				type: 'error',
+				title: 'Delete all failed',
+				message: error instanceof Error ? error.message : 'Failed to delete duplicates',
+				duration: 5000,
+				show: true,
+			});
+		} finally {
+			approvingKey = null;
+		}
+	}
+
 	async function ignoreGroup(groupKey: string) {
 		approvingKey = `ignore-${groupKey}`;
 		try {
@@ -208,6 +266,21 @@
 	<title>Duplicate Review - PEA</title>
 </svelte:head>
 
+<!-- Live label swap while Ctrl/Cmd is held; blur resets so a released-outside
+     modifier can't leave the button stuck on "Delete all duplicates". -->
+<svelte:window
+	onkeydown={trackModifier}
+	onkeyup={trackModifier}
+	onblur={() => (modifierHeld = false)}
+/>
+
+<div class="mb-2">
+	<Button variant="ghost" size="sm" class="-ml-2 gap-2" href="/dashboard">
+		<ArrowLeft class="h-4 w-4" />
+		{$t('app.archive.back_to_dashboard')}
+	</Button>
+</div>
+
 <div class="mb-4">
 	<h1 class="text-2xl font-bold">Duplicates</h1>
 	<p class="text-muted-foreground text-sm">
@@ -236,12 +309,24 @@
 	{#if duplicateGroups.groups.length > 0}
 		<Button
 			type="button"
+			variant="destructive"
 			class="gap-2"
 			disabled={approvingKey !== null}
-			onclick={() => approveGroups(duplicateGroups.groups, 'page')}
+			title="Hold Ctrl/Cmd to delete all duplicates across every page"
+			onclick={(event: MouseEvent) => {
+				if (event.ctrlKey || event.metaKey) {
+					isApproveAllDialogOpen = true;
+				} else {
+					approveGroups(duplicateGroups.groups, 'page');
+				}
+			}}
 		>
-			<CheckCheck class="h-4 w-4" />
-			{approvingKey === 'page' ? 'Deleting…' : 'Delete all duplicates on this page'}
+			<Trash2 class="h-4 w-4" />
+			{approvingKey === 'page' || approvingKey === 'all'
+				? 'Deleting…'
+				: modifierHeld
+					? 'Delete all duplicates'
+					: 'Delete all duplicates on this page'}
 		</Button>
 	{/if}
 </div>
@@ -260,19 +345,21 @@
 							{/each}
 							<span class="text-sm font-medium">{group.count} emails</span>
 						</div>
-						<div class="text-muted-foreground mt-1 max-w-full truncate font-mono text-xs">
+						<div
+							class="text-muted-foreground mt-1 max-w-full truncate font-mono text-xs"
+						>
 							{shortFingerprint(group.fingerprint)}
 						</div>
 					</div>
 					<div class="flex flex-wrap gap-2">
 						<Button
 							type="button"
-							variant="outline"
+							variant="destructive"
 							class="gap-2"
 							disabled={approvingKey !== null}
 							onclick={() => approveGroups([group], group.groupKey)}
 						>
-							<Check class="h-4 w-4" />
+							<Trash2 class="h-4 w-4" />
 							{approvingKey === group.groupKey ? 'Deleting…' : 'Delete duplicates'}
 						</Button>
 						<Button
@@ -300,7 +387,9 @@
 					</Table.Header>
 					<Table.Body class="text-sm">
 						{#each group.emails as email (email.id)}
-							<Table.Row class={email.id === $lastOpenedEmailId ? 'bg-primary/10' : ''}>
+							<Table.Row
+								class={email.id === $lastOpenedEmailId ? 'bg-primary/10' : ''}
+							>
 								<Table.Cell>
 									<input
 										type="radio"
@@ -311,9 +400,13 @@
 										aria-label={`Keep ${email.subject || 'email'}`}
 									/>
 								</Table.Cell>
-								<Table.Cell class="whitespace-nowrap">{formatDate(email.sentAt)}</Table.Cell>
+								<Table.Cell class="whitespace-nowrap"
+									>{formatDate(email.sentAt)}</Table.Cell
+								>
 								<Table.Cell>
-									<span class="block max-w-80 truncate">{email.subject || '(no subject)'}</span>
+									<span class="block max-w-80 truncate"
+										>{email.subject || '(no subject)'}</span
+									>
 								</Table.Cell>
 								<Table.Cell>
 									<span class="block max-w-48 truncate">
@@ -321,11 +414,14 @@
 									</span>
 								</Table.Cell>
 								<Table.Cell>
-									<span class="block max-w-52 truncate">{email.importSource}</span>
+									<span class="block max-w-52 truncate">{email.importSource}</span
+									>
 								</Table.Cell>
 								<Table.Cell>
 									{#if email.sourcePath}
-										<span class="bg-muted block max-w-56 truncate rounded p-1.5 text-xs">
+										<span
+											class="bg-muted block max-w-56 truncate rounded p-1.5 text-xs"
+										>
 											{email.sourcePath}
 										</span>
 									{/if}
@@ -356,3 +452,34 @@
 	prevLabel="Prev"
 	nextLabel="Next"
 />
+
+<Dialog.Root bind:open={isApproveAllDialogOpen}>
+	<Dialog.Content class="sm:max-w-lg">
+		<Dialog.Header>
+			<Dialog.Title>
+				Delete all duplicates that match based on {activeReason
+					? reasonLabel(activeReason as ExactDuplicateReason)
+					: 'All'}?
+			</Dialog.Title>
+			<Dialog.Description>
+				This deletes the duplicate copies of all {reasonCount(activeReason)}
+				{reasonCount(activeReason) === 1 ? 'group' : 'groups'} across every page, moving them
+				to the Trash where they can be restored. Each group keeps its oldest copy — "Keep" choices
+				made on this page only apply when deleting page by page.
+			</Dialog.Description>
+		</Dialog.Header>
+		<Dialog.Footer class="sm:justify-start">
+			<Button
+				type="button"
+				variant="destructive"
+				disabled={approvingKey !== null}
+				onclick={approveAllDuplicates}
+			>
+				{approvingKey === 'all' ? 'Deleting…' : 'Delete all duplicates'}
+			</Button>
+			<Dialog.Close>
+				<Button type="button" variant="secondary">Cancel</Button>
+			</Dialog.Close>
+		</Dialog.Footer>
+	</Dialog.Content>
+</Dialog.Root>

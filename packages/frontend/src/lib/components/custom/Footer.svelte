@@ -14,8 +14,8 @@
 					href="https://github.com/LogicLabs-OU/OpenArchiver"
 					target="_blank"
 					rel="noopener noreferrer"
-					class="underline hover:text-foreground">Open Archiver</a>, licensed under
-				AGPL-3.0.
+					class="underline hover:text-foreground">Open Archiver</a
+				>, licensed under AGPL-3.0.
 			</p>
 			<p class="text-balance text-center text-xs font-medium leading-loose">
 				Version: {currentVersion}

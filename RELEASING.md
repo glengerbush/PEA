@@ -14,14 +14,14 @@ publish the draft release, everything else is automatic.**
  publish the draft  ──────────────────────────────────────┘
 ```
 
-**After** approving a draft release, update the version in `packaging/arch/PKGBUILD` so that arch installs pull the latest release. 
+**After** approving a draft release, update the version in `packaging/arch/PKGBUILD` so that arch installs pull the latest release.
 
 ---
 
 ## One-time setup (before the first release)
 
 1. **Add the updater signing key as a repo secret.** The private key lives at
-   `~/.tauri/pea-updater.key` (no password). Add its *contents* as the
+   `~/.tauri/pea-updater.key` (no password). Add its _contents_ as the
    GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`
    (repo → Settings → Secrets and variables → Actions).
 2. **Back that key up somewhere safe.** Every update is signed with it and the
@@ -38,26 +38,26 @@ publish the draft release, everything else is automatic.**
 ## Cutting a release (dev responsibility, every time)
 
 1. **Bump the version:** this is the step that actually makes updates happen.
-   The updater compares the version *compiled into the app* against the
+   The updater compares the version _compiled into the app_ against the
    version in the published `latest.json`; the git tag is just the trigger and
    the label. Keep all three in sync with the tag:
 
-   | File | Field | Used for |
-   |---|---|---|
-   | `apps/desktop/src-tauri/tauri.conf.json` | `version` | **authoritative:** what the updater compares |
-   | `package.json` (root) | `version` | version shown in the web UI |
-   | `packaging/arch/PKGBUILD` | `pkgver` | Arch `makepkg` installs |
+    | File                                     | Field     | Used for                                     |
+    | ---------------------------------------- | --------- | -------------------------------------------- |
+    | `apps/desktop/src-tauri/tauri.conf.json` | `version` | **authoritative:** what the updater compares |
+    | `package.json` (root)                    | `version` | version shown in the web UI                  |
+    | `packaging/arch/PKGBUILD`                | `pkgver`  | Arch `makepkg` installs                      |
 
 2. **Commit, tag, push:**
 
-   ```bash
-   git add -A && git commit -m "Release v1.0.0"
-   git tag v1.0.0
-   git push && git push --tags
-   ```
+    ```bash
+    git add -A && git commit -m "Release v1.0.0"
+    git tag v1.0.0
+    git push && git push --tags
+    ```
 
-   > Is tagging required? Yes, the release workflow only runs on tags matching
-   > `v*` (`.github/workflows/release.yml`). A plain push to main builds nothing.
+    > Is tagging required? Yes, the release workflow only runs on tags matching
+    > `v*` (`.github/workflows/release.yml`). A plain push to main builds nothing.
 
 3. **Wait for CI** (~15–25 min). The workflow builds on two runners
    (Ubuntu 22.04, macOS arm64 / Apple Silicon), compiles the self-contained
@@ -66,21 +66,21 @@ publish the draft release, everything else is automatic.**
    the updater artifacts with the secret key, and attaches everything to a
    **draft** release:
 
-   | Asset | Purpose |
-   |---|---|
-   | `PEA_X.Y.Z_amd64.AppImage` (+ `.sig`) | Linux portable app, self-updates in place |
-   | `PEA_X.Y.Z_amd64.deb` | Debian/Ubuntu package (also the PKGBUILD source) |
-   | `PEA-X.Y.Z-1.x86_64.rpm` | Fedora package |
-   | `PEA_X.Y.Z_aarch64.dmg` + `.app.tar.gz` (+ `.sig`) | macOS (Apple Silicon) install and update payload |
-   | `latest.json` | the update feed: version + per-platform URLs + signatures |
+    | Asset                                              | Purpose                                                   |
+    | -------------------------------------------------- | --------------------------------------------------------- |
+    | `PEA_X.Y.Z_amd64.AppImage` (+ `.sig`)              | Linux portable app, self-updates in place                 |
+    | `PEA_X.Y.Z_amd64.deb`                              | Debian/Ubuntu package (also the PKGBUILD source)          |
+    | `PEA-X.Y.Z-1.x86_64.rpm`                           | Fedora package                                            |
+    | `PEA_X.Y.Z_aarch64.dmg` + `.app.tar.gz` (+ `.sig`) | macOS (Apple Silicon) install and update payload          |
+    | `latest.json`                                      | the update feed: version + per-platform URLs + signatures |
 
-   No Intel macOS build: GitHub's `macos-13` hosted runners have become
-   unreliable to schedule (a job can queue 24h with no runner ever allocated),
-   so that matrix entry was removed. Re-add it if Intel runner availability
-   improves, or self-host an Intel macOS runner.
+    No Intel macOS build: GitHub's `macos-13` hosted runners have become
+    unreliable to schedule (a job can queue 24h with no runner ever allocated),
+    so that matrix entry was removed. Re-add it if Intel runner availability
+    improves, or self-host an Intel macOS runner.
 
 4. **Review and publish the draft.** This is deliberate: nothing reaches users
-   until you click *Publish release*. The updater endpoint
+   until you click _Publish release_. The updater endpoint
    (`releases/latest/download/latest.json`) only resolves for the latest
    **published** release, drafts and pre-releases are invisible to it.
 
@@ -97,17 +97,17 @@ will correctly conclude there is nothing to update.
 
 On every launch the desktop app fetches `latest.json`, and if its version is
 newer than the running app it shows a dialog: **"Update now / Later"**.
-Choosing *Update now* downloads the platform artifact, verifies its minisign
+Choosing _Update now_ downloads the platform artifact, verifies its minisign
 signature against the baked-in public key, installs, and restarts the app.
 The archive itself (database, emails, search index) lives in the data
 directory and is never touched by updates.
 
-| Install type | What the user does | What happens under the hood |
-|---|---|---|
-| **Linux AppImage** (incl. `scripts/install-desktop.sh` installs) | Click *Update now*. | The AppImage replaces itself in place and relaunches. Fully hands-off. |
-| **Linux .deb / .rpm** | Click *Update now*; a privileged package-install prompt may appear (updater plugin ≥2.10 supports native packages). If that flow ever misbehaves, downloading the new .deb/.rpm from the release and installing it is equivalent. | Package manager installs the new version over the old. |
-| **Arch (PKGBUILD)** | The in-app dialog will appear but pacman owns the files. Instead update with: `cd packaging/arch && git pull && makepkg -si` (bump `pkgver` if you pinned it). Or switch to the AppImage for fully automatic updates. | pacman replaces the package. |
-| **macOS (.dmg install)** | Click *Update now*. | The updater downloads `.app.tar.gz`, swaps `PEA.app`, relaunches. Because the app itself performs the download, Gatekeeper's "unidentified developer" prompt does **not** reappear on updates, it's first-install only (System Settings → Privacy & Security → *Open Anyway*). |
+| Install type                                                     | What the user does                                                                                                                                                                                                                | What happens under the hood                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Linux AppImage** (incl. `scripts/install-desktop.sh` installs) | Click _Update now_.                                                                                                                                                                                                               | The AppImage replaces itself in place and relaunches. Fully hands-off.                                                                                                                                                                                                         |
+| **Linux .deb / .rpm**                                            | Click _Update now_; a privileged package-install prompt may appear (updater plugin ≥2.10 supports native packages). If that flow ever misbehaves, downloading the new .deb/.rpm from the release and installing it is equivalent. | Package manager installs the new version over the old.                                                                                                                                                                                                                         |
+| **Arch (PKGBUILD)**                                              | The in-app dialog will appear but pacman owns the files. Instead update with: `cd packaging/arch && git pull && makepkg -si` (bump `pkgver` if you pinned it). Or switch to the AppImage for fully automatic updates.             | pacman replaces the package.                                                                                                                                                                                                                                                   |
+| **macOS (.dmg install)**                                         | Click _Update now_.                                                                                                                                                                                                               | The updater downloads `.app.tar.gz`, swaps `PEA.app`, relaunches. Because the app itself performs the download, Gatekeeper's "unidentified developer" prompt does **not** reappear on updates, it's first-install only (System Settings → Privacy & Security → _Open Anyway_). |
 
 ### Trust model, in one paragraph
 

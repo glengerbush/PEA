@@ -19,6 +19,7 @@
 	import { api } from '$lib/api.client';
 	import { t } from '$lib/translations';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
+	import { shouldSyncInputsFromUrl } from '$lib/search-filters';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
 	import Paperclip from '@lucide/svelte/icons/paperclip';
 	import Search from '@lucide/svelte/icons/search';
@@ -50,16 +51,30 @@
 	let searchResult = $derived(data.searchResult);
 	let filters = $derived(data.filters);
 
-	let q = $derived(filters.q);
-	let fields = $derived(filters.fields);
-	let ingestionSourceId = $derived(filters.ingestionSourceId);
-	let hasAttachments = $derived(filters.hasAttachments);
-	let attachmentExt = $derived(filters.attachmentExt);
-	let tags = $derived(filters.tags);
-	let sort: ArchiveSortField = $derived(filters.sort);
-	let direction: SortDirection = $derived(filters.direction);
-	let limit = $derived(String(filters.limit));
-	let matchingStrategy: MatchingStrategy = $derived(filters.matchingStrategy);
+	// The form inputs are the user's to edit, not the search's to overwrite.
+	// They are seeded from the URL once here, then owned locally: typing/selecting
+	// writes them, and buildArchiveUrl() writes them INTO the URL. A search
+	// returning must never write back — when they were $derived(filters.…), a slow
+	// response overwrote characters typed while it was in flight (deleting letters
+	// mid-word). The URL re-seeds them only on user-initiated navigation, in the
+	// afterNavigate reconcile below. resultsMatchQuery lets the UI compare the two
+	// instead of syncing them.
+	let q = $state(data.filters.q);
+	let fields = $state(data.filters.fields);
+	let ingestionSourceId = $state(data.filters.ingestionSourceId);
+	let hasAttachments = $state(data.filters.hasAttachments);
+	let attachmentExt = $state(data.filters.attachmentExt);
+	let tags = $state(data.filters.tags);
+	let sort: ArchiveSortField = $state(data.filters.sort);
+	let direction: SortDirection = $state(data.filters.direction);
+	let limit = $state(String(data.filters.limit));
+	let matchingStrategy: MatchingStrategy = $state(data.filters.matchingStrategy);
+
+	// True when the visible results are for exactly what's in the search box.
+	// data.filters.q is the query the currently-shown results ran with (only the
+	// last-fired navigation's data is ever applied), so this is false only while a
+	// newer search is still pending — never because of an out-of-order response.
+	let resultsMatchQuery = $derived(data.filters.q === q.trim());
 
 	// Origin breadcrumb: dashboard drill-downs (charts/stat cards) land here with
 	// ?from=/dashboard so the list can offer a way back up. Preserved by
@@ -111,7 +126,24 @@
 		const openedId = to?.url.pathname.match(/^\/mailbox\/([^/]+)$/)?.[1];
 		if (openedId) lastOpenedEmailId.set(openedId);
 	});
-	afterNavigate(() => {
+	afterNavigate(({ type }) => {
+		// Re-seed the inputs from the URL only on user-initiated navigation
+		// (initial load, back/forward, Clear link, deep link) — never after our
+		// own search-as-you-type goto, so a returning search can't edit what's
+		// being typed. See the $state seeds above and shouldSyncInputsFromUrl.
+		if (shouldSyncInputsFromUrl(type)) {
+			q = data.filters.q;
+			fields = data.filters.fields;
+			ingestionSourceId = data.filters.ingestionSourceId;
+			hasAttachments = data.filters.hasAttachments;
+			attachmentExt = data.filters.attachmentExt;
+			tags = data.filters.tags;
+			sort = data.filters.sort;
+			direction = data.filters.direction;
+			limit = String(data.filters.limit);
+			matchingStrategy = data.filters.matchingStrategy;
+		}
+
 		const y = getListScroll(appPage.url.pathname + appPage.url.search);
 		if (y !== undefined) requestAnimationFrame(() => window.scrollTo(0, y));
 	});
@@ -464,8 +496,10 @@
 
 <div class="mb-4 flex flex-col gap-1">
 	<h1 class="text-2xl font-bold">{$t('app.archived_emails_page.header')}</h1>
-	<p class="text-muted-foreground text-sm">
-		{#if searchResult.total > 0}
+	<p class="text-muted-foreground text-sm" aria-busy={!resultsMatchQuery}>
+		{#if !resultsMatchQuery}
+			Searching…
+		{:else if searchResult.total > 0}
 			Showing {resultStart}-{resultEnd} of {searchResult.total} emails in {searchResult.processingTimeMs}
 			ms
 		{:else}

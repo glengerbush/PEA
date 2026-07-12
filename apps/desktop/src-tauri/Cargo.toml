@@ -1,6 +1,6 @@
 [package]
 name = "pea-desktop"
-version = "1.2.3"
+version = "1.2.4"
 description = "PEA (Personal Email Archive) desktop shell"
 edition = "2021"
 

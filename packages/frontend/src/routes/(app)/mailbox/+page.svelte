@@ -10,7 +10,7 @@
 	import SearchableSelect from '$lib/components/custom/SearchableSelect.svelte';
 	import AttachmentTypeFilter from '$lib/components/custom/AttachmentTypeFilter.svelte';
 	import EmailIdentity from '$lib/components/custom/EmailIdentity.svelte';
-	import { formatDateTime } from '$lib/stores/datetime.svelte';
+	import { describeDate } from '$lib/stores/datetime.svelte';
 	import { goto, afterNavigate, beforeNavigate } from '$app/navigation';
 	import { onDestroy } from 'svelte';
 	import { page as appPage } from '$app/state';
@@ -332,10 +332,6 @@
 	function handleApplyFilters(event: SubmitEvent) {
 		event.preventDefault();
 		applyNow();
-	}
-
-	function formatTimestamp(timestamp: SearchHit['timestamp']): string {
-		return formatDateTime(timestamp);
 	}
 
 	function toggleEmailSelection(emailId: string) {
@@ -770,7 +766,13 @@
 							/>
 						</Table.Cell>
 						<Table.Cell class="whitespace-nowrap">
-							{formatTimestamp(email.timestamp)}
+							{@const dateInfo = describeDate(email.timestamp, email.timestampKind)}
+							{#if dateInfo.label === 'Received'}<span class="text-muted-foreground"
+									>Received </span
+								>{/if}{dateInfo.text}{#if dateInfo.qualifier}<span
+									class="text-muted-foreground"
+									title={dateInfo.qualifier}> (tz?)</span
+								>{/if}
 						</Table.Cell>
 
 						<Table.Cell>

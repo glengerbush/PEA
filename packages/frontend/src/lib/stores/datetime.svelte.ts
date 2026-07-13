@@ -1,4 +1,4 @@
-import type { SystemSettings, DateFormat } from '@pea/types';
+import type { SystemSettings, DateFormat, DateKind } from '@pea/types';
 
 /**
  * Global date/time display preferences, sourced from system settings. Set once
@@ -88,6 +88,47 @@ export function formatDateTime(value: DateInput, options: Intl.DateTimeFormatOpt
 		hour12: prefs.hour12,
 		...options,
 	});
+}
+
+/**
+ * Formats a timestamp honestly given what it actually represents, so the UI
+ * never passes a received time or a zone-ambiguous time off as an exact send
+ * time. Returns the display `text`, an optional `label` prefix ("Sent" /
+ * "Received"), and an optional muted `qualifier`.
+ *
+ *  - `sent`: the real send instant, shown in the viewer's zone.
+ *  - `sent_zone_unknown`: a Date header with no timezone. The wall-clock is
+ *    shown exactly as written — forced to UTC so the viewer's zone can't shift
+ *    it — qualified "timezone unknown". (The stored instant is the wall-clock
+ *    interpreted as UTC, so UTC rendering reproduces it verbatim.)
+ *  - `received`: no Date header; the earliest Received time, labeled as such.
+ *  - `unknown`: no timestamp anywhere.
+ */
+export function describeDate(
+	value: DateInput,
+	kind: DateKind
+): { label: string; text: string; qualifier?: string } {
+	switch (kind) {
+		case 'unknown':
+			return { label: '', text: 'Date unknown' };
+		case 'sent_zone_unknown':
+			return {
+				label: 'Sent',
+				text: formatDateTime(value, {
+					timeZone: 'UTC',
+					year: 'numeric',
+					month: 'short',
+					day: 'numeric',
+					hour: 'numeric',
+					minute: '2-digit',
+				}),
+				qualifier: 'timezone unknown',
+			};
+		case 'received':
+			return { label: 'Received', text: formatDateTime(value) };
+		default:
+			return { label: 'Sent', text: formatDateTime(value) };
+	}
 }
 
 /** Date only, honoring the configured time zone and date format. */

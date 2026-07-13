@@ -80,6 +80,12 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
         json!(row.get::<_, Option<String>>("provider_message_id")?),
     );
     doc.insert("sentAt".into(), json!(iso(row.get::<_, i64>("sent_at")?)));
+    // What sentAt actually is (sent / sent_zone_unknown / received / unknown), so
+    // the UI can label it truthfully. NULL (pre-backfill) → "sent", the old default.
+    doc.insert(
+        "sentAtKind".into(),
+        json!(row.get::<_, Option<String>>("sent_at_kind")?.unwrap_or_else(|| "sent".into())),
+    );
     doc.insert("subject".into(), json!(row.get::<_, Option<String>>("subject")?));
     doc.insert("senderName".into(), json!(row.get::<_, Option<String>>("sender_name")?));
     doc.insert("senderEmail".into(), json!(row.get::<_, String>("sender_email")?));
@@ -194,7 +200,7 @@ pub async fn email_detail(
         };
         let placeholders = vec!["?"; group_ids.len()].join(", ");
         let sql = format!(
-            "SELECT id, subject, sent_at, sender_email, has_attachments FROM archived_emails \
+            "SELECT id, subject, sent_at, sender_email, has_attachments, sent_at_kind FROM archived_emails \
              WHERE thread_id = ? AND deleted_at IS NULL AND ingestion_source_id IN ({placeholders}) ORDER BY sent_at ASC"
         );
         let mut stmt = conn.prepare(&sql).unwrap();
@@ -208,6 +214,7 @@ pub async fn email_detail(
                     "sentAt": iso(row.get::<_, i64>(2)?),
                     "senderEmail": row.get::<_, String>(3)?,
                     "hasAttachments": row.get::<_, i64>(4)? != 0,
+                    "sentAtKind": row.get::<_, Option<String>>(5)?.unwrap_or_else(|| "sent".into()),
                 }))
             })
             .unwrap()

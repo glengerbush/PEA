@@ -388,6 +388,16 @@ pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Valu
         "timestamp".into(),
         json!(row.get::<_, i64>("sent_at").unwrap_or_default()),
     );
+    // What `timestamp` actually is, so the list can label it honestly. NULL
+    // (pre-backfill rows) reads as "sent" — the historical default.
+    doc.insert(
+        "timestampKind".into(),
+        json!(row
+            .get::<_, Option<String>>("sent_at_kind")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "sent".into())),
+    );
     doc.insert(
         "archivedAt".into(),
         json!(row.get::<_, i64>("archived_at").unwrap_or_default()),

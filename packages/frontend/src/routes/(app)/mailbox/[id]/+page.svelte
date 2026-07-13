@@ -8,7 +8,7 @@
 	import { contactName } from '$lib/stores/contacts.svelte';
 	import AttachmentPreview from '$lib/components/custom/AttachmentPreview.svelte';
 	import EmailThread from '$lib/components/custom/EmailThread.svelte';
-	import { formatDateTime, formatDate } from '$lib/stores/datetime.svelte';
+	import { formatDateTime, formatDate, describeDate } from '$lib/stores/datetime.svelte';
 	import { api } from '$lib/api.client';
 	import { browser } from '$app/environment';
 	import { formatBytes } from '$lib/utils';
@@ -48,6 +48,9 @@
 
 	let { data }: { data: PageData } = $props();
 	let email = $derived(data.email);
+	/** The sent time described honestly per its kind (sent / zone-unknown /
+	 *  received / unknown), used in the header and the metadata panel. */
+	let sentDate = $derived(email ? describeDate(email.sentAt, email.sentAtKind) : null);
 
 	/** Where "back" should go: the explicit origin passed in `?from=` (e.g. the
 	 *  duplicates page with its filters/page), else the last mailbox list view,
@@ -78,6 +81,9 @@
 	function identityLabel(addr: string | null | undefined, fallback?: string | null): string {
 		const email = (addr || '').trim();
 		const name = (contactName(email) || fallback || '').trim();
+		// The importer stores an empty sender rather than a fake address, so say
+		// so plainly instead of rendering a blank.
+		if (!email && !name) return '(no sender)';
 		return name && name.toLowerCase() !== email.toLowerCase() ? `${name} <${email}>` : email;
 	}
 
@@ -835,9 +841,13 @@
 									>
 								</p>
 							{/if}
-							<p class="text-muted-foreground text-xs">
-								{$t('app.archive.sent')}: {formatDateTime(email.sentAt)}
-							</p>
+							{#if sentDate}
+								<p class="text-muted-foreground text-xs">
+									{#if sentDate.label}{sentDate.label}: {/if}{sentDate.text}{#if sentDate.qualifier}<span
+											class="italic"> ({sentDate.qualifier})</span
+										>{/if}
+								</p>
+							{/if}
 						</div>
 						<div
 							class="flex flex-col items-stretch gap-2 sm:absolute sm:right-6 sm:top-0 sm:w-32"
@@ -965,7 +975,14 @@
 								'Size',
 								`${formatBytes(email.sizeBytes)} (${email.sizeBytes.toLocaleString()} bytes)`
 							)}
-							{@render metaRow('Sent', formatDateTime(email.sentAt))}
+							{#if sentDate}
+								{@render metaRow(
+									sentDate.label || 'Date',
+									sentDate.qualifier
+										? `${sentDate.text} (${sentDate.qualifier})`
+										: sentDate.text
+								)}
+							{/if}
 							{@render metaRow('Archived', formatDateTime(email.archivedAt))}
 							{@render metaRow('Import Source', email.importSource)}
 							{@render metaRow('Storage path', email.storagePath, true)}

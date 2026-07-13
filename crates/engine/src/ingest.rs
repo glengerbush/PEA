@@ -23,15 +23,6 @@ fn sha256_hex(data: &[u8]) -> String {
     crate::hex_encode(Sha256::digest(data))
 }
 
-fn now_ms() -> i64 {
-    // Fall back to the epoch rather than panic if the system clock is set before
-    // 1970 — a bogus timestamp is recoverable, an aborted import is not.
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -137,6 +128,9 @@ pub struct EmailObj {
     pub html: String,
     pub attachments: Vec<AttachmentObj>,
     pub received_at_ms: i64,
+    /// What `received_at_ms` actually is (sent / zone-unknown / received /
+    /// unknown), stored so the UI can label the date honestly.
+    pub date_kind: DateKind,
     pub path: String,
     /// All folder/label tags for this message (e.g. every X-Gmail-Label). The
     /// first is also `path`; the rest would otherwise be silently discarded.
@@ -148,6 +142,102 @@ pub struct EmailObj {
 fn header_string(msg: &Message, name: &str) -> Option<String> {
     let value = msg.header_raw(name)?;
     Some(value.trim().to_string())
+}
+
+/// What a stored `sent_at` value actually represents — so the UI can label it
+/// truthfully instead of passing every timestamp off as an exact send time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateKind {
+    /// A valid, timezoned Date header (or Apple's emlx date-sent): the real
+    /// send instant.
+    Sent,
+    /// A Date header with no timezone. The wall-clock is readable but the true
+    /// offset is unknown; stored as written and shown verbatim (never shifted
+    /// to the viewer's zone).
+    SentZoneUnknown,
+    /// No usable Date at all — this is the earliest `Received:` time, i.e. when
+    /// a relay *received* the message, not when it was sent. Labeled as such.
+    Received,
+    /// No timestamp anywhere in the message.
+    Unknown,
+}
+
+impl DateKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            DateKind::Sent => "sent",
+            DateKind::SentZoneUnknown => "sent_zone_unknown",
+            DateKind::Received => "received",
+            DateKind::Unknown => "unknown",
+        }
+    }
+}
+
+/// The best available timestamp for an email (epoch ms) paired with an honest
+/// label of what it is. Never fabricates a time: an email with no usable date
+/// yields (0, Unknown) rather than the import time.
+///
+/// Precedence: a valid zoned Date header, then Apple's emlx date-sent (both real
+/// send instants), then a timezone-less Date header (readable but ambiguous —
+/// mail_parser rejects these outright, so we repair with +0000 per RFC 5322 §4.3
+/// and flag the zone unknown), then the earliest Received-header time (a real
+/// instant, but a *received* time, labeled accordingly), then nothing.
+fn derive_sent_at(msg: &Message, meta: Option<&EmlxMeta>) -> (i64, DateKind) {
+    // is_valid() rejects a malformed-but-parseable Date (e.g. "47:99:99" or an
+    // out-of-range year) so we don't store a bogus instant.
+    if let Some(d) = msg.date() {
+        if d.is_valid() {
+            return (d.to_timestamp() * 1000, DateKind::Sent);
+        }
+    }
+    if let Some(ms) = meta.and_then(|m| m.date_sent_ms) {
+        return (ms, DateKind::Sent);
+    }
+    // A zone-less Date header: only repair the clearly-zoneless case. A
+    // present-but-invalid zone (e.g. "+9999") must fall through, not get a
+    // second +0000 tacked on and mis-parsed.
+    if let Some(raw) = header_string(msg, "date") {
+        if !raw.is_empty() && !date_has_timezone(&raw) {
+            if let Some(d) = mail_parser::DateTime::parse_rfc822(&format!("{raw} +0000")) {
+                if d.is_valid() {
+                    return (d.to_timestamp() * 1000, DateKind::SentZoneUnknown);
+                }
+            }
+        }
+    }
+    if let Some(ms) = earliest_received_ms(msg) {
+        return (ms, DateKind::Received);
+    }
+    (0, DateKind::Unknown)
+}
+
+/// The earliest (closest-to-send) valid `Received:` timestamp in epoch ms. Each
+/// relay prepends a Received header, so the minimum time is the first hop — the
+/// point nearest to when the message was actually sent.
+fn earliest_received_ms(msg: &Message) -> Option<i64> {
+    msg.headers()
+        .iter()
+        .filter(|h| h.name.as_str().eq_ignore_ascii_case("received"))
+        .filter_map(|h| h.value.as_received())
+        .filter_map(|r| r.date.as_ref())
+        .filter(|d| d.is_valid())
+        .map(|d| d.to_timestamp() * 1000)
+        .min()
+}
+
+/// Whether an RFC822 date value ends in a timezone token — a numeric offset
+/// (`+0000`, `-0400`) or an alphabetic zone (`GMT`, `UTC`, `EST`, `Z`, or an
+/// obsolete single military letter). A zone-less date ends with the time
+/// (`18:01:00`), whose final token contains ':' and so matches neither.
+fn date_has_timezone(value: &str) -> bool {
+    let Some(tok) = value.split_whitespace().next_back() else {
+        return false;
+    };
+    let numeric = tok.len() == 5
+        && matches!(tok.as_bytes()[0], b'+' | b'-')
+        && tok[1..].bytes().all(|b| b.is_ascii_digit());
+    let alphabetic = !tok.is_empty() && tok.bytes().all(|b| b.is_ascii_alphabetic());
+    numeric || alphabetic
 }
 
 /// getThreadId — references[0] → in-reply-to → conversation-id → message-id.
@@ -184,9 +274,56 @@ fn map_addresses(addr: Option<&mail_parser::Address>) -> Vec<EmailAddr> {
     addr.iter()
         .map(|a| EmailAddr {
             name: a.name().unwrap_or("").to_string(),
-            address: a.address().unwrap_or("").replace('\'', ""),
+            // Store the address verbatim. (An earlier version stripped every
+            // single quote as injection defense — but all SQL here is
+            // parameterized, and stripping corrupts valid quoted local-parts
+            // like "o'brien"@example.com.)
+            address: a.address().unwrap_or("").to_string(),
         })
         .collect()
+}
+
+/// A filename for an attachment that carries none: `attachment.<ext>` derived
+/// from the content type, or a bare "attachment" when the type is unknown. The
+/// point is to say something true about the bytes, not to hide them behind
+/// "untitled".
+fn honest_attachment_name(content_type: Option<&str>) -> String {
+    match content_type.and_then(mime_extension) {
+        Some(ext) => format!("attachment.{ext}"),
+        None => "attachment".to_string(),
+    }
+}
+
+/// Common content-type → file extension. Intentionally small: it only needs to
+/// cover the types that actually show up nameless in real mail. Unknown types
+/// get no extension (the caller falls back to a bare "attachment").
+fn mime_extension(content_type: &str) -> Option<&'static str> {
+    let ct = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    Some(match ct.as_str() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/heic" | "image/heif" => "heic",
+        "image/tiff" => "tiff",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        "text/html" => "html",
+        "text/calendar" => "ics",
+        "text/csv" => "csv",
+        "application/zip" => "zip",
+        "application/json" => "json",
+        "application/msword" => "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/vnd.ms-powerpoint" => "ppt",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+        "message/rfc822" => "eml",
+        _ => return None,
+    })
 }
 
 pub(crate) fn part_content_type(part: &mail_parser::MessagePart) -> Option<String> {
@@ -440,12 +577,16 @@ pub(crate) fn parse_message(
         .attachments()
         .map(|part| {
             let disposition = part.content_disposition();
+            let content_type = part_content_type(part);
             AttachmentObj {
+                // A nameless attachment gets `attachment.<ext>` derived from its
+                // content type — an honest hint at what the bytes are, rather
+                // than an opaque "untitled".
                 filename: part
                     .attachment_name()
                     .map(String::from)
-                    .unwrap_or_else(|| "untitled".into()),
-                content_type: part_content_type(part),
+                    .unwrap_or_else(|| honest_attachment_name(content_type.as_deref())),
+                content_type,
                 content: part.contents().to_vec(),
                 content_description: part.content_description().map(String::from),
                 creation_date: disposition
@@ -466,19 +607,16 @@ pub(crate) fn parse_message(
         .unwrap_or_else(|| format!("generated-{}", sha256_hex(&eml)));
 
     // When the message has no usable From (e.g. a corrupt/headerless Apple Mail
-    // message), fall back to the emlx plist's sender before the placeholder.
+    // message), fall back to the emlx plist's sender. If there's still nothing,
+    // leave `from` empty rather than inventing a "No Sender" address — an empty
+    // sender is the truth, and the UI renders "(no sender)" for it.
     let mut from = map_addresses(msg.from());
     if from.is_empty() {
         from = meta
             .and_then(|m| m.sender.as_deref())
             .and_then(parse_display_address)
             .map(|addr| vec![addr])
-            .unwrap_or_else(|| {
-                vec![EmailAddr {
-                    name: "No Sender".into(),
-                    address: "No Sender".into(),
-                }]
-            });
+            .unwrap_or_default();
     }
 
     // Folder from client headers: X-Gmail-Labels → X-Folder → source path.
@@ -501,17 +639,8 @@ pub(crate) fn parse_message(
         final_path = folder;
     }
 
-    // Prefer the message's Date header; fall back to the emlx plist's date-sent
-    // (Apple keeps it even when the body has no Date), and only then to now().
-    let received_at_ms = msg
-        .date()
-        // mail_parser returns Some for a malformed-but-parseable Date (e.g.
-        // "47:99:99" or an out-of-range year) without validating it; skip those
-        // so we fall back to the emlx date / now() instead of a bogus sent time.
-        .filter(|d| d.is_valid())
-        .map(|d| d.to_timestamp() * 1000)
-        .or_else(|| meta.and_then(|m| m.date_sent_ms))
-        .unwrap_or_else(now_ms);
+    // Best available timestamp + an honest label of what it is (never now()).
+    let (received_at_ms, date_kind) = derive_sent_at(&msg, meta);
 
     // Recipients / subject: same plist fallback when the message omits them.
     let mut to = map_addresses(msg.to());
@@ -542,10 +671,65 @@ pub(crate) fn parse_message(
         html,
         attachments,
         received_at_ms,
+        date_kind,
         path: final_path,
         labels,
         raw: eml,
     })
+}
+
+/// One-time backfill for the `sent_at_kind` column (migration 0015). Rows
+/// imported before it exists have it NULL; re-derive (sent_at, kind) for each
+/// from its stored .eml and fill the column. Headers survive attachment
+/// hollowing, so Date/Received are intact. Idempotent and cheap after the first
+/// pass — the WHERE then matches nothing.
+///
+/// Note: the stored .eml is the RFC822 message, not any emlx plist sidecar, so a
+/// headerless Apple-Mail message that originally took its date from the plist
+/// can't be re-derived here — it becomes `unknown`, keeping its existing sort
+/// key. That's rare, and marking it unknown is honest about what we can verify.
+pub(crate) fn backfill_sent_at_kind(conn: &Connection, data_dir: &Path) -> Result<usize, String> {
+    let rows: Vec<(String, String, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, storage_path, sent_at FROM archived_emails \
+                 WHERE sent_at_kind IS NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        rows
+    };
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let storage_root = data_dir.join("storage");
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for (id, storage_path, old_sent_at) in &rows {
+        // Re-derive from the stored bytes; a missing/unparseable blob yields
+        // Unknown so we never fabricate. Keep the existing sort key when the
+        // result is Unknown rather than zeroing a possibly-real timestamp.
+        let (derived_ms, kind) = std::fs::read(storage_root.join(storage_path))
+            .ok()
+            .and_then(|bytes| {
+                MessageParser::default()
+                    .parse(&bytes)
+                    .map(|msg| derive_sent_at(&msg, None))
+            })
+            .unwrap_or((*old_sent_at, DateKind::Unknown));
+        let sent_at = if kind == DateKind::Unknown { *old_sent_at } else { derived_ms };
+        tx.execute(
+            "UPDATE archived_emails SET sent_at = ?, sent_at_kind = ? WHERE id = ?",
+            rusqlite::params![sent_at, kind.as_str(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(rows.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,12 +1224,12 @@ pub(crate) fn process_email(
     conn
         .execute(
             "INSERT INTO archived_emails (id, ingestion_source_id, import_source, thread_id, \
-             message_id_header, provider_message_id, sent_at, subject, sender_name, sender_email, \
+             message_id_header, provider_message_id, sent_at, sent_at_kind, subject, sender_name, sender_email, \
              recipients, storage_path, storage_hash_sha256, size_bytes, has_attachments, \
              source_path, duplicate_subject_hash, \
              duplicate_body_hash, duplicate_recipient_fingerprint, duplicate_attachment_fingerprint, \
              tags) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rusqlite::params![
                 archived_id,
                 effective.id,
@@ -1054,6 +1238,7 @@ pub(crate) fn process_email(
                 message_id,
                 email.id,
                 email.received_at_ms,
+                email.date_kind.as_str(),
                 email.subject,
                 email.from.first().map(|a| a.name.clone()),
                 sender_email,
@@ -1320,6 +1505,79 @@ mod tests {
         assert_eq!(normalize_source_path("/a/./b/../c/"), "a/b/c");
         assert_eq!(normalize_source_path("A\\B"), "A/B");
         assert_eq!(normalize_source_path(""), "");
+    }
+
+    #[test]
+    fn date_has_timezone_detects_zone_tokens() {
+        assert!(date_has_timezone("Thu, 08 Oct 2020 18:01:00 -0400"));
+        assert!(date_has_timezone("08 Oct 2020 18:01:00 +0000"));
+        assert!(date_has_timezone("08 Oct 2020 18:01:00 GMT"));
+        assert!(date_has_timezone("08 Oct 2020 18:01:00 Z"));
+        // Zone-less: the final token is the time.
+        assert!(!date_has_timezone("08 Oct 20 18:01:00"));
+        assert!(!date_has_timezone("08 Oct 2020 18:01"));
+        assert!(!date_has_timezone(""));
+    }
+
+    /// Derive (ms, kind) from a header block (bytes kept alive by the caller's
+    /// binding so the borrowed Message stays valid).
+    fn date_of(raw: &[u8]) -> (i64, DateKind) {
+        derive_sent_at(&MessageParser::default().parse(raw).unwrap(), None)
+    }
+
+    #[test]
+    fn zoned_date_is_sent_exact() {
+        // -0400 → 22:01:00 UTC == 1602194460 s, labeled as a real send time.
+        assert_eq!(
+            date_of(b"Date: Thu, 08 Oct 2020 18:01:00 -0400\r\n\r\nbody\r\n"),
+            (1_602_194_460_000, DateKind::Sent)
+        );
+    }
+
+    /// A Date header with no timezone yields the wall-clock as written (UTC),
+    /// flagged zone-unknown so the UI shows it verbatim. `08 Oct 20 18:01:00`
+    /// == 2020-10-08 18:01:00 == 1602180060 s. Regression for the wrong-date bug.
+    #[test]
+    fn zoneless_date_is_wall_clock_zone_unknown() {
+        let expect = (1_602_180_060_000i64, DateKind::SentZoneUnknown);
+        assert_eq!(date_of(b"Date: 08 Oct 20 18:01:00\r\n\r\nbody\r\n"), expect);
+        // Four-digit year, still no zone (mail_parser rejects this too).
+        assert_eq!(date_of(b"Date: 08 Oct 2020 18:01:00\r\n\r\nbody\r\n"), expect);
+    }
+
+    /// No Date header: fall back to the earliest Received time, labeled Received
+    /// (not passed off as a send time). Two hops; the earlier one wins.
+    #[test]
+    fn no_date_uses_earliest_received() {
+        let raw = b"Received: from b by c; Thu, 08 Oct 2020 18:01:05 -0400\r\n\
+                    Received: from a by b; Thu, 08 Oct 2020 18:01:00 -0400\r\n\
+                    Subject: x\r\n\r\nbody\r\n";
+        assert_eq!(date_of(raw), (1_602_194_460_000, DateKind::Received));
+    }
+
+    #[test]
+    fn no_timestamp_anywhere_is_unknown() {
+        assert_eq!(date_of(b"Subject: x\r\n\r\nbody\r\n"), (0, DateKind::Unknown));
+        // Garbage Date, no Received: still unknown, never fabricated.
+        assert_eq!(date_of(b"Date: not a date\r\n\r\nbody\r\n"), (0, DateKind::Unknown));
+        // Present-but-invalid zone must not get +0000 tacked on and mis-parsed.
+        assert_eq!(date_of(b"Date: 08 Oct 2020 18:01:00 +9999\r\n\r\nbody\r\n"), (0, DateKind::Unknown));
+    }
+
+    #[test]
+    fn emlx_date_sent_is_sent_kind() {
+        let meta = EmlxMeta { date_sent_ms: Some(1_602_194_460_000), ..Default::default() };
+        let msg = MessageParser::default().parse(b"Subject: x\r\n\r\nbody\r\n").unwrap();
+        assert_eq!(derive_sent_at(&msg, Some(&meta)), (1_602_194_460_000, DateKind::Sent));
+    }
+
+    #[test]
+    fn honest_attachment_names_from_mime() {
+        assert_eq!(honest_attachment_name(Some("image/jpeg")), "attachment.jpg");
+        assert_eq!(honest_attachment_name(Some("application/pdf")), "attachment.pdf");
+        assert_eq!(honest_attachment_name(Some("image/JPEG; name=x")), "attachment.jpg");
+        assert_eq!(honest_attachment_name(Some("application/x-weird")), "attachment");
+        assert_eq!(honest_attachment_name(None), "attachment");
     }
 
     #[test]

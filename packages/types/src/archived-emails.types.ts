@@ -1,3 +1,5 @@
+import type { DateKind } from './email.types';
+
 /**
  * Represents a single recipient of an email.
  */
@@ -28,6 +30,7 @@ export interface ThreadEmail {
 	id: string; //the archivedemail id
 	subject: string | null;
 	sentAt: Date;
+	sentAtKind: DateKind;
 	senderEmail: string;
 	hasAttachments: boolean;
 }
@@ -162,6 +165,8 @@ export interface ArchivedEmail {
 	messageIdHeader: string | null;
 	providerMessageId: string | null;
 	sentAt: Date;
+	/** What `sentAt` is (sent / zone-unknown / received / unknown). */
+	sentAtKind: DateKind;
 	subject: string | null;
 	senderName: string | null;
 	senderEmail: string;

@@ -114,5 +114,12 @@ pub fn provision(data_dir: &Path) -> Result<(), String> {
     conn.pragma_update(None, "foreign_keys", "OFF").ok();
     run_migrations(&conn)?;
     ensure_fts(&conn)?;
+    // One-time backfill of sent_at_kind for rows imported before migration 0015.
+    // Idempotent: after the first pass there are no NULL-kind rows to process.
+    match crate::ingest::backfill_sent_at_kind(&conn, data_dir) {
+        Ok(0) => {}
+        Ok(n) => eprintln!("[provision] backfilled sent_at_kind for {n} email(s)"),
+        Err(e) => eprintln!("[provision] sent_at_kind backfill failed (non-fatal): {e}"),
+    }
     Ok(())
 }

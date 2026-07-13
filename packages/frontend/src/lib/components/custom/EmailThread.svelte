@@ -4,7 +4,7 @@
 	import type { ArchivedEmail } from '@pea/types';
 	import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
 	import { t } from '$lib/translations';
-	import { formatDateTime } from '$lib/stores/datetime.svelte';
+	import { describeDate } from '$lib/stores/datetime.svelte';
 	import Paperclip from '@lucide/svelte/icons/paperclip';
 
 	let {
@@ -28,6 +28,7 @@
 		<div class="relative ml-3 border-l-2 border-gray-200 pl-6">
 			{#if thread}
 				{#each thread as item, i (item.id)}
+					{@const d = describeDate(item.sentAt, item.sentAtKind)}
 					<div class="mb-8">
 						<span
 							class=" ring-sidebar absolute -left-3 flex h-6 w-6 items-center justify-center rounded-full bg-gray-200 ring-8"
@@ -75,8 +76,10 @@
 						<div
 							class="flex flex-col space-y-2 text-sm font-normal leading-none text-gray-400"
 						>
-							<span>{$t('app.archive.from')}: {item.senderEmail}</span>
-							<time class="">{formatDateTime(item.sentAt)}</time>
+							<span>{$t('app.archive.from')}: {item.senderEmail || '(no sender)'}</span>
+							<time>{d.label === 'Received' ? 'Received ' : ''}{d.text}{d.qualifier
+									? ` (${d.qualifier})`
+									: ''}</time>
 						</div>
 					</div>
 				{/each}

@@ -14,25 +14,26 @@
 	import { t } from '$lib/translations';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import type {
-		ApproveAllExactDuplicatesDto,
-		ApproveExactDuplicateGroupDto,
-		ApproveExactDuplicatesResult,
-		ExactDuplicateGroup,
-		ExactDuplicateReason,
-		IgnoreExactDuplicateGroupsResult,
+		ApproveDuplicateGroupDto,
+		ApproveDuplicatesResult,
+		DuplicateClassification,
+		DuplicateGroup,
+		IgnoreDuplicateGroupsResult,
 	} from '@pea/types';
 
 	let { data }: { data: PageData } = $props();
 
 	let duplicateGroups = $derived(data.duplicateGroups);
-	let reasonCounts = $derived(data.duplicateGroups.reasonCounts);
-	let activeReason = $derived(data.activeReason || '');
+	let classificationCounts = $derived(data.duplicateGroups.classificationCounts);
+	let activeClassification = $derived<DuplicateClassification>(
+		data.activeClassification || 'exact'
+	);
 	let keeperOverrides = $state<Record<string, string>>({});
 	let approvingKey = $state<string | null>(null);
 
 	// Holding Ctrl/Cmd upgrades the per-page delete button to "Delete all
-	// duplicates" (every page, scoped to the selected filter badge), behind a
-	// confirmation dialog.
+	// exact duplicates" (every page), behind a confirmation dialog. Likely
+	// groups never enter this bulk path.
 	let modifierHeld = $state(false);
 	let isApproveAllDialogOpen = $state(false);
 
@@ -40,33 +41,17 @@
 		modifierHeld = event.ctrlKey || event.metaKey;
 	}
 
-	const reasonFilters: { value: string; label: string }[] = [
-		{ value: '', label: 'All' },
-		{ value: 'storage_hash', label: 'Raw hash' },
-		{ value: 'message_id', label: 'Message-ID' },
-		{ value: 'sender_recipients_sent', label: 'Sender + recipients + time' },
-		{ value: 'message_body', label: 'Message body' },
-		{ value: 'attachment_hash_set', label: 'Attachment set' },
+	const classificationFilters: { value: DuplicateClassification; label: string }[] = [
+		{ value: 'exact', label: 'Exact duplicates' },
+		{ value: 'likely', label: 'Likely duplicates' },
 	];
 
-	function reasonLabel(reason: ExactDuplicateReason): string {
-		switch (reason) {
-			case 'message_id':
-				return 'Message-ID';
-			case 'storage_hash':
-				return 'Raw hash';
-			case 'attachment_hash_set':
-				return 'Attachment set';
-			case 'sender_recipients_sent':
-				return 'Sender + recipients + time';
-			case 'message_body':
-				return 'Message body';
-		}
+	function classificationLabel(classification: DuplicateClassification): string {
+		return classification === 'exact' ? 'Exact duplicate' : 'Likely duplicate';
 	}
 
-	/** Count of groups for a filter pill (uses the `all` bucket for the empty value). */
-	function reasonCount(value: string): number {
-		return reasonCounts[(value || 'all') as keyof typeof reasonCounts] ?? 0;
+	function classificationCount(value: DuplicateClassification): number {
+		return classificationCounts[value] ?? 0;
 	}
 
 	function shortFingerprint(fingerprint: string | null | undefined): string {
@@ -94,14 +79,14 @@
 		const remaining = Math.max(0, result.totalGroups - removedGroups);
 		const totalPages = Math.max(1, Math.ceil(remaining / Math.max(1, result.limit)));
 		const target = Math.min(result.page, totalPages);
-		await goto(buildExactPageUrl(target), {
+		await goto(buildDuplicatesPageUrl(target), {
 			invalidateAll: true,
 			keepFocus: true,
 			replaceState: true,
 		});
 	}
 
-	function buildDecision(group: ExactDuplicateGroup): ApproveExactDuplicateGroupDto | null {
+	function buildDecision(group: DuplicateGroup): ApproveDuplicateGroupDto | null {
 		const keeperEmailId = keeperOverrides[group.groupKey] || group.keeperEmailId;
 		const duplicateEmailIds = group.emails
 			.map((email) => email.id)
@@ -118,10 +103,10 @@
 		};
 	}
 
-	async function approveGroups(groups: ExactDuplicateGroup[], actionKey: string) {
+	async function approveGroups(groups: DuplicateGroup[], actionKey: string) {
 		const decisions = groups
 			.map(buildDecision)
-			.filter((decision): decision is ApproveExactDuplicateGroupDto => Boolean(decision));
+			.filter((decision): decision is ApproveDuplicateGroupDto => Boolean(decision));
 		if (decisions.length === 0) return;
 
 		approvingKey = actionKey;
@@ -135,7 +120,7 @@
 				throw new Error(body.message || 'Failed to approve duplicates');
 			}
 
-			const result = body as ApproveExactDuplicatesResult;
+			const result = body as ApproveDuplicatesResult;
 			await reloadGroups(duplicateGroups, result.approvedGroups);
 			setAlert({
 				type: 'success',
@@ -157,27 +142,23 @@
 		}
 	}
 
-	/** Deletes the duplicates of every group matching the selected badge, across
-	 *  all pages. The server recomputes the clusters and keeps each group's
-	 *  default (oldest) copy — per-group "Keep" choices only exist on this page. */
+	/** Deletes every Exact group across all pages. The server recomputes the
+	 *  clusters and keeps each group's default (oldest) copy. */
 	async function approveAllDuplicates() {
 		approvingKey = 'all';
 		try {
-			const dto: ApproveAllExactDuplicatesDto = activeReason
-				? { reason: activeReason as ExactDuplicateReason }
-				: {};
 			const response = await api('/archived-emails/duplicates/exact/approve-all', {
 				method: 'POST',
-				body: JSON.stringify(dto),
+				body: JSON.stringify({}),
 			});
 			const body = await response.json();
 			if (!response.ok) {
 				throw new Error(body.message || 'Failed to delete duplicates');
 			}
 
-			const result = body as ApproveExactDuplicatesResult;
+			const result = body as ApproveDuplicatesResult;
 			isApproveAllDialogOpen = false;
-			await goto(buildExactPageUrl(1), {
+			await goto(buildDuplicatesPageUrl(1), {
 				invalidateAll: true,
 				keepFocus: true,
 				replaceState: true,
@@ -214,7 +195,7 @@
 				throw new Error(body.message || 'Failed to ignore group');
 			}
 
-			const result = body as IgnoreExactDuplicateGroupsResult;
+			const result = body as IgnoreDuplicateGroupsResult;
 			await reloadGroups(duplicateGroups, result.ignoredGroups);
 		} catch (error) {
 			setAlert({
@@ -229,18 +210,21 @@
 		}
 	}
 
-	function buildExactPageUrl(page: number): string {
+	function buildDuplicatesPageUrl(page: number): string {
 		const params = new URLSearchParams();
-		if (activeReason) params.set('reason', activeReason);
+		if (activeClassification !== 'exact') {
+			params.set('classification', activeClassification);
+		}
 		if (page > 1) params.set('exactPage', String(page));
 		const query = params.toString();
 		return `/dashboard/duplicates${query ? `?${query}` : ''}`;
 	}
 
-	/** URL that applies a reason filter (resets pagination to page 1). */
-	function reasonUrl(reason: string): string {
-		const query = reason ? `?reason=${encodeURIComponent(reason)}` : '';
-		return `/dashboard/duplicates${query}`;
+	/** URL that applies a classification filter (resets pagination). */
+	function classificationUrl(classification: DuplicateClassification): string {
+		return classification === 'exact'
+			? '/dashboard/duplicates'
+			: `/dashboard/duplicates?classification=${classification}`;
 	}
 
 	/** Open an email, remembering this exact duplicates view (page + filter) so
@@ -248,6 +232,16 @@
 	function viewUrl(id: string): string {
 		const from = page.url.pathname + page.url.search;
 		return `/mailbox/${id}?from=${encodeURIComponent(from)}`;
+	}
+
+	function openEmail(id: string) {
+		goto(viewUrl(id));
+	}
+
+	function handleEmailRowKeydown(event: KeyboardEvent, id: string) {
+		if (event.target !== event.currentTarget || event.key !== 'Enter') return;
+		event.preventDefault();
+		openEmail(id);
 	}
 
 	// Restore scroll position and highlight the last-opened row on return.
@@ -285,28 +279,27 @@
 	<h1 class="text-2xl font-bold">Duplicates</h1>
 	<p class="text-muted-foreground text-sm">
 		{duplicateGroups.totalGroups}
-		{duplicateGroups.totalGroups === 1 ? 'group' : 'groups'}{activeReason
-			? ` matching ${reasonLabel(activeReason as ExactDuplicateReason)}`
-			: ''}
+		{activeClassification === 'exact' ? 'exact' : 'likely'}
+		{duplicateGroups.totalGroups === 1 ? 'group' : 'groups'}
 	</p>
 </div>
 
 <div class="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
 	<div class="flex flex-wrap items-center gap-1">
-		<span class="text-muted-foreground mr-1 text-xs">Filter:</span>
-		{#each reasonFilters as rf (rf.value)}
+		{#each classificationFilters as filter (filter.value)}
 			<a
-				href={reasonUrl(rf.value)}
+				href={classificationUrl(filter.value)}
 				data-sveltekit-noscroll
-				class="rounded-full border px-2.5 py-1 text-xs {activeReason === rf.value
+				class="rounded-full border px-2.5 py-1 text-xs {activeClassification ===
+				filter.value
 					? 'bg-primary text-primary-foreground border-primary'
 					: 'text-muted-foreground hover:bg-muted'}"
 			>
-				{rf.label} ({reasonCount(rf.value)})
+				{filter.label} ({classificationCount(filter.value)})
 			</a>
 		{/each}
 	</div>
-	{#if duplicateGroups.groups.length > 0}
+	{#if activeClassification === 'exact' && duplicateGroups.groups.length > 0}
 		<Button
 			type="button"
 			variant="destructive"
@@ -340,9 +333,11 @@
 				>
 					<div class="min-w-0">
 						<div class="flex flex-wrap items-center gap-2">
-							{#each group.reasons as r (r)}
-								<Badge variant="secondary">{reasonLabel(r)}</Badge>
-							{/each}
+							<Badge
+								variant={group.classification === 'exact' ? 'secondary' : 'outline'}
+							>
+								{classificationLabel(group.classification)}
+							</Badge>
 							<span class="text-sm font-medium">{group.count} emails</span>
 						</div>
 						<div
@@ -376,29 +371,43 @@
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
-							<Table.Head class="w-16">Keep</Table.Head>
+							<Table.Head class="w-16 border-r-2 text-center">Keep</Table.Head>
 							<Table.Head>Sent</Table.Head>
 							<Table.Head>Subject</Table.Head>
 							<Table.Head>Sender</Table.Head>
 							<Table.Head>Import Source</Table.Head>
-							<Table.Head>Folder</Table.Head>
-							<Table.Head class="text-right">Open</Table.Head>
+							<Table.Head>Original Folder</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body class="text-sm">
 						{#each group.emails as email (email.id)}
 							<Table.Row
-								class={email.id === $lastOpenedEmailId ? 'bg-primary/10' : ''}
+								class="cursor-pointer focus-visible:bg-muted/50 focus-visible:outline-none {email.id ===
+								$lastOpenedEmailId
+									? 'bg-primary/10'
+									: ''}"
+								role="link"
+								tabindex={0}
+								onclick={() => openEmail(email.id)}
+								onkeydown={(event) => handleEmailRowKeydown(event, email.id)}
 							>
-								<Table.Cell>
-									<input
-										type="radio"
-										name={`keeper-${group.groupKey}`}
-										checked={(keeperOverrides[group.groupKey] ||
-											group.keeperEmailId) === email.id}
-										onchange={() => setKeeper(group.groupKey, email.id)}
-										aria-label={`Keep ${email.subject || 'email'}`}
-									/>
+								<Table.Cell
+									class="bg-muted/20 relative w-16 border-r-2 p-0"
+									onclick={(event) => event.stopPropagation()}
+									onkeydown={(event) => event.stopPropagation()}
+								>
+									<label
+										class="absolute inset-0 flex cursor-pointer items-center justify-center"
+									>
+										<input
+											type="radio"
+											name={`keeper-${group.groupKey}`}
+											checked={(keeperOverrides[group.groupKey] ||
+												group.keeperEmailId) === email.id}
+											onchange={() => setKeeper(group.groupKey, email.id)}
+											aria-label={`Keep ${email.subject || 'email'}`}
+										/>
+									</label>
 								</Table.Cell>
 								<Table.Cell class="whitespace-nowrap"
 									>{formatDate(email.sentAt)}</Table.Cell
@@ -426,11 +435,6 @@
 										</span>
 									{/if}
 								</Table.Cell>
-								<Table.Cell class="text-right">
-									<a href={viewUrl(email.id)}>
-										<Button variant="outline">View</Button>
-									</a>
-								</Table.Cell>
 							</Table.Row>
 						{/each}
 					</Table.Body>
@@ -440,7 +444,7 @@
 	</div>
 {:else}
 	<div class="rounded-md border p-8 text-center text-sm">
-		No duplicates{activeReason ? ' for this filter' : ''} found.
+		No {activeClassification} duplicates found.
 	</div>
 {/if}
 
@@ -448,7 +452,7 @@
 	count={duplicateGroups.totalGroups}
 	perPage={duplicateGroups.limit}
 	page={duplicateGroups.page}
-	buildHref={buildExactPageUrl}
+	buildHref={buildDuplicatesPageUrl}
 	prevLabel="Prev"
 	nextLabel="Next"
 />
@@ -456,16 +460,13 @@
 <Dialog.Root bind:open={isApproveAllDialogOpen}>
 	<Dialog.Content class="sm:max-w-lg">
 		<Dialog.Header>
-			<Dialog.Title>
-				Delete all duplicates that match based on {activeReason
-					? reasonLabel(activeReason as ExactDuplicateReason)
-					: 'All'}?
-			</Dialog.Title>
+			<Dialog.Title>Delete all exact duplicates?</Dialog.Title>
 			<Dialog.Description>
-				This deletes the duplicate copies of all {reasonCount(activeReason)}
-				{reasonCount(activeReason) === 1 ? 'group' : 'groups'} across every page, moving them
-				to the Trash where they can be restored. Each group keeps its oldest copy — "Keep" choices
-				made on this page only apply when deleting page by page.
+				This deletes the duplicate copies of all {classificationCount('exact')}
+				{classificationCount('exact') === 1 ? 'group' : 'groups'} across every page, moving them
+				to the Trash where they can be restored. Likely duplicates are never included. Each group
+				keeps its oldest copy — "Keep" choices made on this page only apply when deleting page
+				by page.
 			</Dialog.Description>
 		</Dialog.Header>
 		<Dialog.Footer class="sm:justify-start">

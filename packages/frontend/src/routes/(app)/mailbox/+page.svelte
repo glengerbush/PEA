@@ -1,10 +1,10 @@
 <script lang="ts">
-	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { PageData } from './$types';
 	import * as Table from '$lib/components/ui/table';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Switch } from '$lib/components/ui/switch';
 	import * as Select from '$lib/components/ui/select';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import SearchableSelect from '$lib/components/custom/SearchableSelect.svelte';
@@ -23,7 +23,7 @@
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
 	import Paperclip from '@lucide/svelte/icons/paperclip';
 	import Search from '@lucide/svelte/icons/search';
-	import Filter from '@lucide/svelte/icons/filter';
+	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
@@ -34,11 +34,12 @@
 	import type {
 		ArchiveSortField,
 		BulkDeleteArchivedEmailsResult,
-		MatchingStrategy,
 		SearchHit,
 		SortDirection,
 		UpdateArchivedEmailTagsResult,
 	} from '@pea/types';
+
+	type SearchFieldMatch = 'all' | 'any';
 
 	type SelectOption = {
 		value: string;
@@ -60,7 +61,11 @@
 	// afterNavigate reconcile below. resultsMatchQuery lets the UI compare the two
 	// instead of syncing them.
 	let q = $state(data.filters.q);
-	let fields = $state(data.filters.fields);
+	let senderQuery = $state(data.filters.senderQuery);
+	let recipientsQuery = $state(data.filters.recipientsQuery);
+	let subjectQuery = $state(data.filters.subjectQuery);
+	let bodyQuery = $state(data.filters.bodyQuery);
+	let fieldMatch: SearchFieldMatch = $state(data.filters.fieldMatch);
 	let ingestionSourceId = $state(data.filters.ingestionSourceId);
 	let hasAttachments = $state(data.filters.hasAttachments);
 	let attachmentExt = $state(data.filters.attachmentExt);
@@ -68,13 +73,46 @@
 	let sort: ArchiveSortField = $state(data.filters.sort);
 	let direction: SortDirection = $state(data.filters.direction);
 	let limit = $state(String(data.filters.limit));
-	let matchingStrategy: MatchingStrategy = $state(data.filters.matchingStrategy);
+	let showAdvanced = $state(
+		Boolean(
+			data.filters.senderQuery ||
+			data.filters.recipientsQuery ||
+			data.filters.subjectQuery ||
+			data.filters.bodyQuery ||
+			data.filters.ingestionSourceId !== 'all' ||
+			data.filters.hasAttachments !== 'any' ||
+			data.filters.attachmentExt ||
+			data.filters.tags ||
+			data.filters.fieldMatch === 'any'
+		)
+	);
 
 	// True when the visible results are for exactly what's in the search box.
 	// data.filters.q is the query the currently-shown results ran with (only the
 	// last-fired navigation's data is ever applied), so this is false only while a
 	// newer search is still pending — never because of an out-of-order response.
-	let resultsMatchQuery = $derived(data.filters.q === q.trim());
+	let resultsMatchQuery = $derived(
+		showAdvanced
+			? data.filters.q === '' &&
+					data.filters.senderQuery === senderQuery.trim() &&
+					data.filters.recipientsQuery === recipientsQuery.trim() &&
+					data.filters.subjectQuery === subjectQuery.trim() &&
+					data.filters.bodyQuery === bodyQuery.trim() &&
+					data.filters.fieldMatch === fieldMatch &&
+					data.filters.ingestionSourceId === ingestionSourceId &&
+					data.filters.hasAttachments === hasAttachments &&
+					data.filters.attachmentExt === attachmentExt &&
+					data.filters.tags === tags
+			: data.filters.q === q.trim() &&
+					data.filters.senderQuery === '' &&
+					data.filters.recipientsQuery === '' &&
+					data.filters.subjectQuery === '' &&
+					data.filters.bodyQuery === '' &&
+					data.filters.ingestionSourceId === 'all' &&
+					data.filters.hasAttachments === 'any' &&
+					data.filters.attachmentExt === '' &&
+					data.filters.tags === ''
+	);
 
 	// Origin breadcrumb: dashboard drill-downs (charts/stat cards) land here with
 	// ?from=/dashboard so the list can offer a way back up. Preserved by
@@ -92,17 +130,6 @@
 	const DISPLAY_PARAMS = new Set(['sort', 'direction', 'limit', 'page', 'from']);
 	let hasActiveFilters = $derived(
 		[...appPage.url.searchParams.keys()].some((key) => !DISPLAY_PARAMS.has(key))
-	);
-	// Result filters (source / attachments / tags) live in a collapsible panel —
-	// they narrow results even with no search term. Field/Match (which refine the
-	// query itself) stay inline in the search bar; sort/order move to the table
-	// headers and page size lives by the pagination. Open the panel on load if any
-	// of its filters is already applied.
-	let showFilters = $state(
-		data.filters.ingestionSourceId !== 'all' ||
-			data.filters.hasAttachments !== 'any' ||
-			Boolean(data.filters.attachmentExt) ||
-			Boolean(data.filters.tags)
 	);
 	let selectedIds = $state<string[]>([]);
 	let tagInput = $state('');
@@ -133,7 +160,11 @@
 		// being typed. See the $state seeds above and shouldSyncInputsFromUrl.
 		if (shouldSyncInputsFromUrl(type)) {
 			q = data.filters.q;
-			fields = data.filters.fields;
+			senderQuery = data.filters.senderQuery;
+			recipientsQuery = data.filters.recipientsQuery;
+			subjectQuery = data.filters.subjectQuery;
+			bodyQuery = data.filters.bodyQuery;
+			fieldMatch = data.filters.fieldMatch;
 			ingestionSourceId = data.filters.ingestionSourceId;
 			hasAttachments = data.filters.hasAttachments;
 			attachmentExt = data.filters.attachmentExt;
@@ -141,38 +172,27 @@
 			sort = data.filters.sort;
 			direction = data.filters.direction;
 			limit = String(data.filters.limit);
-			matchingStrategy = data.filters.matchingStrategy;
+			showAdvanced = Boolean(
+				data.filters.senderQuery ||
+				data.filters.recipientsQuery ||
+				data.filters.subjectQuery ||
+				data.filters.bodyQuery ||
+				data.filters.ingestionSourceId !== 'all' ||
+				data.filters.hasAttachments !== 'any' ||
+				data.filters.attachmentExt ||
+				data.filters.tags ||
+				data.filters.fieldMatch === 'any'
+			);
 		}
 
 		const y = getListScroll(appPage.url.pathname + appPage.url.search);
 		if (y !== undefined) requestAnimationFrame(() => window.scrollTo(0, y));
 	});
 
-	const fieldOptions: SelectOption[] = [
-		{ value: 'all', label: 'All indexed fields' },
-		{ value: 'subject', label: 'Subject' },
-		{ value: 'body', label: 'Body' },
-		{ value: 'from,senderName', label: 'Sender' },
-		{ value: 'to,cc,bcc', label: 'Recipients' },
-		{ value: 'attachments.filename,attachments.content', label: 'Attachments' },
-		{ value: 'sourcePath,tags', label: 'Tags' },
-	];
-
-	const attachmentOptions: SelectOption[] = [
-		{ value: 'any', label: 'Any attachments' },
-		{ value: 'true', label: 'Has attachments' },
-		{ value: 'false', label: 'No attachments' },
-	];
-
 	const limitOptions: SelectOption[] = [
 		{ value: '25', label: '25 per page' },
 		{ value: '50', label: '50 per page' },
 		{ value: '100', label: '100 per page' },
-	];
-
-	const matchingOptions: SelectOption[] = [
-		{ value: 'last', label: 'Fuzzy' },
-		{ value: 'all', label: 'Exact Match' },
 	];
 
 	let sourceOptions = $derived([
@@ -181,19 +201,6 @@
 	]);
 
 	const sourceLabel = $derived(getOptionLabel(sourceOptions, ingestionSourceId, 'All sources'));
-	const fieldLabel = $derived(getOptionLabel(fieldOptions, fields, 'All indexed fields'));
-	const attachmentLabel = $derived(
-		getOptionLabel(attachmentOptions, hasAttachments, 'Any attachments')
-	);
-	const matchingLabel = $derived(getOptionLabel(matchingOptions, matchingStrategy, 'Fuzzy'));
-
-	// Count of active result filters (the ones in the panel), shown as a badge.
-	const advancedActiveCount = $derived(
-		(ingestionSourceId !== 'all' ? 1 : 0) +
-			(hasAttachments !== 'any' ? 1 : 0) +
-			(attachmentExt ? 1 : 0) +
-			(tags ? 1 : 0)
-	);
 
 	// Column-header sorting: clicking a sortable header sets/toggles sort+direction
 	// and reloads immediately (page size does the same). buildArchiveUrl() reads
@@ -270,36 +277,40 @@
 	// vars are $derived from loader data, so a navigation racing this build (e.g.
 	// a debounced search keystroke) can reset them before the URL is assembled.
 	type FilterOverrides = Partial<{
-		fields: string;
+		senderQuery: string;
+		recipientsQuery: string;
+		subjectQuery: string;
+		bodyQuery: string;
+		fieldMatch: SearchFieldMatch;
 		ingestionSourceId: string;
 		hasAttachments: string;
 		attachmentExt: string;
 		tags: string;
-		matchingStrategy: string;
 	}>;
 
 	function buildArchiveUrl(pageNumber = 1, overrides: FilterOverrides = {}): string {
 		const params = new URLSearchParams();
-		setParam(params, 'q', q);
-		setParam(params, 'fields', overrides.fields ?? fields, 'all');
-		setParam(
-			params,
-			'ingestionSourceId',
-			overrides.ingestionSourceId ?? ingestionSourceId,
-			'all'
-		);
-		setParam(params, 'hasAttachments', overrides.hasAttachments ?? hasAttachments, 'any');
-		setParam(params, 'attachmentExt', overrides.attachmentExt ?? attachmentExt);
-		setParam(params, 'tags', overrides.tags ?? tags);
+		if (showAdvanced) {
+			setParam(params, 'senderQuery', overrides.senderQuery ?? senderQuery);
+			setParam(params, 'recipientsQuery', overrides.recipientsQuery ?? recipientsQuery);
+			setParam(params, 'subjectQuery', overrides.subjectQuery ?? subjectQuery);
+			setParam(params, 'bodyQuery', overrides.bodyQuery ?? bodyQuery);
+			setParam(params, 'fieldMatch', overrides.fieldMatch ?? fieldMatch, 'all');
+			setParam(
+				params,
+				'ingestionSourceId',
+				overrides.ingestionSourceId ?? ingestionSourceId,
+				'all'
+			);
+			setParam(params, 'hasAttachments', overrides.hasAttachments ?? hasAttachments, 'any');
+			setParam(params, 'attachmentExt', overrides.attachmentExt ?? attachmentExt);
+			setParam(params, 'tags', overrides.tags ?? tags);
+		} else {
+			setParam(params, 'q', q);
+		}
 		setParam(params, 'sort', sort, 'sentAt');
 		setParam(params, 'direction', direction, 'desc');
 		setParam(params, 'limit', limit, '25');
-		setParam(
-			params,
-			'matchingStrategy',
-			overrides.matchingStrategy ?? matchingStrategy,
-			'last'
-		);
 		setParam(params, 'from', fromParam);
 		if (pageNumber > 1) {
 			params.set('page', String(pageNumber));
@@ -315,6 +326,10 @@
 		if (searchDebounce) clearTimeout(searchDebounce);
 		selectedIds = [];
 		goto(buildArchiveUrl(1, overrides), { keepFocus: true, replaceState: true });
+	}
+	function setAdvancedMode(enabled: boolean) {
+		showAdvanced = enabled;
+		applyNow();
 	}
 	// Keystrokes: FTS5 prefix search answers in ~10-30ms; a short debounce just
 	// avoids piling a navigation on every character.
@@ -504,144 +519,227 @@
 	</p>
 </div>
 
-<form onsubmit={handleApplyFilters} class="mb-4 space-y-3">
-	<!-- Search bar: query + the two search-refinement controls (field scope & match mode) -->
-	<div class="flex flex-wrap items-center gap-2">
-		<div class="relative min-w-[12rem] flex-1 sm:max-w-md">
-			<Search
-				class="text-muted-foreground pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"
-			/>
-			<Input
-				type="search"
-				name="q"
-				placeholder={$t('app.search.placeholder')}
-				bind:value={q}
-				oninput={applyDebounced}
-				class="pl-9"
-			/>
-		</div>
-		<Select.Root
-			type="single"
-			name="fields"
-			bind:value={fields}
-			onValueChange={(value) => applyNow({ fields: value })}
-		>
-			<Tooltip.Root>
-				<Tooltip.Trigger>
-					{#snippet child({ props })}
-						<Select.Trigger {...props} class="w-[10.5rem]">{fieldLabel}</Select.Trigger>
-					{/snippet}
-				</Tooltip.Trigger>
-				<Tooltip.Content>Search scope</Tooltip.Content>
-			</Tooltip.Root>
-			<Select.Content>
-				{#each fieldOptions as option (option.value)}
-					<Select.Item value={option.value} label={option.label}
-						>{option.label}</Select.Item
-					>
-				{/each}
-			</Select.Content>
-		</Select.Root>
-		<Select.Root
-			type="single"
-			name="matchingStrategy"
-			bind:value={matchingStrategy}
-			onValueChange={(value) => applyNow({ matchingStrategy: value })}
-		>
-			<Tooltip.Root>
-				<Tooltip.Trigger>
-					{#snippet child({ props })}
-						<Select.Trigger {...props} class="w-[8rem]">{matchingLabel}</Select.Trigger>
-					{/snippet}
-				</Tooltip.Trigger>
-				<Tooltip.Content>Match mode</Tooltip.Content>
-			</Tooltip.Root>
-			<Select.Content>
-				{#each matchingOptions as option (option.value)}
-					<Select.Item value={option.value} label={option.label}
-						>{option.label}</Select.Item
-					>
-				{/each}
-			</Select.Content>
-		</Select.Root>
-		<Button
-			type="button"
-			variant="outline"
-			class="gap-2"
-			aria-expanded={showFilters}
-			onclick={() => (showFilters = !showFilters)}
-		>
-			<Filter class="h-4 w-4" />
-			Filters
-			{#if advancedActiveCount > 0}
-				<span
-					class="bg-primary text-primary-foreground inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-semibold"
+<form onsubmit={handleApplyFilters} class="mb-5">
+	{#if !showAdvanced}
+		<div class="bg-card flex items-center gap-1 rounded-xl border p-1.5 shadow-sm">
+			<div class="relative min-w-0 flex-1">
+				<Search
+					class="text-muted-foreground pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2"
+				/>
+				<Input
+					type="search"
+					name="q"
+					aria-label="Search everything"
+					placeholder="Search everything in your archive"
+					bind:value={q}
+					oninput={applyDebounced}
+					class="h-10 border-0 bg-transparent pl-10 text-base font-normal shadow-none focus-visible:ring-0"
+				/>
+			</div>
+			{#if hasActiveFilters}
+				<Button
+					href="/mailbox{fromParam ? `?from=${encodeURIComponent(fromParam)}` : ''}"
+					variant="ghost"
+					size="sm"
+					class="gap-2"
 				>
-					{advancedActiveCount}
-				</span>
-			{/if}
-		</Button>
-		{#if hasActiveFilters}
-			<a href="/mailbox{fromParam ? `?from=${encodeURIComponent(fromParam)}` : ''}">
-				<Button type="button" variant="ghost" class="gap-2">
 					<X class="h-4 w-4" />
-					Clear
+					<span class="hidden sm:inline">Clear</span>
 				</Button>
-			</a>
-		{/if}
-	</div>
-
-	{#if showFilters}
-		<div class="flex flex-wrap items-end gap-4 rounded-md border p-3">
-			<label class="flex min-w-[12rem] flex-col gap-1 text-sm font-medium">
-				<span>Import Source</span>
-				<Select.Root
-					type="single"
-					name="ingestionSourceId"
-					bind:value={ingestionSourceId}
-					onValueChange={(value) => applyNow({ ingestionSourceId: value })}
+			{/if}
+			<Button
+				type="button"
+				variant="ghost"
+				class="gap-2"
+				onclick={() => setAdvancedMode(true)}
+			>
+				<SlidersHorizontal class="h-4 w-4" />
+				<span class="hidden sm:inline">Advanced</span>
+			</Button>
+		</div>
+	{:else}
+		<div class="bg-card rounded-xl border shadow-sm">
+			<div
+				class="flex min-h-13 items-center justify-between gap-3 border-b px-4 py-2.5 lg:px-5"
+			>
+				<div class="flex items-center gap-2.5">
+					<SlidersHorizontal class="text-muted-foreground h-5 w-5" />
+					<div>
+						<h2 class="text-sm font-semibold">Advanced search</h2>
+						<p class="text-muted-foreground text-xs">
+							Search specific parts of an email
+						</p>
+					</div>
+				</div>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					onclick={() => setAdvancedMode(false)}
 				>
-					<Select.Trigger class="w-full">{sourceLabel}</Select.Trigger>
-					<Select.Content>
-						{#each sourceOptions as option (option.value)}
-							<Select.Item value={option.value} label={option.label}
-								>{option.label}</Select.Item
+					<X class="h-4 w-4" />
+					<span class="sr-only">Close advanced search</span>
+				</Button>
+			</div>
+
+			<div class="grid gap-5 p-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(20rem,1fr)] lg:p-5">
+				<fieldset class="min-w-0">
+					<legend
+						class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase"
+					>
+						Email fields
+					</legend>
+					<div class="divide-y rounded-lg border">
+						<label class="grid min-h-11 grid-cols-[6.5rem_1fr] items-center px-3">
+							<span class="text-muted-foreground text-sm font-medium">Sender</span>
+							<Input
+								type="search"
+								name="senderQuery"
+								placeholder="Name or email address"
+								bind:value={senderQuery}
+								oninput={applyDebounced}
+								class="h-10 rounded-none border-0 bg-transparent px-0 font-normal shadow-none focus-visible:ring-0"
+							/>
+						</label>
+						<label class="grid min-h-11 grid-cols-[6.5rem_1fr] items-center px-3">
+							<span class="text-muted-foreground text-sm font-medium">Recipients</span
 							>
-						{/each}
-					</Select.Content>
-				</Select.Root>
-			</label>
+							<Input
+								type="search"
+								name="recipientsQuery"
+								placeholder="To, Cc, or Bcc"
+								bind:value={recipientsQuery}
+								oninput={applyDebounced}
+								class="h-10 rounded-none border-0 bg-transparent px-0 font-normal shadow-none focus-visible:ring-0"
+							/>
+						</label>
+						<label class="grid min-h-11 grid-cols-[6.5rem_1fr] items-center px-3">
+							<span class="text-muted-foreground text-sm font-medium">Subject</span>
+							<Input
+								type="search"
+								name="subjectQuery"
+								placeholder="Words in the subject line"
+								bind:value={subjectQuery}
+								oninput={applyDebounced}
+								class="h-10 rounded-none border-0 bg-transparent px-0 font-normal shadow-none focus-visible:ring-0"
+							/>
+						</label>
+						<label class="grid min-h-11 grid-cols-[6.5rem_1fr] items-center px-3">
+							<span class="text-muted-foreground text-sm font-medium">Body</span>
+							<Input
+								type="search"
+								name="bodyQuery"
+								placeholder="Words in the message"
+								bind:value={bodyQuery}
+								oninput={applyDebounced}
+								class="h-10 rounded-none border-0 bg-transparent px-0 font-normal shadow-none focus-visible:ring-0"
+							/>
+						</label>
+					</div>
+				</fieldset>
 
-			<label class="flex min-w-[12rem] flex-col gap-1 text-sm font-medium">
-				<span>Tags</span>
-				<SearchableSelect
-					name="tags"
-					bind:value={tags}
-					options={tagFilterOptions}
-					placeholder="Any tag"
-					onValueChange={(value) => applyNow({ tags: value })}
-				/>
-			</label>
+				<fieldset class="min-w-0">
+					<legend
+						class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase"
+					>
+						Refine results
+					</legend>
+					<div class="grid gap-3 sm:grid-cols-2">
+						<label class="flex min-w-0 flex-col gap-1.5 text-sm font-medium">
+							<span>Source</span>
+							<Select.Root
+								type="single"
+								name="ingestionSourceId"
+								bind:value={ingestionSourceId}
+								onValueChange={(value) => applyNow({ ingestionSourceId: value })}
+							>
+								<Select.Trigger class="w-full">{sourceLabel}</Select.Trigger>
+								<Select.Content>
+									{#each sourceOptions as option (option.value)}
+										<Select.Item value={option.value} label={option.label}
+											>{option.label}</Select.Item
+										>
+									{/each}
+								</Select.Content>
+							</Select.Root>
+						</label>
 
-			<label class="flex min-w-[12rem] flex-col gap-1 text-sm font-medium">
-				<span>Attachment types</span>
-				<AttachmentTypeFilter
-					bind:value={attachmentExt}
-					onValueChange={(value) => applyNow({ attachmentExt: value })}
-				/>
-			</label>
+						<label class="flex min-w-0 flex-col gap-1.5 text-sm font-medium">
+							<span>Tags</span>
+							<SearchableSelect
+								name="tags"
+								bind:value={tags}
+								options={tagFilterOptions}
+								placeholder="Any tag"
+								onValueChange={(value) => applyNow({ tags: value })}
+							/>
+						</label>
 
-			<div class="flex h-9 items-center gap-2">
-				<Checkbox
-					id="hasAttachments"
-					checked={hasAttachments === 'true'}
-					onCheckedChange={(checked) => {
-						hasAttachments = checked ? 'true' : 'any';
-						applyNow();
-					}}
-				/>
-				<label for="hasAttachments" class="text-sm font-medium">Only with attachments</label
-				>
+						<label class="flex min-w-0 flex-col gap-1.5 text-sm font-medium">
+							<span>Attachment type</span>
+							<AttachmentTypeFilter
+								bind:value={attachmentExt}
+								onValueChange={(value) => applyNow({ attachmentExt: value })}
+							/>
+						</label>
+
+						<div class="flex min-h-16 flex-col justify-end gap-2 pb-1">
+							<div class="flex items-center gap-2">
+								<Checkbox
+									id="hasAttachments"
+									checked={hasAttachments === 'true'}
+									onCheckedChange={(checked) => {
+										const value = checked === true ? 'true' : 'any';
+										hasAttachments = value;
+										applyNow({ hasAttachments: value });
+									}}
+								/>
+								<label for="hasAttachments" class="text-sm font-medium"
+									>Has attachments</label
+								>
+							</div>
+						</div>
+					</div>
+				</fieldset>
+			</div>
+
+			<div
+				class="bg-muted/30 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border-t px-4 py-3 lg:px-5"
+			>
+				<div class="flex items-center gap-2">
+					<span class="text-muted-foreground text-sm">Match</span>
+					<span class="text-sm font-medium">all fields</span>
+					<Switch
+						id="fieldMatch"
+						aria-label="Match any field instead of all fields"
+						checked={fieldMatch === 'any'}
+						onCheckedChange={(checked) => {
+							const value: SearchFieldMatch = checked ? 'any' : 'all';
+							fieldMatch = value;
+							applyNow({ fieldMatch: value });
+						}}
+					/>
+					<label for="fieldMatch" class="text-sm font-medium">any field</label>
+				</div>
+
+				<div class="flex items-center gap-2">
+					{#if hasActiveFilters}
+						<Button
+							href="/mailbox{fromParam
+								? `?from=${encodeURIComponent(fromParam)}`
+								: ''}"
+							variant="ghost"
+							class="gap-2"
+						>
+							<X class="h-4 w-4" />
+							Clear
+						</Button>
+					{/if}
+					<Button type="submit" class="gap-2">
+						<Search class="h-4 w-4" />
+						Search
+					</Button>
+				</div>
 			</div>
 		</div>
 	{/if}
@@ -768,10 +866,12 @@
 						<Table.Cell class="whitespace-nowrap">
 							{@const dateInfo = describeDate(email.timestamp, email.timestampKind)}
 							{#if dateInfo.label === 'Received'}<span class="text-muted-foreground"
-									>Received </span
-								>{/if}{dateInfo.text}{#if dateInfo.qualifier}<span
+									>Received
+								</span>{/if}{dateInfo.text}{#if dateInfo.qualifier}<span
 									class="text-muted-foreground"
-									title={dateInfo.qualifier}> (tz?)</span
+									title={dateInfo.qualifier}
+								>
+									(tz?)</span
 								>{/if}
 						</Table.Cell>
 
@@ -783,7 +883,7 @@
 										aria-label="Has attachments"
 									/>
 								{/if}
-								<a class="link truncate" href={`/mailbox/${email.id}`}>
+								<a class="truncate font-medium" href={`/mailbox/${email.id}`}>
 									{email.subject || '(no subject)'}
 								</a>
 							</div>

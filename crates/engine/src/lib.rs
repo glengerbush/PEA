@@ -99,8 +99,10 @@ pub fn state_for_dir(data_dir: &Path, read_only: bool) -> Result<AppState, Strin
     Ok(AppState {
         pool,
         data_dir: data_dir.to_path_buf(),
+        duplicate_cache: std::sync::Arc::new(std::sync::Mutex::new(
+            duplicates::DuplicateCache::default(),
+        )),
         queue_nudge: std::sync::Arc::new(tokio::sync::Notify::new()),
         frontend_dir: std::env::var("FRONTEND_BUILD_DIR").ok().map(std::path::PathBuf::from),
     })
 }
-

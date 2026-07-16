@@ -56,18 +56,12 @@ export interface UpdateArchivedEmailTagsResult {
 	emails: UpdatedArchivedEmailTags[];
 }
 
-export type ExactDuplicateReason =
-	| 'message_id'
-	| 'storage_hash'
-	| 'attachment_hash_set'
-	| 'sender_recipients_sent'
-	| 'message_body';
+export type DuplicateClassification = 'exact' | 'likely';
 
-/** Group counts per reason (plus `all`), independent of the active filter, so
- *  each filter pill can show its own count. */
-export type ExactDuplicateReasonCounts = Record<ExactDuplicateReason | 'all', number>;
+/** Counts for the two user-facing confidence levels and their combined total. */
+export type DuplicateClassificationCounts = Record<DuplicateClassification | 'all', number>;
 
-export interface ExactDuplicateEmail {
+export interface DuplicateEmail {
 	id: string;
 	subject: string | null;
 	senderName: string | null;
@@ -81,47 +75,38 @@ export interface ExactDuplicateEmail {
 	storageHashSha256: string;
 }
 
-export interface ExactDuplicateGroup {
+export interface DuplicateGroup {
 	groupKey: string;
-	/** Primary (highest-priority) reason this cluster was detected. */
-	reason: ExactDuplicateReason;
-	/** All reasons that link this cluster (a cluster can match several). */
-	reasons: ExactDuplicateReason[];
+	classification: DuplicateClassification;
 	fingerprint: string;
 	count: number;
 	keeperEmailId: string;
-	emails: ExactDuplicateEmail[];
+	emails: DuplicateEmail[];
 }
 
-export interface ExactDuplicateGroupsResult {
-	groups: ExactDuplicateGroup[];
-	/** Group count for the active reason filter. */
+export interface DuplicateGroupsResult {
+	groups: DuplicateGroup[];
+	/** Group count for the active classification filter. */
 	totalGroups: number;
-	/** Per-reason group counts (and `all`), for the filter pills. */
-	reasonCounts: ExactDuplicateReasonCounts;
+	classificationCounts: DuplicateClassificationCounts;
 	page: number;
 	limit: number;
 }
 
-export interface ApproveExactDuplicateGroupDto {
+export interface ApproveDuplicateGroupDto {
 	groupKey: string;
 	keeperEmailId: string;
 	duplicateEmailIds: string[];
 }
 
-export interface ApproveAllExactDuplicatesDto {
-	/** Restrict to clusters matching this reason; omit to approve every cluster. */
-	reason?: ExactDuplicateReason;
-}
-
-export interface ApproveExactDuplicatesResult {
+export interface ApproveDuplicatesResult {
 	approvedGroups: number;
-	/** Duplicate copies permanently deleted (the keeper of each group is preserved). */
+	/** Duplicate copies moved to Trash (the keeper of each group is preserved). */
 	deletedEmails: number;
 	keeperEmails: number;
 }
 
-export interface IgnoreExactDuplicateGroupsResult {
+export interface IgnoreDuplicateGroupsResult {
 	ignoredGroups: number;
 }
 

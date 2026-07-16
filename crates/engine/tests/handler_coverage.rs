@@ -44,8 +44,8 @@ async fn preview_sanitizes_and_inlines_cid() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exact_duplicates_list_and_approve() {
     let a = TempArchive::new();
-    // Same Message-ID imported as two separate sources → both archived, and
-    // flagged as exact duplicates (message_id reason).
+    // Same complete email imported as two separate sources → both archived and
+    // classified Exact.
     let email = mbox_msg("<dup@x>", "Alice <a@x.com>", "b@x.com", "Dup", &[], "the body");
     a.import_mbox_str(&email);
     a.import_mbox_str(&email);
@@ -57,6 +57,7 @@ async fn exact_duplicates_list_and_approve() {
     assert_eq!(s, StatusCode::OK);
     assert!(groups["totalGroups"].as_i64().unwrap() >= 1, "an exact-duplicate group is found");
     let group = &groups["groups"][0];
+    assert_eq!(group["classification"], json!("exact"));
     let keeper = group["keeperEmailId"].as_str().unwrap().to_string();
     let dups: Vec<String> = group["emails"].as_array().unwrap().iter()
         .map(|e| e["id"].as_str().unwrap().to_string())
@@ -75,9 +76,8 @@ async fn exact_duplicates_list_and_approve() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn body_only_match_is_not_an_exact_group() {
     let a = TempArchive::new();
-    // Same body but different Message-ID and different recipients: message body is
-    // a weak signal (deduped-attachment-style false positives), so it must never
-    // form a group on its own — no strong signal is shared here.
+    // Same body but different Message-ID and recipients must not form even a
+    // Likely group. This is the forwarded-to-someone-else safeguard.
     a.import_mbox_str(&format!(
         "{}{}",
         mbox_msg("<fz1@x>", "Alice <alice@x.com>", "b@x.com", "Weekly Meeting", &[], "identical agenda body"),
@@ -88,7 +88,137 @@ async fn body_only_match_is_not_an_exact_group() {
     let (s, groups) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(groups["totalGroups"].as_i64().unwrap(), 0, "body alone must not group");
-    assert_eq!(groups["reasonCounts"]["message_body"].as_i64().unwrap(), 0);
+    assert_eq!(groups["classificationCounts"]["likely"].as_i64().unwrap(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn likely_requires_the_same_semantic_message() {
+    let a = TempArchive::new();
+    // Everything semantic is identical, but provider Message-IDs differ. This
+    // is the narrow, review-only Likely case.
+    a.import_mbox_str(&format!(
+        "{}{}",
+        mbox_msg("<likely-1@x>", "Alice <alice@x.com>", "bob@x.com", "Receipt", &[], "same receipt body"),
+        mbox_msg("<likely-2@x>", "Alice <alice@x.com>", "bob@x.com", "Receipt", &[], "same receipt body"),
+    ));
+    let app = a.router();
+
+    let (s, groups) = get_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact?classification=likely",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(groups["totalGroups"], json!(1));
+    assert_eq!(groups["groups"][0]["classification"], json!("likely"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attachment_filename_difference_requires_review() {
+    let a = TempArchive::new();
+    // The attachment bytes are identical, but its filename is not. Import via
+    // separate sources so storage deduplication does not collapse the metadata.
+    a.import_mbox_str(&mbox_with_attachment(
+        "<attachment-name-1@x>",
+        "Report",
+        "same body",
+        "report.txt",
+        "text/plain",
+        "same attachment",
+    ));
+    a.import_mbox_str(&mbox_with_attachment(
+        "<attachment-name-2@x>",
+        "Report",
+        "same body",
+        "renamed.txt",
+        "text/plain",
+        "same attachment",
+    ));
+    let app = a.router();
+
+    let (_, exact) = get_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact?classification=exact",
+    )
+    .await;
+    assert_eq!(exact["totalGroups"], json!(0));
+    let (_, likely) = get_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact?classification=likely",
+    )
+    .await;
+    assert_eq!(likely["totalGroups"], json!(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn likely_rejects_reply_chains_and_forwards() {
+    let a = TempArchive::new();
+    // Same sender, recipients, subject and even exact timestamp, but a reply
+    // adds one line. Body equality is mandatory, so rapid replies cannot match.
+    let rapid_replies = format!(
+        "{}{}",
+        mbox_msg("<reply-1@x>", "Alice <alice@x.com>", "bob@x.com", "Re: Project", &[], "Original line"),
+        mbox_msg("<reply-2@x>", "Alice <alice@x.com>", "bob@x.com", "Re: Project", &[], "Original line\nOne new line"),
+    );
+    // Same content sent to another person. Recipient equality is mandatory, so
+    // a forwarded/re-addressed copy cannot match.
+    let forwards = format!(
+        "{}{}",
+        mbox_msg("<forward-1@x>", "Alice <alice@x.com>", "bob@x.com", "FYI", &[], "shared content"),
+        mbox_msg("<forward-2@x>", "Alice <alice@x.com>", "carol@x.com", "FYI", &[], "shared content"),
+    );
+    // A normal back-and-forth changes sender/recipient direction and body.
+    let conversation = format!(
+        "{}{}",
+        mbox_msg("<turn-1@x>", "Alice <alice@x.com>", "bob@x.com", "Status", &[], "Ready?"),
+        mbox_msg("<turn-2@x>", "Bob <bob@x.com>", "alice@x.com", "Status", &[], "Ready?\nYes."),
+    );
+    a.import_mbox_str(&format!("{rapid_replies}{forwards}{conversation}"));
+    let app = a.router();
+
+    let (_, groups) = get_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact?classification=likely",
+    )
+    .await;
+    assert_eq!(groups["totalGroups"], json!(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bulk_delete_never_touches_likely_groups() {
+    let a = TempArchive::new();
+    let exact = mbox_msg(
+        "<bulk-exact@x>",
+        "Alice <alice@x.com>",
+        "bob@x.com",
+        "Exact",
+        &[],
+        "exact body",
+    );
+    a.import_mbox_str(&exact);
+    a.import_mbox_str(&exact);
+    a.import_mbox_str(&format!(
+        "{}{}",
+        mbox_msg("<bulk-likely-1@x>", "Alice <alice@x.com>", "bob@x.com", "Likely", &[], "likely body"),
+        mbox_msg("<bulk-likely-2@x>", "Alice <alice@x.com>", "bob@x.com", "Likely", &[], "likely body"),
+    ));
+    let app = a.router();
+
+    let (status, result) = post_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact/approve-all",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["deletedEmails"], json!(1), "only the Exact copy is trashed");
+
+    let (_, likely) = get_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact?classification=likely",
+    )
+    .await;
+    assert_eq!(likely["totalGroups"], json!(1), "Likely group remains for review");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

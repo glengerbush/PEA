@@ -32,6 +32,10 @@ pub type DbPool = r2d2::Pool<SqliteConnectionManager>;
 pub struct AppState {
     pub pool: DbPool,
     pub data_dir: PathBuf,
+    /// Cached duplicate classifications. A cheap database revision check in
+    /// the duplicates reader invalidates it after imports, deletes, restores,
+    /// permanent deletion, or ignore decisions.
+    pub duplicate_cache: Arc<std::sync::Mutex<crate::duplicates::DuplicateCache>>,
     /// Wakes the queue loop when a job is enqueued locally.
     pub queue_nudge: Arc<tokio::sync::Notify>,
     /// When set, the router serves this SPA build for non-API paths

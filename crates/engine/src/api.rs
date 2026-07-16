@@ -236,11 +236,12 @@ async fn duplicates_exact(
     Query(params): Query<HashMap<String, String>>,
 ) -> Json<Value> {
     let conn = app.pool.get().unwrap();
-    Json(duplicates::list_exact_groups(
+    Json(duplicates::list_duplicate_groups(
         &conn,
+        &app.duplicate_cache,
         params.get("page").map(String::as_str),
         params.get("limit").map(String::as_str),
-        params.get("reason").map(String::as_str),
+        params.get("classification").map(String::as_str),
     ))
 }
 
@@ -383,4 +384,3 @@ async fn static_files(
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
-

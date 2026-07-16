@@ -12,7 +12,10 @@
 	import { formatDateTime } from '$lib/stores/datetime.svelte';
 	import { disableTwoFingerSwipe } from '$lib/stores/swipe.store';
 	import { get } from 'svelte/store';
+	import { onDestroy } from 'svelte';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
+	import SwipeBackIndicator from '$lib/components/custom/SwipeBackIndicator.svelte';
+	import { SwipeBackGesture } from '$lib/stores/swipe-back.svelte';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
@@ -97,32 +100,11 @@
 		goto('/dashboard');
 	}
 
-	// --- Two-finger (horizontal) swipe returns to the dashboard ---
-	let swipeAccum = 0;
-	let swipeResetTimer: ReturnType<typeof setTimeout> | null = null;
-	let swipeCooldownUntil = 0;
-	/** 0→1 progress toward the swipe threshold, drives the on-screen affordance. */
-	let swipeProgress = $state(0);
-	function handleWheel(event: WheelEvent) {
-		if (get(disableTwoFingerSwipe)) return;
-		// Only count clearly-horizontal movement so vertical scrolling never triggers.
-		if (Math.abs(event.deltaX) <= Math.abs(event.deltaY) * 1.5) return;
-		const now = Date.now();
-		if (now < swipeCooldownUntil) return;
-		swipeAccum += event.deltaX;
-		swipeProgress = Math.min(1, Math.abs(swipeAccum) / 300);
-		if (swipeResetTimer) clearTimeout(swipeResetTimer);
-		swipeResetTimer = setTimeout(() => {
-			swipeAccum = 0;
-			swipeProgress = 0;
-		}, 400);
-		if (Math.abs(swipeAccum) >= 300) {
-			swipeAccum = 0;
-			swipeProgress = 0;
-			swipeCooldownUntil = now + 1000;
-			goBack();
-		}
-	}
+	const swipe = new SwipeBackGesture({
+		onComplete: goBack,
+		isDisabled: () => get(disableTwoFingerSwipe),
+	});
+	onDestroy(() => swipe.destroy());
 </script>
 
 {#snippet sortHeader(field: string, label: string)}
@@ -148,24 +130,8 @@
 	<title>Remote content issues - PEA</title>
 </svelte:head>
 
-<svelte:window onwheel={handleWheel} />
-
-<!-- Two-finger swipe affordance: a back indicator that slides in as the gesture
-     approaches the threshold, then completes into the navigation. -->
-{#if swipeProgress > 0}
-	<div
-		class="pointer-events-none fixed left-2 top-1/2 z-50"
-		style="opacity:{swipeProgress}; transform: translate({-44 + swipeProgress * 44}px, -50%);"
-		aria-hidden="true"
-	>
-		<div
-			class="bg-primary/90 text-primary-foreground flex h-12 w-12 items-center justify-center rounded-full shadow-lg backdrop-blur"
-			style="transform: scale({0.7 + swipeProgress * 0.3});"
-		>
-			<ArrowLeft class="h-6 w-6" />
-		</div>
-	</div>
-{/if}
+<svelte:window onwheel={swipe.handleWheel} />
+<SwipeBackIndicator progress={swipe.progress} />
 
 <div class="space-y-4">
 	<div>
@@ -226,7 +192,7 @@
 							<Table.Cell class="max-w-md">
 								{#if issue.assets.length > 0}
 									<ul class="space-y-0.5">
-										{#each issue.assets.slice(0, 3) as asset}
+										{#each issue.assets.slice(0, 3) as asset (asset.url)}
 											<li class="text-xs">
 												<span class="text-destructive">{asset.status}:</span
 												>

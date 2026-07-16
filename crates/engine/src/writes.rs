@@ -294,29 +294,15 @@ pub async fn approve_exact_duplicates(State(app): State<AppState>, Json(dto): Js
     .into_response()
 }
 
-/// POST /archived-emails/duplicates/exact/approve-all — body {"reason"?: string}.
-/// Deletes the duplicates of EVERY non-ignored cluster matching the reason
-/// filter (all clusters when no reason is given), across all pages. Each
-/// cluster keeps its default keeper — the oldest copy, exactly what the
-/// listing shows — since per-group keeper overrides only exist client-side on
-/// the visible page.
+/// POST /archived-emails/duplicates/exact/approve-all.
+/// Deletes every non-ignored Exact group across all pages. Likely groups are
+/// intentionally excluded from this bulk path and require individual review.
+/// Each group keeps its default keeper (the oldest copy), since per-group
+/// keeper overrides only exist client-side on the visible page.
 pub async fn approve_all_exact_duplicates(
     State(app): State<AppState>,
-    Json(dto): Json<Value>,
+    Json(_dto): Json<Value>,
 ) -> Response {
-    let reason = dto
-        .get("reason")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|r| !r.is_empty());
-    // A destructive endpoint must not quietly widen its scope: an unknown
-    // reason is a 400, not a fallback to "delete everything".
-    if let Some(r) = reason {
-        if !duplicates::ALLOWED_REASONS.contains(&r) {
-            return message_response(StatusCode::BAD_REQUEST, "Unknown reason");
-        }
-    }
-
     let conn = app.pool.get().unwrap();
     // One transaction: clustering and deletion see a single snapshot, and the
     // whole approval is atomic.
@@ -329,9 +315,6 @@ pub async fn approve_all_exact_duplicates(
     let mut approved_groups = 0usize;
     let mut deleted_emails = 0usize;
     for cluster in duplicates::collect_exact_clusters(&tx) {
-        if reason.map_or(false, |r| !cluster.reasons.contains(&r)) {
-            continue;
-        }
         let keeper = &cluster.default_keeper_id;
         if keeper.is_empty() {
             continue;
@@ -509,4 +492,3 @@ pub async fn update_settings(State(app): State<AppState>, Json(dto): Json<Value>
     }
     Json(merged).into_response()
 }
-

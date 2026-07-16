@@ -6,6 +6,8 @@
 	import FileText from '@lucide/svelte/icons/file-text';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { formatBytes } from '$lib/utils';
+	import { forwardIframeWheel } from '$lib/actions/forward-iframe-wheel';
+	import type { SwipeWheelInput } from '$lib/stores/swipe-back.svelte';
 
 	let {
 		title,
@@ -14,6 +16,7 @@
 		canPreview = true,
 		fetchBlob,
 		onQuickLook = undefined,
+		onWheel = undefined,
 		description = null,
 		createdAt = null,
 		modifiedAt = null,
@@ -27,6 +30,8 @@
 		fetchBlob: () => Promise<Blob>;
 		/** When set, shows a button that opens the file in the OS quick-look previewer. */
 		onQuickLook?: (() => void) | undefined;
+		/** Forwards trackpad gestures out of iframe-based previews. */
+		onWheel?: ((event: SwipeWheelInput) => void) | undefined;
 		/** Sender-supplied Content-Description, shown in the expanded panel. */
 		description?: string | null;
 		/** RFC 2183 file timestamps (as sent), shown in the expanded panel. */
@@ -195,7 +200,12 @@
 		{:else if kind === 'image' && objectUrl}
 			<img src={objectUrl} alt={title} class="max-h-96 w-auto rounded" />
 		{:else if kind === 'pdf' && objectUrl}
-			<iframe src={objectUrl} {title} class="h-96 w-full rounded border"></iframe>
+			<iframe
+				use:forwardIframeWheel={onWheel}
+				src={objectUrl}
+				{title}
+				class="h-96 w-full rounded border"
+			></iframe>
 		{:else if kind === 'text' && textContent != null}
 			<pre
 				class="max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs">{textContent}</pre>

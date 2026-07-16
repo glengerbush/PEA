@@ -65,7 +65,7 @@
 	let open = $state(false);
 	let searchValue = $state('');
 	let selected = $state<string[]>(parse(value));
-	/** The single highlighted row, shared by mouse hover AND arrow keys. */
+	/** The keyboard-highlighted row. Pointer hover is CSS-only and never scrolls. */
 	let activeIndex = $state(-1);
 	let containerEl = $state<HTMLDivElement | null>(null);
 	let listEl = $state<HTMLDivElement | null>(null);
@@ -98,8 +98,7 @@
 		})).filter((cat) => cat.exts.length > 0)
 	);
 
-	// Flatten categories + their items into ONE list of navigable rows, so the
-	// mouse and the keyboard share a single highlighted index.
+	// Flatten categories + their items into one keyboard-navigable list.
 	type Row = { type: 'category'; label: string; exts: string[] } | { type: 'item'; ext: string };
 	const rows = $derived.by<Row[]>(() => {
 		const out: Row[] = [];
@@ -277,11 +276,10 @@
 							tabindex={-1}
 							role="option"
 							aria-selected="false"
-							class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-xs font-semibold {activeIndex ===
+							class="hover:bg-accent hover:text-accent-foreground flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-xs font-semibold {activeIndex ===
 							i
 								? 'bg-accent text-accent-foreground'
 								: 'text-muted-foreground'}"
-							onpointerenter={() => (activeIndex = i)}
 							onmousedown={(e) => e.preventDefault()}
 							onclick={() => toggleRow(row)}
 						>
@@ -298,11 +296,10 @@
 							tabindex={-1}
 							role="option"
 							aria-selected={selectedSet.has(row.ext)}
-							class="relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-left text-sm outline-none {activeIndex ===
+							class="hover:bg-accent hover:text-accent-foreground relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-left text-sm outline-none {activeIndex ===
 							i
 								? 'bg-accent text-accent-foreground'
 								: ''}"
-							onpointerenter={() => (activeIndex = i)}
 							onmousedown={(e) => e.preventDefault()}
 							onclick={() => toggleRow(row)}
 						>

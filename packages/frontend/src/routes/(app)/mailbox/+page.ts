@@ -10,6 +10,8 @@ import type {
 	SortDirection,
 } from '@pea/types';
 
+type SearchFieldMatch = 'all' | 'any';
+
 const SORT_FIELDS = new Set<ArchiveSortField>([
 	'sentAt',
 	'archivedAt',
@@ -55,6 +57,10 @@ function getMatchingStrategy(value: string | null): MatchingStrategy {
 		: 'last';
 }
 
+function getFieldMatch(value: string | null): SearchFieldMatch {
+	return value === 'any' ? 'any' : 'all';
+}
+
 function getFields(value: string | null): ArchiveSearchField[] {
 	if (!value || value === 'all') return [];
 	return value
@@ -69,6 +75,11 @@ export const load: PageLoad = async (event) => {
 	const { url } = event;
 	const q = url.searchParams.get('q') || '';
 	const fields = getFields(url.searchParams.get('fields'));
+	const senderQuery = url.searchParams.get('senderQuery') || '';
+	const recipientsQuery = url.searchParams.get('recipientsQuery') || '';
+	const subjectQuery = url.searchParams.get('subjectQuery') || '';
+	const bodyQuery = url.searchParams.get('bodyQuery') || '';
+	const fieldMatch = getFieldMatch(url.searchParams.get('fieldMatch'));
 	const ingestionSourceId = url.searchParams.get('ingestionSourceId') || 'all';
 	const hasAttachments = url.searchParams.get('hasAttachments') || 'any';
 	const attachmentExt = url.searchParams.get('attachmentExt') || '';
@@ -112,6 +123,11 @@ export const load: PageLoad = async (event) => {
 
 	if (q) archiveParams.set('q', q);
 	if (fields.length > 0) archiveParams.set('fields', fields.join(','));
+	if (senderQuery) archiveParams.set('senderQuery', senderQuery);
+	if (recipientsQuery) archiveParams.set('recipientsQuery', recipientsQuery);
+	if (subjectQuery) archiveParams.set('subjectQuery', subjectQuery);
+	if (bodyQuery) archiveParams.set('bodyQuery', bodyQuery);
+	if (fieldMatch === 'any') archiveParams.set('fieldMatch', fieldMatch);
 	if (ingestionSourceId !== 'all') archiveParams.set('ingestionSourceId', ingestionSourceId);
 	if (hasAttachments === 'true' || hasAttachments === 'false') {
 		archiveParams.set('hasAttachments', hasAttachments);
@@ -144,6 +160,11 @@ export const load: PageLoad = async (event) => {
 		filters: {
 			q,
 			fields: fields.join(',') || 'all',
+			senderQuery,
+			recipientsQuery,
+			subjectQuery,
+			bodyQuery,
+			fieldMatch,
 			ingestionSourceId,
 			hasAttachments,
 			attachmentExt,

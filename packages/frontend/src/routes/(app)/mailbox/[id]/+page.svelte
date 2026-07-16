@@ -7,6 +7,7 @@
 	import TagCombobox from '$lib/components/custom/TagCombobox.svelte';
 	import { contactName } from '$lib/stores/contacts.svelte';
 	import AttachmentPreview from '$lib/components/custom/AttachmentPreview.svelte';
+	import SwipeBackIndicator from '$lib/components/custom/SwipeBackIndicator.svelte';
 	import EmailThread from '$lib/components/custom/EmailThread.svelte';
 	import { formatDateTime, formatDate, describeDate } from '$lib/stores/datetime.svelte';
 	import { api } from '$lib/api.client';
@@ -35,7 +36,9 @@
 	import { get } from 'svelte/store';
 	import { lastMailboxListUrl } from '$lib/stores/mailbox-nav';
 	import { disableTwoFingerSwipe } from '$lib/stores/swipe.store';
+	import { SwipeBackGesture } from '$lib/stores/swipe-back.svelte';
 	import { page } from '$app/state';
+	import { onDestroy } from 'svelte';
 	import { enhance } from '$app/forms';
 	import type {
 		RemoteContentAssetSummary,
@@ -76,6 +79,12 @@
 	function goBack() {
 		goto(backTarget());
 	}
+
+	const swipe = new SwipeBackGesture({
+		onComplete: goBack,
+		isDisabled: () => get(disableTwoFingerSwipe),
+	});
+	onDestroy(() => swipe.destroy());
 
 	/** "Name <email>" when a name (contact or header) is known, else the bare address. */
 	function identityLabel(addr: string | null | undefined, fallback?: string | null): string {
@@ -586,33 +595,6 @@
 		}
 	}
 
-	// --- Two-finger (horizontal) swipe returns to the previous screen ---
-	let swipeAccum = 0;
-	let swipeResetTimer: ReturnType<typeof setTimeout> | null = null;
-	let swipeCooldownUntil = 0;
-	/** 0→1 progress toward the swipe threshold, drives the on-screen affordance. */
-	let swipeProgress = $state(0);
-	function handleWheel(event: WheelEvent) {
-		if (get(disableTwoFingerSwipe)) return;
-		// Only count clearly-horizontal movement so vertical scrolling never triggers.
-		if (Math.abs(event.deltaX) <= Math.abs(event.deltaY) * 1.5) return;
-		const now = Date.now();
-		if (now < swipeCooldownUntil) return;
-		swipeAccum += event.deltaX;
-		swipeProgress = Math.min(1, Math.abs(swipeAccum) / 300);
-		if (swipeResetTimer) clearTimeout(swipeResetTimer);
-		swipeResetTimer = setTimeout(() => {
-			swipeAccum = 0;
-			swipeProgress = 0;
-		}, 400);
-		if (Math.abs(swipeAccum) >= 300) {
-			swipeAccum = 0;
-			swipeProgress = 0;
-			swipeCooldownUntil = now + 1000;
-			goBack();
-		}
-	}
-
 	async function confirmDelete() {
 		if (!email) return;
 		try {
@@ -780,24 +762,8 @@
 	<title>{email?.subject} | {$t('app.archive.title')} - PEA</title>
 </svelte:head>
 
-<svelte:window onwheel={handleWheel} />
-
-<!-- Two-finger swipe affordance: a back indicator that slides in and fills as
-     the gesture approaches the threshold, then completes into the navigation. -->
-{#if swipeProgress > 0}
-	<div
-		class="pointer-events-none fixed top-1/2 left-2 z-50"
-		style="opacity:{swipeProgress}; transform: translate({-44 + swipeProgress * 44}px, -50%);"
-		aria-hidden="true"
-	>
-		<div
-			class="bg-primary/90 text-primary-foreground flex h-12 w-12 items-center justify-center rounded-full shadow-lg backdrop-blur"
-			style="transform: scale({0.7 + swipeProgress * 0.3});"
-		>
-			<ArrowLeft class="h-6 w-6" />
-		</div>
-	</div>
-{/if}
+<svelte:window onwheel={swipe.handleWheel} />
+<SwipeBackIndicator progress={swipe.progress} />
 
 {#if email}
 	<div class="mb-4">
@@ -843,8 +809,11 @@
 							{/if}
 							{#if sentDate}
 								<p class="text-muted-foreground text-xs">
-									{#if sentDate.label}{sentDate.label}: {/if}{sentDate.text}{#if sentDate.qualifier}<span
-											class="italic"> ({sentDate.qualifier})</span
+									{#if sentDate.label}{sentDate.label}:
+									{/if}{sentDate.text}{#if sentDate.qualifier}<span
+											class="italic"
+										>
+											({sentDate.qualifier})</span
 										>{/if}
 								</p>
 							{/if}
@@ -883,15 +852,6 @@
 									>
 								</Tooltip.Root>
 							</div>
-							<Button
-								variant="outline"
-								size="sm"
-								class="justify-start gap-2 text-xs"
-								onclick={showHeaders}
-							>
-								<ScrollText class="h-3.5 w-3.5" />
-								{$t('app.archive.view_headers')}
-							</Button>
 							<Button
 								variant="outline"
 								size="sm"
@@ -935,7 +895,11 @@
 							/>
 						</div>
 						<div>
-							<EmailPreview emailId={email.id} refreshKey={remoteContentRefreshKey} />
+							<EmailPreview
+								emailId={email.id}
+								refreshKey={remoteContentRefreshKey}
+								onWheel={swipe.handleWheel}
+							/>
 						</div>
 					</div>
 				</Card.Content>
@@ -970,6 +934,15 @@
 				</button>
 				{#if metadataOpen}
 					<Card.Content class="pb-4 pt-0">
+						<Button
+							variant="outline"
+							size="sm"
+							class="mb-4 w-full justify-start gap-2 text-xs"
+							onclick={showHeaders}
+						>
+							<ScrollText class="h-3.5 w-3.5" />
+							{$t('app.archive.view_headers')}
+						</Button>
 						<dl class="space-y-2 text-xs">
 							{@render metaRow(
 								'Size',
@@ -1068,6 +1041,7 @@
 								modifiedAt={attachment.originalModifiedAt}
 								fetchBlob={() => fetchAttachmentBlob(attachment.storagePath)}
 								onQuickLook={() => quickLook(attachment.storagePath)}
+								onWheel={swipe.handleWheel}
 							/>
 						{/each}
 					</Card.Content>
@@ -1091,6 +1065,7 @@
 											type: attachment.mimeType || 'application/octet-stream',
 										})
 									)}
+								onWheel={swipe.handleWheel}
 							/>
 						{/each}
 					</Card.Content>
@@ -1140,6 +1115,7 @@
 								mimeType={asset.contentType}
 								canPreview={asset.previewable}
 								fetchBlob={() => fetchRemoteAssetBlob(asset.id)}
+								onWheel={swipe.handleWheel}
 							/>
 						{/each}
 

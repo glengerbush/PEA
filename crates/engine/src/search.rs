@@ -3,7 +3,14 @@
 use rusqlite::{types::Value as SqlValue, Connection};
 use serde_json::{json, Map, Value};
 
-const ALL_COLUMNS: [&str; 6] = ["subject", "body", "sender", "recipients", "attachments", "meta"];
+const ALL_COLUMNS: [&str; 6] = [
+    "subject",
+    "body",
+    "sender",
+    "recipients",
+    "attachments",
+    "meta",
+];
 // bm25 weights per FTS column order: (email_id, subject, body, sender, recipients, attachments, meta)
 const BM25_WEIGHTS: &str = "0.0, 10.0, 2.0, 6.0, 3.0, 1.0, 2.0";
 
@@ -98,10 +105,7 @@ fn build_match(query: &str, fields: &[String], or_mode: bool) -> Option<String> 
         .collect();
     let body = quoted.join(if or_mode { " OR " } else { " " });
 
-    let mut columns: Vec<&str> = fields
-        .iter()
-        .filter_map(|f| field_to_column(f))
-        .collect();
+    let mut columns: Vec<&str> = fields.iter().filter_map(|f| field_to_column(f)).collect();
     columns.dedup();
     let mut seen = Vec::new();
     columns.retain(|c| {
@@ -179,7 +183,20 @@ fn parse_iso8601_ms(s: &str) -> Option<i64> {
 /// validating the day-of-month. None for an impossible date (e.g. Feb 30).
 fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
     let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     if d < 1 || d > mdays[(m - 1) as usize] {
         return None;
     }
@@ -347,10 +364,15 @@ fn parse_json_or(row_value: Option<String>, default: Value) -> Value {
 
 /// Builds the EmailDocument JSON shape, key order preserved.
 pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Value {
-    let recipients: Value =
-        parse_json_or(row.get::<_, Option<String>>("recipients").unwrap_or(None), json!({}));
+    let recipients: Value = parse_json_or(
+        row.get::<_, Option<String>>("recipients").unwrap_or(None),
+        json!({}),
+    );
     let mut doc = Map::new();
-    doc.insert("id".into(), json!(row.get::<_, String>("id").unwrap_or_default()));
+    doc.insert(
+        "id".into(),
+        json!(row.get::<_, String>("id").unwrap_or_default()),
+    );
     // Prefer the live ingestion-source name (joined as import_source_name) so
     // renames in the Import tab show immediately; fall back to the
     // filename-derived string frozen at ingest.
@@ -404,7 +426,9 @@ pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Valu
     );
     doc.insert(
         "ingestionSourceId".into(),
-        json!(row.get::<_, String>("ingestion_source_id").unwrap_or_default()),
+        json!(row
+            .get::<_, String>("ingestion_source_id")
+            .unwrap_or_default()),
     );
     doc.insert(
         "threadId".into(),
@@ -412,7 +436,9 @@ pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Valu
     );
     doc.insert(
         "messageIdHeader".into(),
-        json!(row.get::<_, Option<String>>("message_id_header").unwrap_or(None)),
+        json!(row
+            .get::<_, Option<String>>("message_id_header")
+            .unwrap_or(None)),
     );
     doc.insert(
         "hasAttachments".into(),
@@ -424,7 +450,10 @@ pub fn row_to_document(row: &rusqlite::Row<'_>, snippet: Option<String>) -> Valu
     );
     doc.insert(
         "tags".into(),
-        parse_json_or(row.get::<_, Option<String>>("tags").unwrap_or(None), json!([])),
+        parse_json_or(
+            row.get::<_, Option<String>>("tags").unwrap_or(None),
+            json!([]),
+        ),
     );
     doc.insert(
         "sizeBytes".into(),
@@ -439,7 +468,11 @@ pub fn query_archived_emails(
     q: &dyn Fn(&str) -> Option<String>,
     started_ms: i64,
 ) -> Value {
-    let query = q("q").or_else(|| q("query")).unwrap_or_default().trim().to_string();
+    let query = q("q")
+        .or_else(|| q("query"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let page = clamp_positive(q("page").as_deref(), 1, i64::MAX);
     let limit = clamp_positive(q("limit").as_deref(), 10, 100);
     let fields = normalize_fields(q("fields").as_deref());
@@ -450,7 +483,39 @@ pub fn query_archived_emails(
         "DESC"
     };
     let strict = q("matchingStrategy").as_deref() == Some("all");
+    let field_match_any = q("fieldMatch").as_deref() == Some("any");
     let filter = build_filter_sql(conn, q);
+
+    // The archive UI exposes a compose-like advanced search. Each populated
+    // input becomes its own field-scoped FTS clause; fieldMatch controls how
+    // those clauses (and the all-fields query) relate to one another. Keeping
+    // this in MATCH rather than SQL filters preserves prefix search and names.
+    let mut text_clauses: Vec<String> = Vec::new();
+    if let Some(expr) = build_match(&query, &fields, false) {
+        text_clauses.push(expr);
+    }
+    for (key, scoped_fields) in [
+        ("senderQuery", &["from", "senderName"][..]),
+        ("recipientsQuery", &["to", "cc", "bcc"][..]),
+        ("subjectQuery", &["subject"][..]),
+        ("bodyQuery", &["body"][..]),
+    ] {
+        let value = q(key).unwrap_or_default();
+        let value = value.trim();
+        let scoped_fields: Vec<String> =
+            scoped_fields.iter().map(|field| (*field).into()).collect();
+        if let Some(expr) = build_match(value, &scoped_fields, false) {
+            text_clauses.push(expr);
+        }
+    }
+    let match_expr = (!text_clauses.is_empty()).then(|| {
+        let joiner = if field_match_any { " OR " } else { " AND " };
+        text_clauses
+            .into_iter()
+            .map(|clause| format!("({clause})"))
+            .collect::<Vec<_>>()
+            .join(joiner)
+    });
 
     let run = |match_expr: Option<&str>| -> (Vec<Value>, i64) {
         if let Some(expr) = match_expr {
@@ -493,7 +558,9 @@ pub fn query_archived_emails(
             let mut count_params: Vec<SqlValue> = vec![SqlValue::from(expr.to_string())];
             count_params.extend(filter.params.iter().cloned());
             let total: i64 = conn
-                .query_row(&count_sql, rusqlite::params_from_iter(count_params), |r| r.get(0))
+                .query_row(&count_sql, rusqlite::params_from_iter(count_params), |r| {
+                    r.get(0)
+                })
                 .unwrap_or(0);
             (hits, total)
         } else {
@@ -530,13 +597,19 @@ pub fn query_archived_emails(
         }
     };
 
-    let mut result = run(
-        (!query.is_empty())
-            .then(|| build_match(&query, &fields, false))
-            .flatten()
-            .as_deref(),
-    );
-    if !query.is_empty() && result.1 == 0 && !strict {
+    let has_scoped_queries = [
+        "senderQuery",
+        "recipientsQuery",
+        "subjectQuery",
+        "bodyQuery",
+    ]
+    .iter()
+    .any(|key| q(key).is_some_and(|value| !value.trim().is_empty()));
+    let mut result = run(match_expr.as_deref());
+    // Preserve the original forgiving OR fallback for the simple, all-fields
+    // search. Advanced field clauses are explicit and should never silently
+    // broaden when their intersection is empty.
+    if !query.is_empty() && !has_scoped_queries && result.1 == 0 && !strict {
         if let Some(or_match) = build_match(&query, &fields, true) {
             if or_match.contains(" OR ") {
                 result = run(Some(&or_match));
@@ -609,9 +682,15 @@ mod tests {
     #[test]
     fn iso_dates_parse_to_epoch_ms() {
         assert_eq!(parse_iso8601_ms("2024-01-01"), Some(1_704_067_200_000));
-        assert_eq!(parse_iso8601_ms("2024-01-01T00:00:00Z"), Some(1_704_067_200_000));
+        assert_eq!(
+            parse_iso8601_ms("2024-01-01T00:00:00Z"),
+            Some(1_704_067_200_000)
+        );
         assert_eq!(parse_iso8601_ms("1970-01-01"), Some(0));
-        assert_eq!(parse_iso8601_ms("2024-01-01T01:00:00"), Some(1_704_070_800_000));
+        assert_eq!(
+            parse_iso8601_ms("2024-01-01T01:00:00"),
+            Some(1_704_070_800_000)
+        );
         assert_eq!(parse_iso8601_ms("2024-13-01"), None);
         assert_eq!(parse_iso8601_ms("2024-02-30"), None);
         assert_eq!(parse_iso8601_ms("notadate"), None);
@@ -637,9 +716,18 @@ mod tests {
     #[test]
     fn build_match_prefixes_and_scopes() {
         let all = normalize_fields(None);
-        assert_eq!(build_match("hello", &all, false).as_deref(), Some("\"hello\"*"));
-        assert_eq!(build_match("foo bar", &all, false).as_deref(), Some("\"foo\" \"bar\"*"));
-        assert_eq!(build_match("foo bar", &all, true).as_deref(), Some("\"foo\" OR \"bar\"*"));
+        assert_eq!(
+            build_match("hello", &all, false).as_deref(),
+            Some("\"hello\"*")
+        );
+        assert_eq!(
+            build_match("foo bar", &all, false).as_deref(),
+            Some("\"foo\" \"bar\"*")
+        );
+        assert_eq!(
+            build_match("foo bar", &all, true).as_deref(),
+            Some("\"foo\" OR \"bar\"*")
+        );
         assert_eq!(
             build_match("hi", &vec!["subject".to_string()], false).as_deref(),
             Some("{subject} : (\"hi\"*)")
@@ -650,7 +738,10 @@ mod tests {
     #[test]
     fn normalize_fields_defaults_and_filters() {
         assert_eq!(normalize_fields(None).len(), 12);
-        assert_eq!(normalize_fields(Some("subject,body")), vec!["subject", "body"]);
+        assert_eq!(
+            normalize_fields(Some("subject,body")),
+            vec!["subject", "body"]
+        );
         assert_eq!(normalize_fields(Some("bogus")).len(), 12);
     }
 

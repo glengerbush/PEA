@@ -69,6 +69,65 @@ async fn field_scoping_restricts_to_named_fields() {
     assert_eq!(total(&b), 1, "default fields search body too");
 }
 
+// ---- compose-style advanced field search ----
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn advanced_fields_can_match_all_or_any() {
+    let a = TempArchive::new();
+    let mbox = format!(
+        "{}{}{}",
+        mbox_msg(
+            "<af1@x>",
+            "Alice <alice@example.com>",
+            "bob@example.com",
+            "Quarterly planning",
+            &[],
+            "budget draft",
+        ),
+        mbox_msg(
+            "<af2@x>",
+            "Carol <carol@example.com>",
+            "bob@example.com",
+            "Weekend planning",
+            &[],
+            "hiking route",
+        ),
+        mbox_msg(
+            "<af3@x>",
+            "Alice <alice@example.com>",
+            "dave@example.com",
+            "Status report",
+            &[],
+            "budget final",
+        ),
+    );
+    assert_eq!(a.import_mbox_str(&mbox), 3);
+    let app = a.router();
+
+    let (_, all) = get_json(
+        &app,
+        "/api/v1/archived-emails?senderQuery=alice&subjectQuery=planning&fieldMatch=all",
+    )
+    .await;
+    assert_eq!(subjects(&all), vec!["Quarterly planning"]);
+
+    let (_, any) = get_json(
+        &app,
+        "/api/v1/archived-emails?senderQuery=alice&subjectQuery=planning&fieldMatch=any&sort=subject&direction=asc",
+    )
+    .await;
+    assert_eq!(
+        subjects(&any),
+        vec!["Quarterly planning", "Status report", "Weekend planning"]
+    );
+
+    let (_, recipient_and_body) = get_json(
+        &app,
+        "/api/v1/archived-emails?recipientsQuery=dave&bodyQuery=budget&fieldMatch=all",
+    )
+    .await;
+    assert_eq!(subjects(&recipient_and_body), vec!["Status report"]);
+}
+
 // ---- prefix / search-as-you-type: the last term is a prefix ----
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_as_you_type_matches_prefixes() {

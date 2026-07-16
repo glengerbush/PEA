@@ -1,9 +1,19 @@
 <script lang="ts">
 	import { api } from '$lib/api.client';
+	import { forwardIframeWheel } from '$lib/actions/forward-iframe-wheel';
+	import type { SwipeWheelInput } from '$lib/stores/swipe-back.svelte';
 	import { t } from '$lib/translations';
 	import type { RemoteContentPreview } from '@pea/types';
 
-	let { emailId, refreshKey = 0 }: { emailId: string; refreshKey?: number } = $props();
+	let {
+		emailId,
+		refreshKey = 0,
+		onWheel,
+	}: {
+		emailId: string;
+		refreshKey?: number;
+		onWheel?: (event: SwipeWheelInput) => void;
+	} = $props();
 
 	async function loadPreview(id: string, _refreshKey: number): Promise<RemoteContentPreview> {
 		const response = await api(`/archived-emails/${id}/preview`);
@@ -23,9 +33,10 @@
 	{:then preview}
 		{#if preview.html}
 			<iframe
+				use:forwardIframeWheel={onWheel}
 				title={$t('app.archive.email_preview')}
 				srcdoc={preview.html}
-				sandbox="allow-popups allow-popups-to-escape-sandbox"
+				sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
 				referrerpolicy="no-referrer"
 				class="h-[600px] w-full border-none"
 			></iframe>

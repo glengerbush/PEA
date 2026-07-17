@@ -94,7 +94,8 @@ jobs:
 
                   {
                     echo 'body<<RELEASE_NOTES_EOF'
-                    git log "$range" --no-merges --pretty=format:'- %s'
+                    git log "$range" --no-merges --pretty=format:'%s%n%b' |
+                      awk 'NF { sub(/^[[:space:]]*[-*][[:space:]]+/, ""); print "- " $0 }'
                     echo
                     echo 'RELEASE_NOTES_EOF'
                   } >> "$GITHUB_OUTPUT"

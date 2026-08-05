@@ -9,6 +9,12 @@
 	import { page } from '$app/state';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import { saveListScroll, getListScroll, lastOpenedEmailId } from '$lib/stores/list-view-state';
+	import {
+		approvalFeedback,
+		approvalIntent,
+		duplicateGroupsPageUrl,
+		refreshAfterGroupRemoval,
+	} from '$lib/duplicate-review';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import { t } from '$lib/translations';
@@ -54,11 +60,6 @@
 		return classificationCounts[value] ?? 0;
 	}
 
-	function shortFingerprint(fingerprint: string | null | undefined): string {
-		if (!fingerprint) return '';
-		return fingerprint.length > 96 ? `${fingerprint.slice(0, 96)}...` : fingerprint;
-	}
-
 	function formatDate(value: string | Date): string {
 		return new Date(value).toLocaleString();
 	}
@@ -70,37 +71,8 @@
 		};
 	}
 
-	/** Re-runs the loader after groups are removed so the page refills from
-	 *  the remaining ones, clamped to the last page that still exists. */
-	async function reloadGroups(
-		result: { totalGroups: number; page: number; limit: number },
-		removedGroups: number
-	) {
-		const remaining = Math.max(0, result.totalGroups - removedGroups);
-		const totalPages = Math.max(1, Math.ceil(remaining / Math.max(1, result.limit)));
-		const target = Math.min(result.page, totalPages);
-		await goto(buildDuplicatesPageUrl(target), {
-			invalidateAll: true,
-			keepFocus: true,
-			replaceState: true,
-		});
-	}
-
 	function buildDecision(group: DuplicateGroup): ApproveDuplicateGroupDto | null {
-		const keeperEmailId = keeperOverrides[group.groupKey] || group.keeperEmailId;
-		const duplicateEmailIds = group.emails
-			.map((email) => email.id)
-			.filter((emailId) => emailId !== keeperEmailId);
-
-		if (!keeperEmailId || duplicateEmailIds.length === 0) {
-			return null;
-		}
-
-		return {
-			groupKey: group.groupKey,
-			keeperEmailId,
-			duplicateEmailIds,
-		};
+		return approvalIntent(group, keeperOverrides);
 	}
 
 	async function approveGroups(groups: DuplicateGroup[], actionKey: string) {
@@ -121,12 +93,16 @@
 			}
 
 			const result = body as ApproveDuplicatesResult;
-			await reloadGroups(duplicateGroups, result.approvedGroups);
+			await refreshAfterGroupRemoval(
+				duplicateGroups,
+				result.approvedGroups,
+				activeClassification,
+				goto
+			);
+			const feedback = approvalFeedback(result);
 			setAlert({
-				type: 'success',
-				title: 'Duplicates deleted',
-				message: `${result.deletedEmails} duplicate email${result.deletedEmails === 1 ? '' : 's'} deleted`,
-				duration: 3000,
+				...feedback,
+				duration: feedback.type === 'warning' ? 5000 : 3000,
 				show: true,
 			});
 		} catch (error) {
@@ -158,16 +134,15 @@
 
 			const result = body as ApproveDuplicatesResult;
 			isApproveAllDialogOpen = false;
-			await goto(buildDuplicatesPageUrl(1), {
+			await goto(duplicateGroupsPageUrl(activeClassification, 1), {
 				invalidateAll: true,
 				keepFocus: true,
 				replaceState: true,
 			});
+			const feedback = approvalFeedback(result);
 			setAlert({
-				type: 'success',
-				title: 'Duplicates deleted',
-				message: `${result.deletedEmails} duplicate email${result.deletedEmails === 1 ? '' : 's'} deleted`,
-				duration: 3000,
+				...feedback,
+				duration: feedback.type === 'warning' ? 5000 : 3000,
 				show: true,
 			});
 		} catch (error) {
@@ -196,7 +171,12 @@
 			}
 
 			const result = body as IgnoreDuplicateGroupsResult;
-			await reloadGroups(duplicateGroups, result.ignoredGroups);
+			await refreshAfterGroupRemoval(
+				duplicateGroups,
+				result.ignoredGroups,
+				activeClassification,
+				goto
+			);
 		} catch (error) {
 			setAlert({
 				type: 'error',
@@ -211,20 +191,12 @@
 	}
 
 	function buildDuplicatesPageUrl(page: number): string {
-		const params = new URLSearchParams();
-		if (activeClassification !== 'exact') {
-			params.set('classification', activeClassification);
-		}
-		if (page > 1) params.set('exactPage', String(page));
-		const query = params.toString();
-		return `/dashboard/duplicates${query ? `?${query}` : ''}`;
+		return duplicateGroupsPageUrl(activeClassification, page);
 	}
 
 	/** URL that applies a classification filter (resets pagination). */
 	function classificationUrl(classification: DuplicateClassification): string {
-		return classification === 'exact'
-			? '/dashboard/duplicates'
-			: `/dashboard/duplicates?classification=${classification}`;
+		return duplicateGroupsPageUrl(classification, 1);
 	}
 
 	/** Open an email, remembering this exact duplicates view (page + filter) so
@@ -340,23 +312,22 @@
 							</Badge>
 							<span class="text-sm font-medium">{group.count} emails</span>
 						</div>
-						<div
-							class="text-muted-foreground mt-1 max-w-full truncate font-mono text-xs"
-						>
-							{shortFingerprint(group.fingerprint)}
-						</div>
 					</div>
 					<div class="flex flex-wrap gap-2">
-						<Button
-							type="button"
-							variant="destructive"
-							class="gap-2"
-							disabled={approvingKey !== null}
-							onclick={() => approveGroups([group], group.groupKey)}
-						>
-							<Trash2 class="h-4 w-4" />
-							{approvingKey === group.groupKey ? 'Deleting…' : 'Delete duplicates'}
-						</Button>
+						{#if group.classification === 'exact'}
+							<Button
+								type="button"
+								variant="destructive"
+								class="gap-2"
+								disabled={approvingKey !== null}
+								onclick={() => approveGroups([group], group.groupKey)}
+							>
+								<Trash2 class="h-4 w-4" />
+								{approvingKey === group.groupKey
+									? 'Deleting…'
+									: 'Delete duplicates'}
+							</Button>
+						{/if}
 						<Button
 							type="button"
 							variant="outline"

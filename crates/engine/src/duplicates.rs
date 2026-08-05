@@ -1,4 +1,4 @@
-//! Duplicate review, read side.
+//! Duplicate Review module.
 //!
 //! The user-facing model deliberately has only two classifications:
 //! - exact: safe to bulk-delete because identity, content, recipients and
@@ -11,16 +11,19 @@
 //! excludes reply chains, rapid back-and-forth messages, and forwards to other
 //! recipients instead of trying to score their textual similarity.
 
-use crate::iso;
+use crate::{emails, iso};
+use regex::Regex;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 const DEFAULT_LIMIT: i64 = 25;
 const MAX_LIMIT: i64 = 100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DuplicateClassification {
+enum DuplicateClassification {
     Exact,
     Likely,
 }
@@ -35,11 +38,12 @@ impl DuplicateClassification {
 }
 
 #[derive(Clone)]
-pub(crate) struct DuplicateCluster {
-    pub ids: Vec<String>,
-    pub min_id: String,
-    pub classification: DuplicateClassification,
-    pub default_keeper_id: String,
+struct DuplicateCluster {
+    ids: Vec<String>,
+    min_id: String,
+    classification: DuplicateClassification,
+    default_keeper_id: String,
+    fingerprint: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,6 +60,62 @@ struct CacheRevision {
 pub struct DuplicateCache {
     revision: Option<CacheRevision>,
     clusters: Vec<DuplicateCluster>,
+}
+
+impl DuplicateCache {
+    fn invalidate(&mut self) {
+        self.revision = None;
+        self.clusters.clear();
+    }
+}
+
+pub(crate) struct ApproveGroupIntent {
+    pub group_key: String,
+    pub keeper_email_id: String,
+}
+
+pub(crate) struct DerivedDuplicateSignals {
+    pub subject_hash: Option<String>,
+    pub body_hash: Option<String>,
+    pub recipient_fingerprint: Option<String>,
+}
+
+fn normalize_duplicate_text(value: &str) -> String {
+    static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
+    static NON_ALNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^a-z0-9]+").unwrap());
+    static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+    let value = TAGS.replace_all(value, " ").to_lowercase();
+    let value = NON_ALNUM.replace_all(&value, " ");
+    WS.replace_all(value.trim(), " ").into_owned()
+}
+
+fn duplicate_hash(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| identity_digest(value))
+}
+
+pub(crate) fn derive_signals<'a>(
+    subject: &str,
+    body_or_html: &str,
+    recipient_addresses: impl IntoIterator<Item = &'a str>,
+) -> DerivedDuplicateSignals {
+    let mut recipients: Vec<String> = recipient_addresses
+        .into_iter()
+        .map(|address| address.trim().to_lowercase())
+        .filter(|address| !address.is_empty())
+        .collect();
+    recipients.sort();
+    DerivedDuplicateSignals {
+        subject_hash: duplicate_hash(&normalize_duplicate_text(subject)),
+        body_hash: duplicate_hash(&normalize_duplicate_text(body_or_html)),
+        recipient_fingerprint: duplicate_hash(&recipients.join("|")),
+    }
+}
+
+pub(crate) fn derive_attachment_fingerprint(content_hashes: &[String]) -> Option<String> {
+    let mut distinct_hashes = content_hashes.to_vec();
+    distinct_hashes.sort();
+    distinct_hashes.dedup();
+    duplicate_hash(&distinct_hashes.join("|"))
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -167,6 +227,38 @@ fn append_fingerprint_field(out: &mut String, value: &str) {
     out.push_str(value);
 }
 
+fn append_optional_fingerprint_field(out: &mut String, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            out.push('1');
+            append_fingerprint_field(out, value);
+        }
+        None => out.push('0'),
+    }
+}
+
+fn identity_digest(payload: &str) -> String {
+    crate::hex_encode(Sha256::digest(payload.as_bytes()))
+}
+
+fn append_semantic_identity(out: &mut String, semantic: &SemanticKey) {
+    append_optional_fingerprint_field(out, semantic.subject_hash.as_deref());
+    append_fingerprint_field(out, &semantic.sender_email);
+    append_optional_fingerprint_field(out, semantic.recipient_fingerprint.as_deref());
+    append_fingerprint_field(out, &semantic.sent_at.to_string());
+    append_optional_fingerprint_field(out, semantic.body_hash.as_deref());
+    append_optional_fingerprint_field(
+        out,
+        semantic.attachment_content_fingerprint.as_deref(),
+    );
+}
+
+fn semantic_identity(semantic: &SemanticKey) -> String {
+    let mut payload = "semantic:".to_string();
+    append_semantic_identity(&mut payload, semantic);
+    identity_digest(&payload)
+}
+
 fn load_attachment_metadata_fingerprints(conn: &Connection) -> HashMap<String, String> {
     let mut by_email: HashMap<String, String> = HashMap::new();
     let mut stmt = conn
@@ -266,7 +358,7 @@ fn union_members(parent: &mut [usize], members: &[usize]) {
 /// Computes all groups in approximately O(emails × indexed signals). Exact
 /// components are formed first; a semantic bucket containing more than one
 /// exact component becomes one conservative Likely group.
-pub(crate) fn collect_duplicate_clusters(conn: &Connection) -> Vec<DuplicateCluster> {
+fn collect_duplicate_clusters(conn: &Connection, include_ignored: bool) -> Vec<DuplicateCluster> {
     let rows = load_signal_rows(conn);
     let mut parent: Vec<usize> = (0..rows.len()).collect();
 
@@ -308,7 +400,11 @@ pub(crate) fn collect_duplicate_clusters(conn: &Connection) -> Vec<DuplicateClus
             .push(index);
     }
 
-    let ignored = load_ignored_fingerprints(conn);
+    let ignored = if include_ignored {
+        HashSet::new()
+    } else {
+        load_ignored_fingerprints(conn)
+    };
     let mut exact_roots_in_likely_groups: HashSet<usize> = HashSet::new();
     let mut clusters: Vec<DuplicateCluster> = Vec::new();
 
@@ -357,22 +453,23 @@ fn build_cluster(
     });
     let ids: Vec<String> = member_rows.iter().map(|row| row.id.clone()).collect();
     let min_id = ids.iter().min()?.clone();
-    if ignored.contains(&min_id) {
+    let default_keeper_id = member_rows.first()?.id.clone();
+    // Every edge that forms an Exact group also requires equal semantic
+    // signals, so this identity survives members entering or leaving. The
+    // classification in group_key keeps Exact and Likely decisions distinct.
+    let fingerprint = semantic_identity(&member_rows.first()?.semantic);
+    // Member ids are retained here only for compatibility with ignore rows
+    // written before group identity came from shared duplicate evidence.
+    if ignored.contains(&fingerprint) || ids.iter().any(|id| ignored.contains(id)) {
         return None;
     }
     Some(DuplicateCluster {
-        default_keeper_id: member_rows.first()?.id.clone(),
+        default_keeper_id,
+        fingerprint,
         ids,
         min_id,
         classification,
     })
-}
-
-pub(crate) fn collect_exact_clusters(conn: &Connection) -> Vec<DuplicateCluster> {
-    collect_duplicate_clusters(conn)
-        .into_iter()
-        .filter(|cluster| cluster.classification == DuplicateClassification::Exact)
-        .collect()
 }
 
 fn cache_revision(conn: &Connection) -> CacheRevision {
@@ -413,7 +510,7 @@ fn cached_clusters(
             return guard.clusters.clone();
         }
     }
-    let clusters = collect_duplicate_clusters(conn);
+    let clusters = collect_duplicate_clusters(conn, false);
     if let Ok(mut guard) = cache.lock() {
         guard.revision = Some(revision);
         guard.clusters = clusters.clone();
@@ -466,9 +563,8 @@ pub fn list_duplicate_groups(
             continue;
         }
         groups.push(json!({
-            "groupKey": format!("cluster:{}", cluster.min_id),
+            "groupKey": group_key(cluster),
             "classification": cluster.classification.as_str(),
-            "fingerprint": cluster.min_id,
             "count": emails.len(),
             "keeperEmailId": cluster.default_keeper_id,
             "emails": emails,
@@ -485,6 +581,192 @@ pub fn list_duplicate_groups(
         },
         "page": normalized_page,
         "limit": normalized_limit,
+    })
+}
+
+fn group_key(cluster: &DuplicateCluster) -> String {
+    format!(
+        "duplicate:{}:{}",
+        cluster.classification.as_str(),
+        cluster.fingerprint
+    )
+}
+
+fn invalidate_cache(cache: &std::sync::Mutex<DuplicateCache>) {
+    if let Ok(mut guard) = cache.lock() {
+        guard.invalidate();
+    }
+}
+
+enum ApprovalRejectionReason {
+    DuplicateGroup,
+    UnknownGroup,
+    GroupNotExact,
+    KeeperNotMember,
+}
+
+impl ApprovalRejectionReason {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::DuplicateGroup => "duplicate_group",
+            Self::UnknownGroup => "unknown_group",
+            Self::GroupNotExact => "group_not_exact",
+            Self::KeeperNotMember => "keeper_not_member",
+        }
+    }
+}
+
+fn rejected_group(group_key: &str, reason: ApprovalRejectionReason) -> Value {
+    json!({ "groupKey": group_key, "reason": reason.as_str() })
+}
+
+fn decide_with_current_clusters(
+    conn: &Connection,
+    cache: &std::sync::Mutex<DuplicateCache>,
+    include_ignored: bool,
+    decide: impl FnOnce(&Connection, Vec<DuplicateCluster>) -> Result<Value, String>,
+) -> Result<Value, String> {
+    let tx = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let clusters = collect_duplicate_clusters(&tx, include_ignored);
+    let result = decide(&tx, clusters)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    invalidate_cache(cache);
+    Ok(result)
+}
+
+fn trash_non_keeper(
+    conn: &Connection,
+    cluster: &DuplicateCluster,
+    keeper_email_id: &str,
+) -> Result<usize, String> {
+    let mut deleted = 0;
+    for id in cluster.ids.iter().filter(|id| *id != keeper_email_id) {
+        emails::soft_delete_archived_email(conn, id)?;
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
+fn approval_result(
+    approved_groups: usize,
+    deleted_emails: usize,
+    rejected_groups: Vec<Value>,
+) -> Value {
+    json!({
+        "approvedGroups": approved_groups,
+        "deletedEmails": deleted_emails,
+        "keeperEmails": approved_groups,
+        "rejectedGroups": rejected_groups,
+    })
+}
+
+/// Resolve approval intent against one current archive snapshot. The caller
+/// supplies no membership: this module derives every email moved to Trash.
+pub(crate) fn approve_exact_groups(
+    conn: &Connection,
+    cache: &std::sync::Mutex<DuplicateCache>,
+    intents: Vec<ApproveGroupIntent>,
+) -> Result<Value, String> {
+    decide_with_current_clusters(conn, cache, false, move |tx, clusters| {
+        let by_key: HashMap<String, DuplicateCluster> = clusters
+            .into_iter()
+            .map(|cluster| (group_key(&cluster), cluster))
+            .collect();
+        let mut seen = HashSet::new();
+        let mut approved_groups = 0usize;
+        let mut deleted_emails = 0usize;
+        let mut rejected_groups = Vec::new();
+
+        for intent in intents {
+            if !seen.insert(intent.group_key.clone()) {
+                rejected_groups.push(rejected_group(
+                    &intent.group_key,
+                    ApprovalRejectionReason::DuplicateGroup,
+                ));
+                continue;
+            }
+            let Some(cluster) = by_key.get(&intent.group_key) else {
+                rejected_groups.push(rejected_group(
+                    &intent.group_key,
+                    ApprovalRejectionReason::UnknownGroup,
+                ));
+                continue;
+            };
+            if cluster.classification != DuplicateClassification::Exact {
+                rejected_groups.push(rejected_group(
+                    &intent.group_key,
+                    ApprovalRejectionReason::GroupNotExact,
+                ));
+                continue;
+            }
+            if !cluster.ids.contains(&intent.keeper_email_id) {
+                rejected_groups.push(rejected_group(
+                    &intent.group_key,
+                    ApprovalRejectionReason::KeeperNotMember,
+                ));
+                continue;
+            }
+
+            deleted_emails += trash_non_keeper(tx, cluster, &intent.keeper_email_id)?;
+            approved_groups += 1;
+        }
+        Ok(approval_result(
+            approved_groups,
+            deleted_emails,
+            rejected_groups,
+        ))
+    })
+}
+
+/// Approve every current, non-ignored Exact group in one transaction.
+pub(crate) fn approve_all_exact_groups(
+    conn: &Connection,
+    cache: &std::sync::Mutex<DuplicateCache>,
+) -> Result<Value, String> {
+    decide_with_current_clusters(conn, cache, false, |tx, clusters| {
+        let mut approved_groups = 0usize;
+        let mut deleted_emails = 0usize;
+
+        for cluster in clusters
+            .iter()
+            .filter(|cluster| cluster.classification == DuplicateClassification::Exact)
+        {
+            deleted_emails += trash_non_keeper(tx, cluster, &cluster.default_keeper_id)?;
+            approved_groups += 1;
+        }
+        Ok(approval_result(approved_groups, deleted_emails, Vec::new()))
+    })
+}
+
+/// Resolve opaque group keys here; callers never decode ignore fingerprints.
+pub(crate) fn ignore_groups(
+    conn: &Connection,
+    cache: &std::sync::Mutex<DuplicateCache>,
+    group_keys: Vec<String>,
+) -> Result<Value, String> {
+    decide_with_current_clusters(conn, cache, true, move |tx, clusters| {
+        let fingerprints: HashMap<String, String> = clusters
+            .into_iter()
+            .map(|cluster| (group_key(&cluster), cluster.fingerprint))
+            .collect();
+        let mut seen = HashSet::new();
+        let mut ignored_groups = 0usize;
+
+        for key in group_keys {
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let Some(fingerprint) = fingerprints.get(&key) else {
+                continue;
+            };
+            ignored_groups += tx
+                .execute(
+                    "INSERT OR IGNORE INTO exact_duplicate_ignores (fingerprint) VALUES (?)",
+                    [fingerprint],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(json!({ "ignoredGroups": ignored_groups }))
     })
 }
 

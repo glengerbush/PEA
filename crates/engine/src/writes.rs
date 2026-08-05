@@ -252,46 +252,25 @@ pub async fn update_tags(State(app): State<AppState>, Json(dto): Json<Value>) ->
 pub async fn approve_exact_duplicates(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
     let conn = app.pool.get().unwrap();
     let groups = dto.get("groups").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let mut approved_groups = 0usize;
-    let mut deleted_emails = 0usize;
-    let mut keeper_emails = 0usize;
-    for group in &groups {
-        let keeper = group.get("keeperEmailId").and_then(|v| v.as_str()).unwrap_or("");
-        let mut duplicate_ids: Vec<String> = Vec::new();
-        for v in group.get("duplicateEmailIds").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
-            if let Some(s) = v.as_str() {
-                if s != keeper && !duplicate_ids.contains(&s.to_string()) {
-                    duplicate_ids.push(s.to_string());
-                }
-            }
-        }
-        if keeper.is_empty() || duplicate_ids.is_empty() {
-            continue;
-        }
-        let keeper_exists: bool = conn
-            .query_row("SELECT 1 FROM archived_emails WHERE id = ?", [keeper], |_| Ok(true))
-            .unwrap_or(false);
-        // Never delete a cluster's copies when the keeper is gone — that would
-        // destroy the last remaining copy. Skip the group entirely.
-        if !keeper_exists {
-            continue;
-        }
-        // Approved duplicate copies go to the trash (recoverable), consistent
-        // with every other delete; empty the trash to reclaim their storage.
-        for id in &duplicate_ids {
-            if emails::soft_delete_archived_email(&conn, id).is_ok() {
-                deleted_emails += 1;
-            }
-        }
-        keeper_emails += 1;
-        approved_groups += 1;
+    let intents = groups
+        .into_iter()
+        .map(|group| duplicates::ApproveGroupIntent {
+            group_key: group
+                .get("groupKey")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            keeper_email_id: group
+                .get("keeperEmailId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        })
+        .collect();
+    match duplicates::approve_exact_groups(&conn, &app.duplicate_cache, intents) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => message_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
     }
-    Json(json!({
-        "approvedGroups": approved_groups,
-        "deletedEmails": deleted_emails,
-        "keeperEmails": keeper_emails,
-    }))
-    .into_response()
 }
 
 /// POST /archived-emails/duplicates/exact/approve-all.
@@ -304,76 +283,26 @@ pub async fn approve_all_exact_duplicates(
     Json(_dto): Json<Value>,
 ) -> Response {
     let conn = app.pool.get().unwrap();
-    // One transaction: clustering and deletion see a single snapshot, and the
-    // whole approval is atomic.
-    let tx = match conn.unchecked_transaction() {
-        Ok(tx) => tx,
-        Err(error) => {
-            return message_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())
-        }
-    };
-    let mut approved_groups = 0usize;
-    let mut deleted_emails = 0usize;
-    for cluster in duplicates::collect_exact_clusters(&tx) {
-        let keeper = &cluster.default_keeper_id;
-        if keeper.is_empty() {
-            continue;
-        }
-        let mut deleted_here = 0usize;
-        // Approved duplicate copies go to the trash (recoverable), consistent
-        // with every other delete; empty the trash to reclaim their storage.
-        for id in cluster.ids.iter().filter(|id| *id != keeper) {
-            if emails::soft_delete_archived_email(&tx, id).is_ok() {
-                deleted_here += 1;
-            }
-        }
-        if deleted_here > 0 {
-            deleted_emails += deleted_here;
-            approved_groups += 1;
-        }
+    match duplicates::approve_all_exact_groups(&conn, &app.duplicate_cache) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => message_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
     }
-    if let Err(error) = tx.commit() {
-        return message_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
-    }
-    Json(json!({
-        "approvedGroups": approved_groups,
-        "deletedEmails": deleted_emails,
-        "keeperEmails": approved_groups,
-    }))
-    .into_response()
 }
 
 pub async fn ignore_exact(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
     let conn = app.pool.get().unwrap();
-    let mut fingerprints: Vec<String> = Vec::new();
-    for v in dto.get("groupKeys").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
-        if let Some(s) = v.as_str() {
-            // The client sends the cluster group key ("cluster:<fingerprint>");
-            // persist just the fingerprint (the cluster's min email id).
-            let fp = s.strip_prefix("cluster:").unwrap_or(s);
-            if !fp.is_empty() && !fingerprints.iter().any(|f| f == fp) {
-                fingerprints.push(fp.to_string());
-            }
-        }
+    let group_keys = dto
+        .get("groupKeys")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    match duplicates::ignore_groups(&conn, &app.duplicate_cache, group_keys) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => message_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
     }
-    if fingerprints.is_empty() {
-        return Json(json!({ "ignoredGroups": 0 })).into_response();
-    }
-    // Record each ignored fingerprint; list_exact_groups excludes these clusters.
-    let mut ignored = 0usize;
-    for fp in &fingerprints {
-        if conn
-            .execute(
-                "INSERT OR IGNORE INTO exact_duplicate_ignores (fingerprint) VALUES (?)",
-                [fp],
-            )
-            .unwrap_or(0)
-            > 0
-        {
-            ignored += 1;
-        }
-    }
-    Json(json!({ "ignoredGroups": ignored })).into_response()
 }
 
 pub async fn enqueue_remote_content(

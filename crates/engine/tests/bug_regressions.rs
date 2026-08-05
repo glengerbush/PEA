@@ -13,24 +13,25 @@ async fn all_ids(app: &axum::Router) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approve_exact_preserves_data_when_keeper_missing() {
     let a = TempArchive::new();
-    a.import_mbox_str(&format!(
-        "{}{}",
-        mbox_msg("<k1@x>", "Alice <a@x.com>", "b@x.com", "K1", &[], "x"),
-        mbox_msg("<k2@x>", "Alice <a@x.com>", "b@x.com", "K2", &[], "x"),
-    ));
+    let email = mbox_msg("<keeper@x>", "Alice <a@x.com>", "b@x.com", "Keeper", &[], "x");
+    a.import_mbox_str(&email);
+    a.import_mbox_str(&email);
     let app = a.router();
     let ids = all_ids(&app).await;
     assert_eq!(ids.len(), 2);
+    let (_, groups) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
+    let group_key = groups["groups"][0]["groupKey"].clone();
 
     // keeper does not exist → must be a no-op
     let (s, res) = post_json(
         &app,
         "/api/v1/archived-emails/duplicates/exact/approve",
-        json!({"groups":[{"groupKey":"g","keeperEmailId":"nonexistent","duplicateEmailIds":[ids[0], ids[1]]}]}),
+        json!({"groups":[{"groupKey":group_key,"keeperEmailId":"nonexistent"}]}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["deletedEmails"], json!(0), "nothing deleted when keeper absent");
+    assert_eq!(res["rejectedGroups"][0]["reason"], json!("keeper_not_member"));
     let (_, after) = get_json(&app, "/api/v1/archived-emails").await;
     assert_eq!(after["total"], json!(2), "both emails preserved");
 
@@ -38,7 +39,7 @@ async fn approve_exact_preserves_data_when_keeper_missing() {
     let (s, res) = post_json(
         &app,
         "/api/v1/archived-emails/duplicates/exact/approve",
-        json!({"groups":[{"groupKey":"g","keeperEmailId":ids[0],"duplicateEmailIds":[ids[1]]}]}),
+        json!({"groups":[{"groupKey":group_key,"keeperEmailId":ids[0]}]}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -269,7 +270,7 @@ async fn approve_exact_duplicates_are_recoverable_from_trash() {
     let (s, res) = post_json(
         &app,
         "/api/v1/archived-emails/duplicates/exact/approve",
-        json!({"groups":[{"groupKey": group["groupKey"], "keeperEmailId": keeper, "duplicateEmailIds": dups}]}),
+        json!({"groups":[{"groupKey": group["groupKey"], "keeperEmailId": keeper}]}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);

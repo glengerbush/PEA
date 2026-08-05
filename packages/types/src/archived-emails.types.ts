@@ -78,7 +78,6 @@ export interface DuplicateEmail {
 export interface DuplicateGroup {
 	groupKey: string;
 	classification: DuplicateClassification;
-	fingerprint: string;
 	count: number;
 	keeperEmailId: string;
 	emails: DuplicateEmail[];
@@ -93,10 +92,22 @@ export interface DuplicateGroupsResult {
 	limit: number;
 }
 
+export type DuplicateGroupsPageState = Pick<
+	DuplicateGroupsResult,
+	'totalGroups' | 'page' | 'limit'
+>;
+
 export interface ApproveDuplicateGroupDto {
 	groupKey: string;
 	keeperEmailId: string;
-	duplicateEmailIds: string[];
+}
+
+export type DuplicateApprovalRejectionReason =
+	'unknown_group' | 'group_not_exact' | 'keeper_not_member' | 'duplicate_group';
+
+export interface RejectedDuplicateGroup {
+	groupKey: string;
+	reason: DuplicateApprovalRejectionReason;
 }
 
 export interface ApproveDuplicatesResult {
@@ -104,6 +115,7 @@ export interface ApproveDuplicatesResult {
 	/** Duplicate copies moved to Trash (the keeper of each group is preserved). */
 	deletedEmails: number;
 	keeperEmails: number;
+	rejectedGroups: RejectedDuplicateGroup[];
 }
 
 export interface IgnoreDuplicateGroupsResult {

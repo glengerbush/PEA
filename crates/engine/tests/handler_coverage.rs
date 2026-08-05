@@ -58,19 +58,189 @@ async fn exact_duplicates_list_and_approve() {
     assert!(groups["totalGroups"].as_i64().unwrap() >= 1, "an exact-duplicate group is found");
     let group = &groups["groups"][0];
     assert_eq!(group["classification"], json!("exact"));
+    let group_key = group["groupKey"].clone();
     let keeper = group["keeperEmailId"].as_str().unwrap().to_string();
-    let dups: Vec<String> = group["emails"].as_array().unwrap().iter()
-        .map(|e| e["id"].as_str().unwrap().to_string())
-        .filter(|id| *id != keeper)
-        .collect();
-    assert_eq!(dups.len(), 1);
-
     let (s, res) = post_json(&app, "/api/v1/archived-emails/duplicates/exact/approve",
-        json!({"groups":[{"groupKey": group["groupKey"], "keeperEmailId": keeper, "duplicateEmailIds": dups}]})).await;
+        json!({"groups":[{"groupKey": group_key, "keeperEmailId": keeper}]})).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["deletedEmails"], json!(1));
+    assert_eq!(res["rejectedGroups"], json!([]));
     let (_, after) = get_json(&app, "/api/v1/archived-emails").await;
     assert_eq!(after["total"], json!(1), "one copy remains");
+    let (_, groups_after) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
+    assert_eq!(groups_after["totalGroups"], json!(0), "cache reflects approval immediately");
+    let (_, replay) = post_json(&app, "/api/v1/archived-emails/duplicates/exact/approve",
+        json!({"groups":[{"groupKey": group_key, "keeperEmailId": keeper}]})).await;
+    assert_eq!(replay["deletedEmails"], json!(0));
+    assert_eq!(replay["rejectedGroups"][0]["reason"], json!("unknown_group"));
+    let (_, trash) = get_json(&app, "/api/v1/archived-emails?trashed=true").await;
+    assert_eq!(trash["total"], json!(1), "replay cannot delete the keeper");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approval_revalidates_membership_after_listing() {
+    let a = TempArchive::new();
+    let email = mbox_msg("<fresh@x>", "Alice <a@x.com>", "b@x.com", "Fresh", &[], "same");
+    a.import_mbox_str(&email);
+    a.import_mbox_str(&email);
+    let app = a.router();
+    let (_, before) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
+    let group_key = before["groups"][0]["groupKey"].clone();
+    let keeper = before["groups"][0]["keeperEmailId"].clone();
+
+    a.import_mbox_str(&email);
+    let (status, result) = post_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact/approve",
+        json!({"groups":[{"groupKey":group_key,"keeperEmailId":keeper}]}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["approvedGroups"], json!(1));
+    assert_eq!(result["deletedEmails"], json!(2), "new current member is derived by the engine");
+    let (_, active) = get_json(&app, "/api/v1/archived-emails").await;
+    assert_eq!(active["total"], json!(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_group_identity_survives_member_removal() {
+    let a = TempArchive::new();
+    let email = mbox_msg("<stable@x>", "Alice <a@x.com>", "b@x.com", "Stable", &[], "same");
+    a.import_mbox_str(&email);
+    a.import_mbox_str(&email);
+    a.import_mbox_str(&email);
+    let app = a.router();
+    let (_, before) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
+    let group = &before["groups"][0];
+    let group_key = group["groupKey"].clone();
+    let keeper = group["keeperEmailId"].as_str().unwrap().to_string();
+    let removed = group["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|email| (email["id"] != keeper).then(|| email["id"].as_str().unwrap().to_string()))
+        .unwrap();
+
+    let (status, _) = send(
+        &app,
+        "DELETE",
+        &format!("/api/v1/archived-emails/{removed}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, current) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
+    assert_eq!(current["groups"][0]["groupKey"], group_key);
+
+    let (_, result) = post_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact/approve",
+        json!({"groups":[{"groupKey":group_key,"keeperEmailId":keeper}]}),
+    )
+    .await;
+    assert_eq!(result["deletedEmails"], json!(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_keeper_rejects_the_group_without_deleting_the_final_copy() {
+    let a = TempArchive::new();
+    let email = mbox_msg("<stale@x>", "Alice <a@x.com>", "b@x.com", "Stale", &[], "same");
+    a.import_mbox_str(&email);
+    a.import_mbox_str(&email);
+    let app = a.router();
+    let (_, before) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
+    let group_key = before["groups"][0]["groupKey"].clone();
+    let keeper = before["groups"][0]["keeperEmailId"].as_str().unwrap().to_string();
+
+    let (status, _) = send(
+        &app,
+        "DELETE",
+        &format!("/api/v1/archived-emails/{keeper}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, result) = post_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact/approve",
+        json!({"groups":[{"groupKey":group_key,"keeperEmailId":keeper}]}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["deletedEmails"], json!(0));
+    assert_eq!(result["rejectedGroups"][0]["reason"], json!("unknown_group"));
+    let (_, active) = get_json(&app, "/api/v1/archived-emails").await;
+    assert_eq!(active["total"], json!(1), "remaining active copy is preserved");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_approval_applies_valid_intent_and_structures_every_rejection() {
+    let a = TempArchive::new();
+    let exact_one = mbox_msg("<exact-one@x>", "A <a@x.com>", "b@x.com", "Exact One", &[], "one");
+    let exact_two = mbox_msg("<exact-two@x>", "A <a@x.com>", "b@x.com", "Exact Two", &[], "two");
+    a.import_mbox_str(&exact_one);
+    a.import_mbox_str(&exact_one);
+    a.import_mbox_str(&exact_two);
+    a.import_mbox_str(&exact_two);
+    a.import_mbox_str(&format!(
+        "{}{}",
+        mbox_msg("<likely-one@x>", "A <a@x.com>", "b@x.com", "Likely", &[], "likely"),
+        mbox_msg("<likely-two@x>", "A <a@x.com>", "b@x.com", "Likely", &[], "likely"),
+    ));
+    let app = a.router();
+    let (_, exact) = get_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact?classification=exact",
+    )
+    .await;
+    let groups = exact["groups"].as_array().unwrap();
+    let first = groups
+        .iter()
+        .find(|group| group["emails"][0]["subject"] == json!("Exact One"))
+        .unwrap();
+    let second = groups
+        .iter()
+        .find(|group| group["emails"][0]["subject"] == json!("Exact Two"))
+        .unwrap();
+    let (_, likely) = get_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact?classification=likely",
+    )
+    .await;
+    let likely_group = &likely["groups"][0];
+    let first_key = first["groupKey"].clone();
+    let first_keeper = first["keeperEmailId"].clone();
+    let second_key = second["groupKey"].clone();
+
+    let (status, result) = post_json(
+        &app,
+        "/api/v1/archived-emails/duplicates/exact/approve",
+        json!({"groups":[
+            {"groupKey":first_key,"keeperEmailId":first_keeper},
+            {"groupKey":second_key,"keeperEmailId":first_keeper},
+            {"groupKey":likely_group["groupKey"],"keeperEmailId":likely_group["keeperEmailId"]},
+            {"groupKey":"not-a-group","keeperEmailId":"not-a-member"},
+            {"groupKey":first_key,"keeperEmailId":first_keeper}
+        ]}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["approvedGroups"], json!(1));
+    assert_eq!(result["deletedEmails"], json!(1));
+    assert_eq!(
+        result["rejectedGroups"],
+        json!([
+            {"groupKey":second_key,"reason":"keeper_not_member"},
+            {"groupKey":likely_group["groupKey"],"reason":"group_not_exact"},
+            {"groupKey":"not-a-group","reason":"unknown_group"},
+            {"groupKey":first_key,"reason":"duplicate_group"}
+        ])
+    );
+    let (_, trash) = get_json(&app, "/api/v1/archived-emails?trashed=true").await;
+    assert_eq!(trash["total"], json!(1));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -243,6 +413,8 @@ async fn exact_duplicate_ignore_hides_group() {
     let (s, res) = post_json(&app, "/api/v1/archived-emails/duplicates/exact/ignore", json!({ "groupKeys": [gkey] })).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["ignoredGroups"].as_i64().unwrap(), 1);
+    let (_, repeated) = post_json(&app, "/api/v1/archived-emails/duplicates/exact/ignore", json!({ "groupKeys": [gkey, "crafted"] })).await;
+    assert_eq!(repeated["ignoredGroups"], json!(0), "ignore is idempotent and crafted keys are rejected");
     let (_, after) = get_json(&app, "/api/v1/archived-emails/duplicates/exact").await;
     assert_eq!(after["totalGroups"].as_i64().unwrap(), 0, "ignored group is hidden");
 }
@@ -403,11 +575,12 @@ async fn writes_edge_cases() {
     let (s, res) = post_json(
         &app,
         "/api/v1/archived-emails/duplicates/exact/approve",
-        json!({"groups":[{"groupKey":"g","keeperEmailId":"","duplicateEmailIds":["x"]}]}),
+        json!({"groups":[{"groupKey":"g","keeperEmailId":""}]}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["deletedEmails"], json!(0));
+    assert_eq!(res["rejectedGroups"][0]["reason"], json!("unknown_group"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -10,7 +10,7 @@
 //!    marker added; the /eml endpoint splices the blobs back for download.
 //!  - pdf/docx/xlsx attachment text is extracted so it is searchable.
 
-use crate::state::AppState;
+use crate::{duplicates, state::AppState};
 use mail_parser::{Message, MessageParser, MimeHeaders};
 use std::sync::LazyLock;
 use regex::Regex;
@@ -37,23 +37,6 @@ fn normalize_source_path(path: &str) -> String {
         .filter(|p| !p.is_empty() && *p != "." && *p != "..")
         .collect::<Vec<_>>()
         .join("/")
-}
-
-fn normalize_duplicate_text(value: &str) -> String {
-    static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
-    static NON_ALNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^a-z0-9]+").unwrap());
-    static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-    let v = TAGS.replace_all(value, " ").to_lowercase();
-    let v = NON_ALNUM.replace_all(&v, " ");
-    WS.replace_all(v.trim(), " ").into_owned()
-}
-
-fn duplicate_hash(value: &str) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(sha256_hex(value.as_bytes()))
-    }
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -1157,23 +1140,17 @@ pub(crate) fn process_email(
         }
     }
     let sender_email = email.from.first().map(|a| a.address.clone()).unwrap_or_default();
-    let duplicate_subject_hash = duplicate_hash(&normalize_duplicate_text(&email.subject));
     let body_or_html = if !email.body.is_empty() { &email.body } else { &email.html };
-    let duplicate_body_hash = duplicate_hash(&normalize_duplicate_text(body_or_html));
-    let mut recipient_addresses: Vec<String> = email
-        .to
-        .iter()
-        .chain(email.cc.iter())
-        .chain(email.bcc.iter())
-        .map(|a| a.address.trim().to_lowercase())
-        .filter(|a| !a.is_empty())
-        .collect();
-    recipient_addresses.sort();
-    let duplicate_recipient_fingerprint = if recipient_addresses.is_empty() {
-        None
-    } else {
-        duplicate_hash(&recipient_addresses.join("|"))
-    };
+    let duplicate_signals = duplicates::derive_signals(
+        &email.subject,
+        body_or_html,
+        email
+            .to
+            .iter()
+            .chain(email.cc.iter())
+            .chain(email.bcc.iter())
+            .map(|address| address.address.as_str()),
+    );
 
     let storage_path_segment = if source_path.is_empty() {
         String::new()
@@ -1248,9 +1225,9 @@ pub(crate) fn process_email(
                 eml_buffer.len() as i64,
                 !email.attachments.is_empty(),
                 source_path,
-                duplicate_subject_hash,
-                duplicate_body_hash,
-                duplicate_recipient_fingerprint,
+                duplicate_signals.subject_hash,
+                duplicate_signals.body_hash,
+                duplicate_signals.recipient_fingerprint,
                 Option::<String>::None,
                 serde_json::to_string(&email_tags).unwrap(),
             ],
@@ -1328,9 +1305,7 @@ pub(crate) fn process_email(
         }
         // Fingerprint the distinct attachments: a doubled part must not make an
         // email fail to match an otherwise identical copy that carried it once.
-        attachment_hashes.sort();
-        attachment_hashes.dedup();
-        let fingerprint = duplicate_hash(&attachment_hashes.join("|"));
+        let fingerprint = duplicates::derive_attachment_fingerprint(&attachment_hashes);
         conn
             .execute(
                 "UPDATE archived_emails SET duplicate_attachment_fingerprint = ? WHERE id = ?",
@@ -1578,19 +1553,6 @@ mod tests {
         assert_eq!(honest_attachment_name(Some("image/JPEG; name=x")), "attachment.jpg");
         assert_eq!(honest_attachment_name(Some("application/x-weird")), "attachment");
         assert_eq!(honest_attachment_name(None), "attachment");
-    }
-
-    #[test]
-    fn normalize_duplicate_text_strips_markup_and_case() {
-        assert_eq!(normalize_duplicate_text("<b>Hello,  World!</b>"), "hello world");
-        assert_eq!(normalize_duplicate_text("A---B"), "a b");
-    }
-
-    #[test]
-    fn duplicate_hash_basics() {
-        assert!(duplicate_hash("").is_none());
-        assert_eq!(duplicate_hash("x"), duplicate_hash("x"));
-        assert!(duplicate_hash("x") != duplicate_hash("y"));
     }
 
     #[test]

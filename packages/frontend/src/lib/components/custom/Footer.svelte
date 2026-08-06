@@ -9,7 +9,7 @@
 				© {new Date().getFullYear()} PEA (Personal Email Archive)
 			</p>
 			<p class="text-muted-foreground text-balance text-center text-xs leading-loose">
-				Based on the upstream
+				Forked from
 				<a
 					href="https://github.com/LogicLabs-OU/OpenArchiver"
 					target="_blank"

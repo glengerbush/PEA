@@ -27,7 +27,14 @@ fn msg_with_attachment(mid: &str, subject: &str, body: &str, filename: &str, att
          Content-Type: text/plain; name=\"{filename}\"\n\
          Content-Disposition: attachment; filename=\"{filename}\"\n\n{att}\n--XB--\n"
     );
-    mbox_msg(mid, "Alice <alice@example.com>", "bob@example.com", subject, &[ct], &mime)
+    mbox_msg(
+        mid,
+        "Alice <alice@example.com>",
+        "bob@example.com",
+        subject,
+        &[ct],
+        &mime,
+    )
 }
 
 // ---- browse (no query) ----
@@ -36,9 +43,30 @@ async fn browse_with_no_query_returns_every_email() {
     let a = TempArchive::new();
     let mbox = format!(
         "{}{}{}",
-        mbox_msg("<b1@x>", "Alice <alice@example.com>", "bob@x.com", "One", &[], "aaa"),
-        mbox_msg("<b2@x>", "Alice <alice@example.com>", "bob@x.com", "Two", &[], "bbb"),
-        mbox_msg("<b3@x>", "Alice <alice@example.com>", "bob@x.com", "Three", &[], "ccc"),
+        mbox_msg(
+            "<b1@x>",
+            "Alice <alice@example.com>",
+            "bob@x.com",
+            "One",
+            &[],
+            "aaa"
+        ),
+        mbox_msg(
+            "<b2@x>",
+            "Alice <alice@example.com>",
+            "bob@x.com",
+            "Two",
+            &[],
+            "bbb"
+        ),
+        mbox_msg(
+            "<b3@x>",
+            "Alice <alice@example.com>",
+            "bob@x.com",
+            "Three",
+            &[],
+            "ccc"
+        ),
     );
     assert_eq!(a.import_mbox_str(&mbox), 3);
     let app = a.router();
@@ -53,7 +81,14 @@ async fn browse_with_no_query_returns_every_email() {
 async fn field_scoping_restricts_to_named_fields() {
     let a = TempArchive::new();
     // subject "alphaword", body "zuluword" — disjoint tokens.
-    let mbox = mbox_msg("<fs@x>", "Alice <alice@example.com>", "bob@x.com", "alphaword", &[], "zuluword here");
+    let mbox = mbox_msg(
+        "<fs@x>",
+        "Alice <alice@example.com>",
+        "bob@x.com",
+        "alphaword",
+        &[],
+        "zuluword here",
+    );
     a.import_mbox_str(&mbox);
     let app = a.router();
 
@@ -132,7 +167,14 @@ async fn advanced_fields_can_match_all_or_any() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_as_you_type_matches_prefixes() {
     let a = TempArchive::new();
-    a.import_mbox_str(&mbox_msg("<p@x>", "Alice <a@x.com>", "b@x.com", "Sub", &[], "reprapper firmware"));
+    a.import_mbox_str(&mbox_msg(
+        "<p@x>",
+        "Alice <a@x.com>",
+        "b@x.com",
+        "Sub",
+        &[],
+        "reprapper firmware",
+    ));
     let app = a.router();
     for q in ["repr", "reprap", "reprapper"] {
         let (_, b) = get_json(&app, &format!("/api/v1/archived-emails?q={q}")).await;
@@ -148,15 +190,36 @@ async fn has_attachments_filter() {
     let a = TempArchive::new();
     let mbox = format!(
         "{}{}",
-        msg_with_attachment("<a1@x>", "WithAtt", "sharedtoken body", "notes.txt", "attach text"),
-        mbox_msg("<a2@x>", "Alice <a@x.com>", "b@x.com", "NoAtt", &[], "sharedtoken body"),
+        msg_with_attachment(
+            "<a1@x>",
+            "WithAtt",
+            "sharedtoken body",
+            "notes.txt",
+            "attach text"
+        ),
+        mbox_msg(
+            "<a2@x>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "NoAtt",
+            &[],
+            "sharedtoken body"
+        ),
     );
     assert_eq!(a.import_mbox_str(&mbox), 2);
     let app = a.router();
-    let (_, b) = get_json(&app, "/api/v1/archived-emails?q=sharedtoken&hasAttachments=true").await;
+    let (_, b) = get_json(
+        &app,
+        "/api/v1/archived-emails?q=sharedtoken&hasAttachments=true",
+    )
+    .await;
     assert_eq!(total(&b), 1, "only the attachment-bearing email");
     assert_eq!(subjects(&b), vec!["WithAtt"]);
-    let (_, b) = get_json(&app, "/api/v1/archived-emails?q=sharedtoken&hasAttachments=false").await;
+    let (_, b) = get_json(
+        &app,
+        "/api/v1/archived-emails?q=sharedtoken&hasAttachments=false",
+    )
+    .await;
     assert_eq!(total(&b), 1, "only the attachment-free email");
     assert_eq!(subjects(&b), vec!["NoAtt"]);
 }
@@ -167,12 +230,30 @@ async fn from_filter_matches_sender_email() {
     let a = TempArchive::new();
     let mbox = format!(
         "{}{}",
-        mbox_msg("<s1@x>", "Alice <alice@example.com>", "b@x.com", "FromAlice", &[], "sharedtoken"),
-        mbox_msg("<s2@x>", "Carol <carol@example.com>", "b@x.com", "FromCarol", &[], "sharedtoken"),
+        mbox_msg(
+            "<s1@x>",
+            "Alice <alice@example.com>",
+            "b@x.com",
+            "FromAlice",
+            &[],
+            "sharedtoken"
+        ),
+        mbox_msg(
+            "<s2@x>",
+            "Carol <carol@example.com>",
+            "b@x.com",
+            "FromCarol",
+            &[],
+            "sharedtoken"
+        ),
     );
     a.import_mbox_str(&mbox);
     let app = a.router();
-    let (_, b) = get_json(&app, "/api/v1/archived-emails?q=sharedtoken&from=alice@example.com").await;
+    let (_, b) = get_json(
+        &app,
+        "/api/v1/archived-emails?q=sharedtoken&from=alice@example.com",
+    )
+    .await;
     assert_eq!(total(&b), 1);
     assert_eq!(subjects(&b), vec!["FromAlice"]);
 }
@@ -195,7 +276,9 @@ async fn pagination_total_consistent_and_slices_disjoint() {
     }
     assert_eq!(a.import_mbox_str(&mbox), 5);
     let app = a.router();
-    let page = |p: i32| format!("/api/v1/archived-emails?q=widget&sort=subject&direction=asc&limit=2&page={p}");
+    let page = |p: i32| {
+        format!("/api/v1/archived-emails?q=widget&sort=subject&direction=asc&limit=2&page={p}")
+    };
 
     let (_, p1) = get_json(&app, &page(1)).await;
     let (_, p2) = get_json(&app, &page(2)).await;
@@ -214,15 +297,44 @@ async fn sort_by_subject_ascending_and_descending() {
     let a = TempArchive::new();
     let mbox = format!(
         "{}{}{}",
-        mbox_msg("<z1@x>", "Alice <a@x.com>", "b@x.com", "Banana", &[], "fruittoken"),
-        mbox_msg("<z2@x>", "Alice <a@x.com>", "b@x.com", "Apple", &[], "fruittoken"),
-        mbox_msg("<z3@x>", "Alice <a@x.com>", "b@x.com", "Cherry", &[], "fruittoken"),
+        mbox_msg(
+            "<z1@x>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "Banana",
+            &[],
+            "fruittoken"
+        ),
+        mbox_msg(
+            "<z2@x>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "Apple",
+            &[],
+            "fruittoken"
+        ),
+        mbox_msg(
+            "<z3@x>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "Cherry",
+            &[],
+            "fruittoken"
+        ),
     );
     a.import_mbox_str(&mbox);
     let app = a.router();
-    let (_, asc) = get_json(&app, "/api/v1/archived-emails?q=fruittoken&sort=subject&direction=asc").await;
+    let (_, asc) = get_json(
+        &app,
+        "/api/v1/archived-emails?q=fruittoken&sort=subject&direction=asc",
+    )
+    .await;
     assert_eq!(subjects(&asc), vec!["Apple", "Banana", "Cherry"]);
-    let (_, desc) = get_json(&app, "/api/v1/archived-emails?q=fruittoken&sort=subject&direction=desc").await;
+    let (_, desc) = get_json(
+        &app,
+        "/api/v1/archived-emails?q=fruittoken&sort=subject&direction=desc",
+    )
+    .await;
     assert_eq!(subjects(&desc), vec!["Cherry", "Banana", "Apple"]);
 }
 
@@ -232,8 +344,22 @@ async fn matching_strategy_and_or_fallback() {
     let a = TempArchive::new();
     let mbox = format!(
         "{}{}",
-        mbox_msg("<m1@x>", "Alice <a@x.com>", "b@x.com", "M1", &[], "alphatok betatok"),
-        mbox_msg("<m2@x>", "Alice <a@x.com>", "b@x.com", "M2", &[], "alphatok gammatok"),
+        mbox_msg(
+            "<m1@x>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "M1",
+            &[],
+            "alphatok betatok"
+        ),
+        mbox_msg(
+            "<m2@x>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "M2",
+            &[],
+            "alphatok gammatok"
+        ),
     );
     a.import_mbox_str(&mbox);
     let app = a.router();
@@ -248,7 +374,11 @@ async fn matching_strategy_and_or_fallback() {
     assert_eq!(total(&b), 2, "OR fallback when AND yields nothing");
 
     // strict 'all' disables the OR fallback → 0.
-    let (_, b) = get_json(&app, "/api/v1/archived-emails?q=betatok%20gammatok&matchingStrategy=all").await;
+    let (_, b) = get_json(
+        &app,
+        "/api/v1/archived-emails?q=betatok%20gammatok&matchingStrategy=all",
+    )
+    .await;
     assert_eq!(total(&b), 0, "strict all: no OR fallback");
 }
 
@@ -258,14 +388,32 @@ async fn tags_filter_and_facets() {
     let a = TempArchive::new();
     let mbox = format!(
         "{}{}",
-        mbox_msg("<t1@x>", "Alice <a@x.com>", "b@x.com", "Tagged", &[], "tagtoken"),
-        mbox_msg("<t2@x>", "Alice <a@x.com>", "b@x.com", "Untagged", &[], "tagtoken"),
+        mbox_msg(
+            "<t1@x>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "Tagged",
+            &[],
+            "tagtoken"
+        ),
+        mbox_msg(
+            "<t2@x>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "Untagged",
+            &[],
+            "tagtoken"
+        ),
     );
     a.import_mbox_str(&mbox);
     let app = a.router();
 
     // find the id of "Tagged" and tag it "work".
-    let (_, all) = get_json(&app, "/api/v1/archived-emails?q=tagtoken&sort=subject&direction=asc").await;
+    let (_, all) = get_json(
+        &app,
+        "/api/v1/archived-emails?q=tagtoken&sort=subject&direction=asc",
+    )
+    .await;
     let tagged_id = all["hits"][0]["id"].as_str().unwrap().to_string(); // "Tagged" < "Untagged"
     assert_eq!(all["hits"][0]["subject"], json!("Tagged"));
     let (s, _) = post_json(
@@ -284,15 +432,30 @@ async fn tags_filter_and_facets() {
     // facets expose the tag
     let (s, facets) = get_json(&app, "/api/v1/archived-emails/facets").await;
     assert_eq!(s, StatusCode::OK);
-    let tags: Vec<String> = facets["tags"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect();
-    assert!(tags.contains(&"work".to_string()), "facets list the 'work' tag, got {tags:?}");
+    let tags: Vec<String> = facets["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        tags.contains(&"work".to_string()),
+        "facets list the 'work' tag, got {tags:?}"
+    );
 }
 
 // ---- robustness: blank / punctuation queries must not error or dump everything wrongly ----
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blank_and_punctuation_queries_are_safe() {
     let a = TempArchive::new();
-    a.import_mbox_str(&mbox_msg("<r1@x>", "Alice <a@x.com>", "b@x.com", "Sub", &[], "safetoken"));
+    a.import_mbox_str(&mbox_msg(
+        "<r1@x>",
+        "Alice <a@x.com>",
+        "b@x.com",
+        "Sub",
+        &[],
+        "safetoken",
+    ));
     let app = a.router();
 
     // whitespace-only query is treated as "browse all"

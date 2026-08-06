@@ -6,11 +6,11 @@
 use crate::preview::{self, normalize_content_type};
 use crate::state::AppState;
 use crate::{ingest, queue};
-use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::net::IpAddr;
+use std::sync::LazyLock;
 
 const MAX_REMOTE_URLS_PER_EMAIL: usize = 50;
 const MAX_REMOTE_CONTENT_BYTES: usize = 5 * 1024 * 1024;
@@ -80,12 +80,18 @@ fn is_blocked_ip(addr: &IpAddr) -> bool {
             }
             if seg[0] == 0x2002 {
                 return is_private_ipv4([
-                    (seg[1] >> 8) as u8, seg[1] as u8, (seg[2] >> 8) as u8, seg[2] as u8,
+                    (seg[1] >> 8) as u8,
+                    seg[1] as u8,
+                    (seg[2] >> 8) as u8,
+                    seg[2] as u8,
                 ]);
             }
             if seg[0] == 0x0064 && seg[1] == 0xff9b {
                 return is_private_ipv4([
-                    (seg[6] >> 8) as u8, seg[6] as u8, (seg[7] >> 8) as u8, seg[7] as u8,
+                    (seg[6] >> 8) as u8,
+                    seg[6] as u8,
+                    (seg[7] >> 8) as u8,
+                    seg[7] as u8,
                 ]);
             }
             v6.is_unspecified()
@@ -110,17 +116,25 @@ fn is_default_port(url: &url::Url) -> bool {
 /// private-range blocking. Returns the pinned address.
 fn assert_safe_remote_url(url: &url::Url) -> Result<IpAddr, FetchError> {
     if url.scheme() != "http" && url.scheme() != "https" {
-        return Err(FetchError::Blocked("Unsupported remote content protocol".into()));
+        return Err(FetchError::Blocked(
+            "Unsupported remote content protocol".into(),
+        ));
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(FetchError::Blocked("Credentialed remote content URLs are blocked".into()));
+        return Err(FetchError::Blocked(
+            "Credentialed remote content URLs are blocked".into(),
+        ));
     }
     if !is_default_port(url) {
-        return Err(FetchError::Blocked("Non-standard remote content ports are blocked".into()));
+        return Err(FetchError::Blocked(
+            "Non-standard remote content ports are blocked".into(),
+        ));
     }
     let hostname = url.host_str().unwrap_or("").to_lowercase();
     if hostname == "localhost" || hostname.ends_with(".localhost") {
-        return Err(FetchError::Blocked("Localhost remote content is blocked".into()));
+        return Err(FetchError::Blocked(
+            "Localhost remote content is blocked".into(),
+        ));
     }
     let lookup_host = hostname.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = lookup_host.parse::<IpAddr>() {
@@ -135,12 +149,16 @@ fn assert_safe_remote_url(url: &url::Url) -> Result<IpAddr, FetchError> {
     // 'failed', not 'blocked'.
     let addresses: Vec<IpAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(lookup_host, 80))
         .map_err(|_| {
-            FetchError::Failed(format!("Could not resolve host '{lookup_host}' (DNS lookup failed)"))
+            FetchError::Failed(format!(
+                "Could not resolve host '{lookup_host}' (DNS lookup failed)"
+            ))
         })?
         .map(|sa| sa.ip())
         .collect();
     if addresses.is_empty() {
-        return Err(FetchError::Blocked("Remote content host did not resolve".into()));
+        return Err(FetchError::Blocked(
+            "Remote content host did not resolve".into(),
+        ));
     }
     if let Some(blocked) = addresses.iter().find(|a| is_blocked_ip(a)) {
         return Err(FetchError::Blocked(format!(
@@ -199,7 +217,10 @@ fn human_size(bytes: usize) -> String {
     }
 }
 
-fn validate_archivable(body: &[u8], content_type_header: Option<&str>) -> Result<String, FetchError> {
+fn validate_archivable(
+    body: &[u8],
+    content_type_header: Option<&str>,
+) -> Result<String, FetchError> {
     if body.is_empty() {
         return Err(FetchError::Blocked("Remote content is empty".into()));
     }
@@ -215,7 +236,9 @@ fn validate_archivable(body: &[u8], content_type_header: Option<&str>) -> Result
             )));
         }
         if !looks_like_text(body) {
-            return Err(FetchError::Blocked("Remote stylesheet is not valid text".into()));
+            return Err(FetchError::Blocked(
+                "Remote stylesheet is not valid text".into(),
+            ));
         }
         return Ok("text/css".into());
     }
@@ -316,7 +339,10 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
                     innermost_cause(&e)
                 ))
             } else {
-                FetchError::Failed(format!("Remote content request failed: {}", innermost_cause(&e)))
+                FetchError::Failed(format!(
+                    "Remote content request failed: {}",
+                    innermost_cause(&e)
+                ))
             }
         })?;
 
@@ -370,7 +396,11 @@ fn fetch_remote_content(raw_url: &str, redirect_count: usize) -> Result<Fetched,
         body.extend_from_slice(&buf[..n]);
     }
     let content_type = validate_archivable(&body, content_type_header.as_deref())?;
-    Ok(Fetched { body, content_type, final_url: url.to_string() })
+    Ok(Fetched {
+        body,
+        content_type,
+        final_url: url.to_string(),
+    })
 }
 
 /// Flips emails to 'pending' and queues an archive batch.
@@ -546,7 +576,10 @@ fn archive_stylesheet_subresources(state: &AppState, email_id: &str) {
             continue;
         };
         let css = String::from_utf8_lossy(&bytes);
-        let base = sheet.final_url.clone().unwrap_or_else(|| sheet.original_url.clone());
+        let base = sheet
+            .final_url
+            .clone()
+            .unwrap_or_else(|| sheet.original_url.clone());
         for m in URL_PAT.captures_iter(&css) {
             let raw = m
                 .get(1)
@@ -597,7 +630,9 @@ fn summarize_status(archived: i64, failed: i64, blocked: i64) -> &'static str {
 
 fn archive_email_remote_content(state: &AppState, email_id: &str) -> Result<(), String> {
     let storage_path: Option<String> = {
-        let Ok(conn) = state.pool.get() else { return Ok(()) };
+        let Ok(conn) = state.pool.get() else {
+            return Ok(());
+        };
         conn.query_row(
             "SELECT storage_path FROM archived_emails WHERE id = ?",
             [email_id],
@@ -605,7 +640,9 @@ fn archive_email_remote_content(state: &AppState, email_id: &str) -> Result<(), 
         )
         .ok()
     };
-    let Some(storage_path) = storage_path else { return Ok(()) };
+    let Some(storage_path) = storage_path else {
+        return Ok(());
+    };
 
     if let Ok(conn) = state.pool.get() {
         conn.execute(
@@ -668,7 +705,12 @@ fn recompute_email_status(state: &AppState, email_id: &str) {
     conn.execute(
         "UPDATE archived_emails SET remote_content_status = ?, remote_content_asset_count = ?, \
          remote_content_archived_at = ? WHERE id = ?",
-        rusqlite::params![summarize_status(archived, failed, blocked), archived, now_ms(), email_id],
+        rusqlite::params![
+            summarize_status(archived, failed, blocked),
+            archived,
+            now_ms(),
+            email_id
+        ],
     )
     .ok();
 }
@@ -703,7 +745,10 @@ fn prune_tracking_assets(state: &AppState, email_id: &str) -> usize {
     for (asset_id, url) in rows {
         if preview::is_likely_tracking_url_pub(&url)
             && conn
-                .execute("DELETE FROM remote_content_assets WHERE id = ?", [&asset_id])
+                .execute(
+                    "DELETE FROM remote_content_assets WHERE id = ?",
+                    [&asset_id],
+                )
                 .unwrap_or(0)
                 > 0
         {
@@ -848,29 +893,61 @@ mod tests {
     #[test]
     fn validate_archivable_sniffs_and_rejects() {
         let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
-        assert_eq!(validate_archivable(&png, None).ok().as_deref(), Some("image/png"));
+        assert_eq!(
+            validate_archivable(&png, None).ok().as_deref(),
+            Some("image/png")
+        );
         assert!(validate_archivable(b"", None).is_err());
         assert!(validate_archivable(b"not an image", Some("text/plain")).is_err());
         assert_eq!(
-            validate_archivable(b"body { color: red }", Some("text/css")).ok().as_deref(),
+            validate_archivable(b"body { color: red }", Some("text/css"))
+                .ok()
+                .as_deref(),
             Some("text/css")
         );
         // The block reason names the actual, specific content type.
         let svg = validate_archivable(b"<svg></svg>", Some("image/svg+xml")).unwrap_err();
-        assert!(svg.message().contains("image/svg+xml"), "reason: {}", svg.message());
-        let html = validate_archivable(b"<html></html>", Some("text/html; charset=utf-8")).unwrap_err();
-        assert!(html.message().contains("text/html"), "reason: {}", html.message());
+        assert!(
+            svg.message().contains("image/svg+xml"),
+            "reason: {}",
+            svg.message()
+        );
+        let html =
+            validate_archivable(b"<html></html>", Some("text/html; charset=utf-8")).unwrap_err();
+        assert!(
+            html.message().contains("text/html"),
+            "reason: {}",
+            html.message()
+        );
     }
 
     #[test]
     fn ipv6_blocking() {
         use std::net::IpAddr;
         assert!(is_blocked_ip(&"::1".parse::<IpAddr>().unwrap()), "loopback");
-        assert!(is_blocked_ip(&"::ffff:127.0.0.1".parse::<IpAddr>().unwrap()), "mapped loopback");
-        assert!(is_blocked_ip(&"::127.0.0.1".parse::<IpAddr>().unwrap()), "ipv4-compatible loopback");
-        assert!(is_blocked_ip(&"2002:7f00:0001::".parse::<IpAddr>().unwrap()), "6to4 wrapping 127.0.0.1");
-        assert!(is_blocked_ip(&"64:ff9b::a00:1".parse::<IpAddr>().unwrap()), "NAT64 wrapping 10.0.0.1");
-        assert!(!is_blocked_ip(&"2001:4860:4860::8888".parse::<IpAddr>().unwrap()), "public ipv6");
-        assert!(!is_blocked_ip(&"2002:0808:0808::".parse::<IpAddr>().unwrap()), "6to4 wrapping public 8.8.8.8");
+        assert!(
+            is_blocked_ip(&"::ffff:127.0.0.1".parse::<IpAddr>().unwrap()),
+            "mapped loopback"
+        );
+        assert!(
+            is_blocked_ip(&"::127.0.0.1".parse::<IpAddr>().unwrap()),
+            "ipv4-compatible loopback"
+        );
+        assert!(
+            is_blocked_ip(&"2002:7f00:0001::".parse::<IpAddr>().unwrap()),
+            "6to4 wrapping 127.0.0.1"
+        );
+        assert!(
+            is_blocked_ip(&"64:ff9b::a00:1".parse::<IpAddr>().unwrap()),
+            "NAT64 wrapping 10.0.0.1"
+        );
+        assert!(
+            !is_blocked_ip(&"2001:4860:4860::8888".parse::<IpAddr>().unwrap()),
+            "public ipv6"
+        );
+        assert!(
+            !is_blocked_ip(&"2002:0808:0808::".parse::<IpAddr>().unwrap()),
+            "6to4 wrapping public 8.8.8.8"
+        );
     }
 }

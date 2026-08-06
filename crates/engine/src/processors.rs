@@ -4,7 +4,12 @@ use crate::state::AppState;
 use crate::{import_source, ingest, queue, search, sessions, sources};
 use serde_json::{json, Value};
 
-pub fn dispatch(state: &AppState, queue_name: &str, name: &str, payload: &Value) -> Result<(), String> {
+pub fn dispatch(
+    state: &AppState,
+    queue_name: &str,
+    name: &str,
+    payload: &Value,
+) -> Result<(), String> {
     match (queue_name, name) {
         ("ingestion", "initial-import") => initial_import(state, payload),
         ("ingestion", "process-mailbox") => process_mailbox(state, payload),
@@ -115,8 +120,8 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
             Some(root_id) => sources::find_by_id(&conn, root_id)?,
             None => sources::find_by_id(&conn, &source_id)?,
         };
-        let group_ids = search::group_source_ids(&conn, &source_id)
-            .ok_or("Ingestion source not found")?;
+        let group_ids =
+            search::group_source_ids(&conn, &source_id).ok_or("Ingestion source not found")?;
 
         // Collect archived ids, then flush in indexing-batch-sized chunks.
         let mut pending: Vec<String> = Vec::new();
@@ -127,7 +132,13 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
             let mut last_beat = std::time::Instant::now();
             let mut handler = |email: ingest::EmailObj| {
                 match ingest::process_email(
-                    state, &conn, &source_id, &group_ids, &effective, &email, &import_name,
+                    state,
+                    &conn,
+                    &source_id,
+                    &group_ids,
+                    &effective,
+                    &email,
+                    &import_name,
                 ) {
                     Ok(Some(id)) => pending.push(id),
                     Ok(None) => {}
@@ -156,8 +167,10 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
             }
         }
         for chunk in pending.chunks(batch_size.max(1)) {
-            let emails: Vec<Value> =
-                chunk.iter().map(|id| json!({ "archivedEmailId": id })).collect();
+            let emails: Vec<Value> = chunk
+                .iter()
+                .map(|id| json!({ "archivedEmailId": id }))
+                .collect();
             queue::send_job(
                 state,
                 "indexing",
@@ -239,11 +252,18 @@ fn import_cycle_finished(state: &AppState, payload: &Value) -> Result<(), String
             session.error_messages.join("\n")
         )
     } else if is_initial || session.is_initial_import {
-        format!("Import finished. Archived {} mailbox(es).", session.completed_mailboxes)
+        format!(
+            "Import finished. Archived {} mailbox(es).",
+            session.completed_mailboxes
+        )
     } else {
         "Import completed successfully.".to_string()
     };
-    let final_status = if source.status == "paused" { "paused" } else { status };
+    let final_status = if source.status == "paused" {
+        "paused"
+    } else {
+        status
+    };
     sources::update_source(
         state,
         &conn,
@@ -290,7 +310,9 @@ fn index_email_batch(state: &AppState, payload: &Value) -> Result<(), String> {
         .and_then(|v| v.as_array())
         .ok_or("missing emails")?;
     for entry in emails {
-        let Some(id) = entry.get("archivedEmailId").and_then(|v| v.as_str()) else { continue };
+        let Some(id) = entry.get("archivedEmailId").and_then(|v| v.as_str()) else {
+            continue;
+        };
         if let Err(e) = ingest::index_email(state, &conn, id) {
             eprintln!("[index] failed to index email {id}: {e}");
         }

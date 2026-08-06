@@ -4,24 +4,23 @@
 //! pea-engine binary wraps it for standalone/debug serving and CLI imports.
 
 pub mod api;
-pub mod import_source;
-mod readers;
 pub mod duplicates;
 pub mod emails;
 mod eml;
 pub mod handlers;
+pub mod import_source;
 pub mod ingest;
 pub mod preview;
 pub mod processors;
 pub mod provision;
 pub mod queue;
+mod readers;
 pub mod remote_content;
 pub mod search;
 pub mod sessions;
 pub mod sources;
 pub mod state;
 pub mod writes;
-
 
 use state::AppState;
 use std::path::Path;
@@ -104,6 +103,8 @@ pub fn state_for_dir(data_dir: &Path, read_only: bool) -> Result<AppState, Strin
             duplicates::DuplicateCache::default(),
         )),
         queue_nudge: std::sync::Arc::new(tokio::sync::Notify::new()),
-        frontend_dir: std::env::var("FRONTEND_BUILD_DIR").ok().map(std::path::PathBuf::from),
+        frontend_dir: std::env::var("FRONTEND_BUILD_DIR")
+            .ok()
+            .map(std::path::PathBuf::from),
     })
 }

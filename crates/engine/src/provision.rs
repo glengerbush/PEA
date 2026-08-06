@@ -9,8 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-static MIGRATIONS: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/migrations");
+static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
 /// Apply pending migrations, recording each in `__drizzle_migrations` by
 /// sha256 hash in journal `when` order.
@@ -49,8 +48,14 @@ pub fn run_migrations(conn: &Connection) -> Result<usize, String> {
     conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
     let result = (|| -> Result<usize, String> {
         for entry in entries {
-            let tag = entry.get("tag").and_then(|t| t.as_str()).ok_or("entry missing tag")?;
-            let when = entry.get("when").and_then(|w| w.as_i64()).ok_or("entry missing when")?;
+            let tag = entry
+                .get("tag")
+                .and_then(|t| t.as_str())
+                .ok_or("entry missing tag")?;
+            let when = entry
+                .get("when")
+                .and_then(|w| w.as_i64())
+                .ok_or("entry missing when")?;
             if last_created_at.map_or(false, |last| last >= when) {
                 continue;
             }
@@ -60,7 +65,8 @@ pub fn run_migrations(conn: &Connection) -> Result<usize, String> {
                 .contents_utf8()
                 .ok_or("migration not utf8")?;
             for stmt in sql.split("--> statement-breakpoint") {
-                conn.execute_batch(stmt).map_err(|e| format!("{tag}: {e}"))?;
+                conn.execute_batch(stmt)
+                    .map_err(|e| format!("{tag}: {e}"))?;
             }
             let hash = crate::hex_encode(Sha256::digest(sql.as_bytes()));
             conn.execute(

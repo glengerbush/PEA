@@ -90,7 +90,6 @@
 			retrying = { ...retrying, [emailId]: false };
 		}
 	}
-
 </script>
 
 {#snippet sortHeader(field: string, label: string)}

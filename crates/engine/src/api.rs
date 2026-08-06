@@ -24,7 +24,11 @@ async fn archived_emails(
 ) -> Json<Value> {
     let started = search::now_ms();
     let conn = app.pool.get().unwrap();
-    Json(search::query_archived_emails(&conn, &qlookup(&params), started))
+    Json(search::query_archived_emails(
+        &conn,
+        &qlookup(&params),
+        started,
+    ))
 }
 
 async fn facets(State(app): State<AppState>) -> Json<Value> {
@@ -38,7 +42,11 @@ async fn dashboard_stats(State(app): State<AppState>) -> Json<Value> {
     // list, facets, top senders), so the dashboard totals must match — otherwise
     // trashing emails never moves these numbers.
     let total_emails: i64 = conn
-        .query_row("SELECT count(*) FROM archived_emails WHERE deleted_at IS NULL", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM archived_emails WHERE deleted_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     let total_storage: i64 = conn
         .query_row(
@@ -111,13 +119,16 @@ async fn settings_system(State(app): State<AppState>) -> Json<Value> {
         "autoCheckUpdates": true,
     });
     let config: Option<String> = conn
-        .query_row("SELECT config FROM system_settings LIMIT 1", [], |r| r.get(0))
+        .query_row("SELECT config FROM system_settings LIMIT 1", [], |r| {
+            r.get(0)
+        })
         .ok();
     match config {
         Some(stored) => {
-            if let Some(stored) = serde_json::from_str::<Value>(&stored).ok().and_then(|v| {
-                v.as_object().cloned()
-            }) {
+            if let Some(stored) = serde_json::from_str::<Value>(&stored)
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+            {
                 let m = merged.as_object_mut().unwrap();
                 for (k, v) in stored {
                     m.insert(k, v);
@@ -203,7 +214,13 @@ async fn jobs_queues(State(app): State<AppState>) -> Json<Value> {
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?),
+                (
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ),
             ))
         })
         .unwrap();
@@ -261,11 +278,20 @@ pub fn router(state: AppState) -> Router {
             "/archived-emails/duplicates/exact/approve-all",
             post(writes::approve_all_exact_duplicates),
         )
-        .route("/archived-emails/duplicates/exact/ignore", post(writes::ignore_exact))
+        .route(
+            "/archived-emails/duplicates/exact/ignore",
+            post(writes::ignore_exact),
+        )
         .route("/archived-emails/bulk/tags", post(writes::update_tags))
         .route("/archived-emails/bulk/delete", post(writes::bulk_delete))
-        .route("/archived-emails/trash/restore", post(writes::restore_emails))
-        .route("/archived-emails/trash/delete", post(writes::permanent_delete_emails))
+        .route(
+            "/archived-emails/trash/restore",
+            post(writes::restore_emails),
+        )
+        .route(
+            "/archived-emails/trash/delete",
+            post(writes::permanent_delete_emails),
+        )
         .route("/archived-emails/trash/empty", post(writes::empty_trash))
         .route(
             "/archived-emails/{id}",
@@ -276,8 +302,14 @@ pub fn router(state: AppState) -> Router {
             "/archived-emails/{id}/attachments/archive",
             get(handlers::download_all_attachments),
         )
-        .route("/archived-emails/{id}/eml", get(handlers::download_email_eml))
-        .route("/archived-emails/{id}/raw", get(handlers::download_email_raw))
+        .route(
+            "/archived-emails/{id}/eml",
+            get(handlers::download_email_eml),
+        )
+        .route(
+            "/archived-emails/{id}/raw",
+            get(handlers::download_email_raw),
+        )
         .route(
             "/attachments/quicklook",
             post(handlers::quicklook_attachment),
@@ -300,13 +332,19 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/dashboard/stats", get(dashboard_stats))
         .route("/dashboard/ingestion-history", get(dashboard_history))
-        .route("/dashboard/ingestion-sources", get(handlers::dashboard_sources))
+        .route(
+            "/dashboard/ingestion-sources",
+            get(handlers::dashboard_sources),
+        )
         .route("/dashboard/indexed-insights", get(dashboard_insights))
         .route(
             "/dashboard/remote-content-issues",
             get(handlers::remote_content_issues),
         )
-        .route("/settings/system", get(settings_system).put(writes::update_settings))
+        .route(
+            "/settings/system",
+            get(settings_system).put(writes::update_settings),
+        )
         .route("/contacts/map", get(contacts_map))
         .route("/contacts/import", post(writes::import_contacts))
         .route(
@@ -319,10 +357,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/ingestion-sources/{id}/pause", post(writes::pause_source))
         .route("/ingestion-sources/{id}/reimport", post(writes::reimport))
-        .route("/ingestion-sources/{id}/unmerge", post(writes::unmerge_source))
+        .route(
+            "/ingestion-sources/{id}/unmerge",
+            post(writes::unmerge_source),
+        )
         .route("/storage/download", get(handlers::storage_download))
         .route("/jobs/queues", get(jobs_queues))
-        .route("/jobs/queues/{queueName}", get(handlers::jobs_queue_details));
+        .route(
+            "/jobs/queues/{queueName}",
+            get(handlers::jobs_queue_details),
+        );
     Router::new()
         .nest("/api/v1", api)
         .fallback(static_files)

@@ -2,17 +2,21 @@
 //! auto-trigger import), update (ready → initial import),
 //! delete (children, storage, FTS, row), unmerge, and re-import.
 
-use crate::state::AppState;
 use crate::queue;
-use std::sync::LazyLock;
+use crate::state::AppState;
 use regex::Regex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::sync::LazyLock;
 
 /// deriveSourceName — mbox folder → top-level folder → single filename →
 /// "<provider minus _import> import".
 pub fn derive_source_name(dto: &Value) -> String {
-    let explicit = dto.get("name").and_then(|n| n.as_str()).unwrap_or("").trim();
+    let explicit = dto
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .trim();
     if !explicit.is_empty() {
         return explicit.to_string();
     }
@@ -23,9 +27,13 @@ pub fn derive_source_name(dto: &Value) -> String {
         .map(|a| a.iter().collect())
         .unwrap_or_default();
 
-    static MBOX_SEG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)([^/]+)\.mbox(?:/|$)").unwrap());
+    static MBOX_SEG: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)([^/]+)\.mbox(?:/|$)").unwrap());
     for file in &files {
-        let rel = file.get("relativePath").and_then(|r| r.as_str()).unwrap_or("");
+        let rel = file
+            .get("relativePath")
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
         if let Some(m) = MBOX_SEG.captures(rel) {
             return m[1].to_string();
         }
@@ -56,10 +64,14 @@ pub fn derive_source_name(dto: &Value) -> String {
                 .map(String::from)
         });
     if let Some(name) = single {
-        static EXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mbox|eml|emlx)$").unwrap());
+        static EXT: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?i)\.(mbox|eml|emlx)$").unwrap());
         return EXT.replace(&name, "").to_string();
     }
-    let provider = dto.get("provider").and_then(|p| p.as_str()).unwrap_or("import");
+    let provider = dto
+        .get("provider")
+        .and_then(|p| p.as_str())
+        .unwrap_or("import");
     format!("{} import", provider.trim_end_matches("_import"))
 }
 
@@ -125,7 +137,11 @@ pub fn import_progress_json(conn: &Connection, id: &str) -> Value {
     .ok()
     .filter(|(total, _)| *total > 0)
     .map(|(total, processed)| {
-        let percent = processed.saturating_mul(100).checked_div(total).unwrap_or(0).clamp(0, 100);
+        let percent = processed
+            .saturating_mul(100)
+            .checked_div(total)
+            .unwrap_or(0)
+            .clamp(0, 100);
         json!({ "processedBytes": processed, "totalBytes": total, "percent": percent })
     })
     .unwrap_or(Value::Null)
@@ -167,12 +183,19 @@ pub fn update_source(
     dto: &Value,
 ) -> Result<(), String> {
     let original_status: String = conn
-        .query_row("SELECT status FROM ingestion_sources WHERE id = ?", [id], |r| r.get(0))
+        .query_row(
+            "SELECT status FROM ingestion_sources WHERE id = ?",
+            [id],
+            |r| r.get(0),
+        )
         .map_err(|_| "Ingestion source not found".to_string())?;
 
     let mut sets: Vec<String> = Vec::new();
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
-    let push = |sets: &mut Vec<String>, params: &mut Vec<rusqlite::types::Value>, col: &str, v: rusqlite::types::Value| {
+    let push = |sets: &mut Vec<String>,
+                params: &mut Vec<rusqlite::types::Value>,
+                col: &str,
+                v: rusqlite::types::Value| {
         sets.push(format!("{col} = ?"));
         params.push(v);
     };
@@ -183,7 +206,12 @@ pub fn update_source(
         push(&mut sets, &mut params, "status", status.to_string().into());
     }
     if let Some(msg) = dto.get("lastImportStatusMessage").and_then(|v| v.as_str()) {
-        push(&mut sets, &mut params, "last_import_status_message", msg.to_string().into());
+        push(
+            &mut sets,
+            &mut params,
+            "last_import_status_message",
+            msg.to_string().into(),
+        );
     }
     // Persist the PROVIDED lastImport* value (epoch-ms number or ISO string; an
     // explicit null clears the column) rather than overwriting it with now.
@@ -194,7 +222,9 @@ pub fn update_source(
         if let Some(n) = v.as_i64() {
             return Some(n.into());
         }
-        v.as_str().and_then(crate::search::parse_timestamp).map(Into::into)
+        v.as_str()
+            .and_then(crate::search::parse_timestamp)
+            .map(Into::into)
     };
     if let Some(val) = dto.get("lastImportFinishedAt").and_then(ts_value) {
         push(&mut sets, &mut params, "last_import_finished_at", val);
@@ -204,11 +234,19 @@ pub fn update_source(
     }
     if let Some(config) = dto.get("providerConfig") {
         // Stored as plain JSON — see the note on find_by_id.
-        push(&mut sets, &mut params, "provider_config", config.to_string().into());
+        push(
+            &mut sets,
+            &mut params,
+            "provider_config",
+            config.to_string().into(),
+        );
     }
     if !sets.is_empty() {
         // Leave updated_at untouched on these updates.
-        let sql = format!("UPDATE ingestion_sources SET {} WHERE id = ?", sets.join(", "));
+        let sql = format!(
+            "UPDATE ingestion_sources SET {} WHERE id = ?",
+            sets.join(", ")
+        );
         params.push(id.to_string().into());
         conn.execute(&sql, rusqlite::params_from_iter(params.iter()))
             .map_err(|e| e.to_string())?;
@@ -231,7 +269,10 @@ pub fn create_source(state: &AppState, conn: &Connection, dto: &Value) -> Result
         .and_then(|v| v.as_str())
         .ok_or("provider is required")?
         .to_string();
-    let provider_config = dto.get("providerConfig").cloned().unwrap_or_else(|| json!({}));
+    let provider_config = dto
+        .get("providerConfig")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     // Stored as plain JSON — see the note on find_by_id.
     let provider_config_json = provider_config.to_string();
 
@@ -417,16 +458,22 @@ fn delete_source_rows(
         [id],
     )
     .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM attachments WHERE ingestion_source_id = ?", [id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM attachments WHERE ingestion_source_id = ?",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute(
         "DELETE FROM email_fts WHERE rowid IN \
          (SELECT rowid FROM archived_emails WHERE ingestion_source_id = ?)",
         [id],
     )
     .ok();
-    conn.execute("DELETE FROM archived_emails WHERE ingestion_source_id = ?", [id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM archived_emails WHERE ingestion_source_id = ?",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM ingestion_sources WHERE id = ?", [id])
         .map_err(|e| e.to_string())?;
 

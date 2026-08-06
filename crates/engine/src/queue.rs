@@ -27,12 +27,20 @@ pub struct SendOptions<'a> {
 
 impl Default for SendOptions<'_> {
     fn default() -> Self {
-        Self { retry_limit: 4, singleton_key: None, start_after: None }
+        Self {
+            retry_limit: 4,
+            singleton_key: None,
+            start_after: None,
+        }
     }
 }
 
 pub fn master_job_options(singleton_key: &str) -> SendOptions<'_> {
-    SendOptions { retry_limit: 0, singleton_key: Some(singleton_key), start_after: None }
+    SendOptions {
+        retry_limit: 0,
+        singleton_key: Some(singleton_key),
+        start_after: None,
+    }
 }
 
 /// A one-shot job: run exactly once. File imports are single-mailbox and
@@ -41,7 +49,11 @@ pub fn master_job_options(singleton_key: &str) -> SendOptions<'_> {
 /// `is_last` and finalizes (deletes) the import session, so every retry then
 /// errors with "session not found". One shot → clean terminal 'error' state.
 pub fn no_retry() -> SendOptions<'static> {
-    SendOptions { retry_limit: 0, singleton_key: None, start_after: None }
+    SendOptions {
+        retry_limit: 0,
+        singleton_key: None,
+        start_after: None,
+    }
 }
 
 /// Enqueue a job — returns the job id, or None when singleton-suppressed.
@@ -129,8 +141,7 @@ fn claim(conn: &Connection, queue: &str, free: i64) -> Vec<ClaimedJob> {
                 id: row.get(0)?,
                 queue: queue.to_string(),
                 name: row.get(1)?,
-                payload: serde_json::from_str(&row.get::<_, String>(2)?)
-                    .unwrap_or(Value::Null),
+                payload: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or(Value::Null),
                 attempts: row.get(3)?,
                 max_attempts: row.get(4)?,
             })
@@ -169,7 +180,10 @@ fn finish(conn: &Connection, job: &ClaimedJob, result: Result<(), String>) {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
-        eprintln!("[queue] {}:{} state write failed after retries", job.queue, job.name);
+        eprintln!(
+            "[queue] {}:{} state write failed after retries",
+            job.queue, job.name
+        );
     };
     match result {
         Ok(()) => durable(
@@ -183,7 +197,10 @@ fn finish(conn: &Connection, job: &ClaimedJob, result: Result<(), String>) {
                     "UPDATE jobs SET state = 'failed', finished_at = ?, error = ? WHERE id = ?",
                     rusqlite::params![now_ms(), message, job.id],
                 );
-                eprintln!("[queue] {}:{} failed permanently: {message}", job.queue, job.name);
+                eprintln!(
+                    "[queue] {}:{} failed permanently: {message}",
+                    job.queue, job.name
+                );
             } else {
                 let delay = (BACKOFF_BASE_MS << (attempts - 1).min(20)).min(BACKOFF_CAP_MS);
                 durable(
@@ -247,7 +264,10 @@ pub async fn start_queue(state: AppState) {
         tokio::task::spawn_blocking(move || crate::remote_content::sweep_tracking_assets(&state));
     }
     let running: Arc<HashMap<&'static str, AtomicI64>> = Arc::new(
-        QUEUE_NAMES.iter().map(|q| (*q, AtomicI64::new(0))).collect(),
+        QUEUE_NAMES
+            .iter()
+            .map(|q| (*q, AtomicI64::new(0)))
+            .collect(),
     );
 
     // Retention + stale-session sweep every 10 minutes. Every provider is a
@@ -328,8 +348,11 @@ pub fn drain_for_cli(state: &AppState) -> Result<(), String> {
                     let conn = state.pool.get().map_err(|e| e.to_string())?;
                     claim(&conn, queue, 1)
                 };
-                let Some(job) = jobs.into_iter().next() else { break };
-                let result = crate::processors::dispatch(state, &job.queue, &job.name, &job.payload);
+                let Some(job) = jobs.into_iter().next() else {
+                    break;
+                };
+                let result =
+                    crate::processors::dispatch(state, &job.queue, &job.name, &job.payload);
                 let conn = state.pool.get().map_err(|e| e.to_string())?;
                 finish(&conn, &job, result);
                 ran_any = true;

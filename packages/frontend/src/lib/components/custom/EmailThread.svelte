@@ -76,10 +76,14 @@
 						<div
 							class="flex flex-col space-y-2 text-sm font-normal leading-none text-gray-400"
 						>
-							<span>{$t('app.archive.from')}: {item.senderEmail || '(no sender)'}</span>
-							<time>{d.label === 'Received' ? 'Received ' : ''}{d.text}{d.qualifier
+							<span
+								>{$t('app.archive.from')}: {item.senderEmail || '(no sender)'}</span
+							>
+							<time
+								>{d.label === 'Received' ? 'Received ' : ''}{d.text}{d.qualifier
 									? ` (${d.qualifier})`
-									: ''}</time>
+									: ''}</time
+							>
 						</div>
 					</div>
 				{/each}

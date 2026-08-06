@@ -12,12 +12,12 @@
 
 use crate::{duplicates, state::AppState};
 use mail_parser::{Message, MessageParser, MimeHeaders};
-use std::sync::LazyLock;
 use regex::Regex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::sync::LazyLock;
 
 fn sha256_hex(data: &[u8]) -> String {
     crate::hex_encode(Sha256::digest(data))
@@ -57,7 +57,13 @@ fn sanitize_filename(name: &str) -> String {
 fn sanitize_path_component(value: &str) -> String {
     let cleaned: String = value
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let trimmed = cleaned.trim();
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
@@ -69,8 +75,9 @@ fn sanitize_path_component(value: &str) -> String {
 
 /// Strips U+FFFD and control chars, trims.
 pub(crate) fn sanitize_text(text: &str) -> String {
-    static CTRL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new("[\u{0000}-\u{0008}\u{000B}\u{000C}\u{000E}-\u{001F}\u{007F}]").unwrap());
+    static CTRL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new("[\u{0000}-\u{0008}\u{000B}\u{000C}\u{000E}-\u{001F}\u{007F}]").unwrap()
+    });
     let v = text.replace('\u{FFFD}', "");
     CTRL.replace_all(&v, "").trim().to_string()
 }
@@ -281,7 +288,12 @@ fn honest_attachment_name(content_type: Option<&str>) -> String {
 /// cover the types that actually show up nameless in real mail. Unknown types
 /// get no extension (the caller falls back to a bare "attachment").
 fn mime_extension(content_type: &str) -> Option<&'static str> {
-    let ct = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     Some(match ct.as_str() {
         "image/jpeg" => "jpg",
         "image/png" => "png",
@@ -325,13 +337,25 @@ fn html_to_text(html: &str) -> String {
         LazyLock::new(|| Regex::new(r"(?is)<script\b[^>]*>.*?</script\s*>").unwrap());
     static STYLE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?is)<style\b[^>]*>.*?</style\s*>").unwrap());
-    static HEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<head\b[^>]*>.*?</head\s*>").unwrap());
+    static HEAD: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<head\b[^>]*>.*?</head\s*>").unwrap());
     static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
-    static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<(/?)([a-z][a-z0-9]*)([^>]*)>").unwrap());
+    static TAG: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<(/?)([a-z][a-z0-9]*)([^>]*)>").unwrap());
     static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t\r\n]+").unwrap());
     static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
     static BLOCKS: [&str; 12] = [
-        "p", "div", "table", "tr", "ul", "ol", "li", "blockquote", "pre", "section", "article",
+        "p",
+        "div",
+        "table",
+        "tr",
+        "ul",
+        "ol",
+        "li",
+        "blockquote",
+        "pre",
+        "section",
+        "article",
         "header",
     ];
 
@@ -376,7 +400,9 @@ fn html_to_text(html: &str) -> String {
         let closing = !m[1].is_empty();
         let name = m[2].to_lowercase();
         let attrs = m.get(3).map(|g| g.as_str()).unwrap_or("");
-        let is_heading = name.len() == 2 && name.starts_with('h') && name[1..].chars().all(|c| c.is_ascii_digit());
+        let is_heading = name.len() == 2
+            && name.starts_with('h')
+            && name[1..].chars().all(|c| c.is_ascii_digit());
         if closing {
             if BLOCKS.contains(&name.as_str()) {
                 out.push_str("\n\n");
@@ -457,7 +483,8 @@ pub(crate) fn mailparser_text_and_html(msg: &Message) -> (String, String) {
 
     let mut html = html_parts.join("<br/>\n");
     if !html.is_empty() {
-        static CID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\bcid:([^'"\s]{1,256})"#).unwrap());
+        static CID: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"\bcid:([^'"\s]{1,256})"#).unwrap());
         static IMAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^image/\w+$").unwrap());
         html = CID
             .replace_all(&html, |c: &regex::Captures| {
@@ -491,9 +518,9 @@ pub(crate) fn mailparser_text_and_html(msg: &Message) -> (String, String) {
     }
 
     // Bare text/html root with no plain-text part → render its HTML.
-    let root_is_html = msg
-        .part(0)
-        .map_or(false, |p| part_content_type(p).as_deref() == Some("text/html"));
+    let root_is_html = msg.part(0).map_or(false, |p| {
+        part_content_type(p).as_deref() == Some("text/html")
+    });
     let text = if !text_parts.is_empty() {
         text_parts.join("\n")
     } else if !html_parts.is_empty() && root_is_html {
@@ -530,13 +557,20 @@ fn parse_display_address(raw: &str) -> Option<EmailAddr> {
             let address = raw[lt + 1..gt].trim().to_string();
             let name = raw[..lt].trim().trim_matches('"').trim().to_string();
             if !address.is_empty() {
-                let name = if name.is_empty() { address.clone() } else { name };
+                let name = if name.is_empty() {
+                    address.clone()
+                } else {
+                    name
+                };
                 return Some(EmailAddr { name, address });
             }
         }
     }
     if raw.contains('@') {
-        return Some(EmailAddr { name: raw.to_string(), address: raw.to_string() });
+        return Some(EmailAddr {
+            name: raw.to_string(),
+            address: raw.to_string(),
+        });
     }
     None
 }
@@ -628,7 +662,10 @@ pub(crate) fn parse_message(
     // Recipients / subject: same plist fallback when the message omits them.
     let mut to = map_addresses(msg.to());
     if to.is_empty() {
-        if let Some(addr) = meta.and_then(|m| m.to.as_deref()).and_then(parse_display_address) {
+        if let Some(addr) = meta
+            .and_then(|m| m.to.as_deref())
+            .and_then(parse_display_address)
+        {
             to.push(addr);
         }
     }
@@ -704,7 +741,11 @@ pub(crate) fn backfill_sent_at_kind(conn: &Connection, data_dir: &Path) -> Resul
                     .map(|msg| derive_sent_at(&msg, None))
             })
             .unwrap_or((*old_sent_at, DateKind::Unknown));
-        let sent_at = if kind == DateKind::Unknown { *old_sent_at } else { derived_ms };
+        let sent_at = if kind == DateKind::Unknown {
+            *old_sent_at
+        } else {
+            derived_ms
+        };
         tx.execute(
             "UPDATE archived_emails SET sent_at = ?, sent_at_kind = ? WHERE id = ?",
             rusqlite::params![sent_at, kind.as_str(), id],
@@ -728,11 +769,16 @@ pub(crate) fn backfill_sent_at_kind(conn: &Connection, data_dir: &Path) -> Resul
 pub(crate) fn extract_cid_references(html: &str) -> std::collections::HashSet<String> {
     // Exclude `)` too, so an unquoted CSS `url(cid:hero)` captures `hero`, not
     // `hero)` — otherwise the part reads as unreferenced and renders twice.
-    static CID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcid:([^\s"'>)]+)"#).unwrap());
+    static CID: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?i)\bcid:([^\s"'>)]+)"#).unwrap());
     CID.captures_iter(html)
         // Normalize identically to the cid_map keys: strip angle brackets and
         // lowercase, so `cid:<logo>` matches a `Content-ID: <logo>` part.
-        .map(|m| m[1].trim_start_matches('<').trim_end_matches('>').to_lowercase())
+        .map(|m| {
+            m[1].trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_lowercase()
+        })
         .collect()
 }
 
@@ -745,7 +791,11 @@ pub(crate) const PEA_ATTACHMENT_MARKER: &str = "X-PEA-Attachment";
 /// X-PEA-Attachment header can't shadow the one hollowing appended last.
 pub(crate) fn part_pea_marker(part: &mail_parser::MessagePart) -> Option<String> {
     part.headers.iter().rev().find_map(|header| {
-        if !header.name.as_str().eq_ignore_ascii_case(PEA_ATTACHMENT_MARKER) {
+        if !header
+            .name
+            .as_str()
+            .eq_ignore_ascii_case(PEA_ATTACHMENT_MARKER)
+        {
             return None;
         }
         header.value.as_text().map(|v| v.trim().to_string())
@@ -1079,13 +1129,22 @@ pub(crate) fn process_email(
 ) -> Result<Option<String>, String> {
     // Header value if present, else generated-<sha(raw)>-<sourceId>-<email.id>.
     let message_id = &email.header_message_id.clone().unwrap_or_else(|| {
-        format!("generated-{}-{}-{}", sha256_hex(&email.raw), source_id, email.id)
+        format!(
+            "generated-{}-{}-{}",
+            sha256_hex(&email.raw),
+            source_id,
+            email.id
+        )
     });
 
     // Duplicate check within the merge group (standalone source → itself).
     let placeholders = vec!["?"; group_ids.len()].join(", ");
     let mut params: Vec<rusqlite::types::Value> = vec![message_id.clone().into()];
-    params.extend(group_ids.iter().map(|s| rusqlite::types::Value::from(s.clone())));
+    params.extend(
+        group_ids
+            .iter()
+            .map(|s| rusqlite::types::Value::from(s.clone())),
+    );
     let existing: Option<String> = conn
         .query_row(
             &format!(
@@ -1139,8 +1198,16 @@ pub(crate) fn process_email(
             email_tags.push(tag);
         }
     }
-    let sender_email = email.from.first().map(|a| a.address.clone()).unwrap_or_default();
-    let body_or_html = if !email.body.is_empty() { &email.body } else { &email.html };
+    let sender_email = email
+        .from
+        .first()
+        .map(|a| a.address.clone())
+        .unwrap_or_default();
+    let body_or_html = if !email.body.is_empty() {
+        &email.body
+    } else {
+        &email.html
+    };
     let duplicate_signals = duplicates::derive_signals(
         &email.subject,
         body_or_html,
@@ -1265,28 +1332,27 @@ pub(crate) fn process_email(
                         attachment.content_type.as_deref().unwrap_or(""),
                     );
                     let id = uuid();
-                    conn
-                        .execute(
-                            "INSERT INTO attachments (id, filename, mime_type, size_bytes, \
+                    conn.execute(
+                        "INSERT INTO attachments (id, filename, mime_type, size_bytes, \
                              content_hash_sha256, storage_path, ingestion_source_id, \
                              content_description, original_created_at, original_modified_at, \
                              extracted_text) \
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            rusqlite::params![
-                                id,
-                                attachment.filename,
-                                attachment.content_type,
-                                attachment.content.len() as i64,
-                                attachment_hash,
-                                storage_path,
-                                effective.id,
-                                attachment.content_description,
-                                attachment.creation_date,
-                                attachment.modification_date,
-                                extracted,
-                            ],
-                        )
-                        .map_err(|e| e.to_string())?;
+                        rusqlite::params![
+                            id,
+                            attachment.filename,
+                            attachment.content_type,
+                            attachment.content.len() as i64,
+                            attachment_hash,
+                            storage_path,
+                            effective.id,
+                            attachment.content_description,
+                            attachment.creation_date,
+                            attachment.modification_date,
+                            extracted,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
                     id
                 }
             };
@@ -1295,23 +1361,21 @@ pub(crate) fn process_email(
             // attachments row is deduped by content hash above, so a link per
             // part would record the same (email, attachment) fact twice —
             // email_attachments is a set, with no column to tell the rows apart.
-            conn
-                .execute(
-                    "INSERT OR IGNORE INTO email_attachments (id, email_id, attachment_id) \
+            conn.execute(
+                "INSERT OR IGNORE INTO email_attachments (id, email_id, attachment_id) \
                      VALUES (?, ?, ?)",
-                    rusqlite::params![uuid(), archived_id, attachment_id],
-                )
-                .map_err(|e| e.to_string())?;
+                rusqlite::params![uuid(), archived_id, attachment_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         // Fingerprint the distinct attachments: a doubled part must not make an
         // email fail to match an otherwise identical copy that carried it once.
         let fingerprint = duplicates::derive_attachment_fingerprint(&attachment_hashes);
-        conn
-            .execute(
-                "UPDATE archived_emails SET duplicate_attachment_fingerprint = ? WHERE id = ?",
-                rusqlite::params![fingerprint, archived_id],
-            )
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE archived_emails SET duplicate_attachment_fingerprint = ? WHERE id = ?",
+            rusqlite::params![fingerprint, archived_id],
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -1319,7 +1383,11 @@ pub(crate) fn process_email(
 }
 
 /// Index one email: build its FTS document and insert it.
-pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -> Result<(), String> {
+pub(crate) fn index_email(
+    state: &AppState,
+    conn: &Connection,
+    email_id: &str,
+) -> Result<(), String> {
     struct Row {
         subject: Option<String>,
         sender_email: String,
@@ -1383,7 +1451,9 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
             )
             .map_err(|e| e.to_string())?;
         let atts: Vec<(String, Option<String>, String, Option<String>)> = stmt
-            .query_map([email_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .query_map([email_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
             .collect();
@@ -1442,16 +1512,18 @@ pub(crate) fn index_email(state: &AppState, conn: &Connection, email_id: &str) -
         .collect::<Vec<_>>()
         .join("\n");
     let source_path_value = row.source_path.clone().unwrap_or_default();
-    let mut meta_parts: Vec<String> = vec![sanitize_text(&row.import_source), sanitize_text(&source_path_value)];
+    let mut meta_parts: Vec<String> = vec![
+        sanitize_text(&row.import_source),
+        sanitize_text(&source_path_value),
+    ];
     meta_parts.extend(tags.iter().map(|t| sanitize_text(t)));
     let meta = meta_parts.join(" ");
 
-    conn
-        .execute(
-            "DELETE FROM email_fts WHERE rowid = (SELECT rowid FROM archived_emails WHERE id = ?)",
-            [email_id],
-        )
-        .ok();
+    conn.execute(
+        "DELETE FROM email_fts WHERE rowid = (SELECT rowid FROM archived_emails WHERE id = ?)",
+        [email_id],
+    )
+    .ok();
     conn
         .execute(
             "INSERT INTO email_fts (rowid, email_id, subject, body, sender, recipients, attachments, meta) \
@@ -1517,7 +1589,10 @@ mod tests {
         let expect = (1_602_180_060_000i64, DateKind::SentZoneUnknown);
         assert_eq!(date_of(b"Date: 08 Oct 20 18:01:00\r\n\r\nbody\r\n"), expect);
         // Four-digit year, still no zone (mail_parser rejects this too).
-        assert_eq!(date_of(b"Date: 08 Oct 2020 18:01:00\r\n\r\nbody\r\n"), expect);
+        assert_eq!(
+            date_of(b"Date: 08 Oct 2020 18:01:00\r\n\r\nbody\r\n"),
+            expect
+        );
     }
 
     /// No Date header: fall back to the earliest Received time, labeled Received
@@ -1532,26 +1607,52 @@ mod tests {
 
     #[test]
     fn no_timestamp_anywhere_is_unknown() {
-        assert_eq!(date_of(b"Subject: x\r\n\r\nbody\r\n"), (0, DateKind::Unknown));
+        assert_eq!(
+            date_of(b"Subject: x\r\n\r\nbody\r\n"),
+            (0, DateKind::Unknown)
+        );
         // Garbage Date, no Received: still unknown, never fabricated.
-        assert_eq!(date_of(b"Date: not a date\r\n\r\nbody\r\n"), (0, DateKind::Unknown));
+        assert_eq!(
+            date_of(b"Date: not a date\r\n\r\nbody\r\n"),
+            (0, DateKind::Unknown)
+        );
         // Present-but-invalid zone must not get +0000 tacked on and mis-parsed.
-        assert_eq!(date_of(b"Date: 08 Oct 2020 18:01:00 +9999\r\n\r\nbody\r\n"), (0, DateKind::Unknown));
+        assert_eq!(
+            date_of(b"Date: 08 Oct 2020 18:01:00 +9999\r\n\r\nbody\r\n"),
+            (0, DateKind::Unknown)
+        );
     }
 
     #[test]
     fn emlx_date_sent_is_sent_kind() {
-        let meta = EmlxMeta { date_sent_ms: Some(1_602_194_460_000), ..Default::default() };
-        let msg = MessageParser::default().parse(b"Subject: x\r\n\r\nbody\r\n").unwrap();
-        assert_eq!(derive_sent_at(&msg, Some(&meta)), (1_602_194_460_000, DateKind::Sent));
+        let meta = EmlxMeta {
+            date_sent_ms: Some(1_602_194_460_000),
+            ..Default::default()
+        };
+        let msg = MessageParser::default()
+            .parse(b"Subject: x\r\n\r\nbody\r\n")
+            .unwrap();
+        assert_eq!(
+            derive_sent_at(&msg, Some(&meta)),
+            (1_602_194_460_000, DateKind::Sent)
+        );
     }
 
     #[test]
     fn honest_attachment_names_from_mime() {
         assert_eq!(honest_attachment_name(Some("image/jpeg")), "attachment.jpg");
-        assert_eq!(honest_attachment_name(Some("application/pdf")), "attachment.pdf");
-        assert_eq!(honest_attachment_name(Some("image/JPEG; name=x")), "attachment.jpg");
-        assert_eq!(honest_attachment_name(Some("application/x-weird")), "attachment");
+        assert_eq!(
+            honest_attachment_name(Some("application/pdf")),
+            "attachment.pdf"
+        );
+        assert_eq!(
+            honest_attachment_name(Some("image/JPEG; name=x")),
+            "attachment.jpg"
+        );
+        assert_eq!(
+            honest_attachment_name(Some("application/x-weird")),
+            "attachment"
+        );
         assert_eq!(honest_attachment_name(None), "attachment");
     }
 
@@ -1572,7 +1673,8 @@ mod tests {
     #[test]
     fn extract_cid_references_normalizes() {
         // case-folded, angle-brackets stripped, and deduped
-        let refs = extract_cid_references(r#"<img src="cid:Logo"><img src='cid:<logo>'> url(cid:Hero)"#);
+        let refs =
+            extract_cid_references(r#"<img src="cid:Logo"><img src='cid:<logo>'> url(cid:Hero)"#);
         assert!(refs.contains("logo"));
         assert!(refs.contains("hero"));
         assert_eq!(refs.len(), 2);
@@ -1641,7 +1743,10 @@ mod tests {
         let msg = MessageParser::default().parse(&stored).unwrap();
         let body = mailparser_text_and_html(&msg).0;
         assert!(body.contains("Look at this!"), "first text part kept");
-        assert!(body.contains("Sent from my iPhone"), "second text part kept");
+        assert!(
+            body.contains("Sent from my iPhone"),
+            "second text part kept"
+        );
         let photo = msg
             .attachments()
             .find(|p| part_content_type(p).as_deref() == Some("image/jpeg"))
@@ -1722,7 +1827,10 @@ mod tests {
         let stored = hollow_attachments_from_eml(&eml);
         let rebuilt = rebuild_eml(&stored, &|h| (h == hash).then(|| decoded.clone()));
         let text = String::from_utf8_lossy(&rebuilt);
-        assert!(text.contains("Content-Transfer-Encoding: base64"), "CTE rebased to base64");
+        assert!(
+            text.contains("Content-Transfer-Encoding: base64"),
+            "CTE rebased to base64"
+        );
 
         // The rebuilt attachment must decode back to the original bytes.
         let att = MessageParser::default().parse(&rebuilt).unwrap();

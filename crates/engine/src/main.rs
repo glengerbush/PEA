@@ -2,8 +2,8 @@
 //! Runs the same HTTP API as the desktop app against a chosen data dir:
 //!   pea-engine --data-dir ~/.local/share/pea --port 47200 [--read-only]
 
-use pea_engine::{ingest, provision, queue, state_for_dir};
 use pea_engine::api::router;
+use pea_engine::{ingest, provision, queue, state_for_dir};
 use std::path::PathBuf;
 
 fn main() {
@@ -40,7 +40,9 @@ fn main() {
         }
     }
 
-    let port: u16 = get_arg("--port").and_then(|p| p.parse().ok()).unwrap_or(47200);
+    let port: u16 = get_arg("--port")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(47200);
     let read_only = args.iter().any(|a| a == "--read-only");
 
     if !read_only {

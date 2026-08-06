@@ -73,8 +73,7 @@ pub fn find_by_id(conn: &Connection, session_id: &str) -> Result<SessionRecord, 
                 total_mailboxes: row.get(2)?,
                 completed_mailboxes: row.get(3)?,
                 failed_mailboxes: row.get(4)?,
-                error_messages: serde_json::from_str(&row.get::<_, String>(5)?)
-                    .unwrap_or_default(),
+                error_messages: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
             })
         },
     )
@@ -111,7 +110,9 @@ pub fn record_mailbox_result(
     .map_err(|e| e.to_string())?;
 
     let processed = completed + failed;
-    Ok(MailboxResultOutcome { is_last: processed >= total })
+    Ok(MailboxResultOutcome {
+        is_last: processed >= total,
+    })
 }
 
 pub fn heartbeat(conn: &Connection, session_id: &str) {
@@ -123,7 +124,8 @@ pub fn heartbeat(conn: &Connection, session_id: &str) {
 }
 
 pub fn finalize(conn: &Connection, session_id: &str) {
-    conn.execute("DELETE FROM import_sessions WHERE id = ?", [session_id]).ok();
+    conn.execute("DELETE FROM import_sessions WHERE id = ?", [session_id])
+        .ok();
 }
 
 /// cleanStaleSessions — sessions silent for 30min: finished ones are removed
@@ -139,7 +141,13 @@ pub fn clean_stale_sessions(conn: &Connection) {
     };
     let stale: Vec<(String, String, i64, i64, i64)> = stmt
         .query_map([cutoff], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default();
@@ -153,6 +161,7 @@ pub fn clean_stale_sessions(conn: &Connection) {
             )
             .ok();
         }
-        conn.execute("DELETE FROM import_sessions WHERE id = ?", [id]).ok();
+        conn.execute("DELETE FROM import_sessions WHERE id = ?", [id])
+            .ok();
     }
 }

@@ -23,13 +23,18 @@ async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     };
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     (status, bytes.to_vec())
 }
 
 async fn get_json(app: &Router, uri: &str) -> (StatusCode, Value) {
     let (status, bytes) = send(app, "GET", uri, None).await;
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -56,7 +61,10 @@ async fn api_handlers_smoke() {
     let (s, body) = get_json(&app, "/api/v1/dashboard/stats").await;
     assert_eq!(s, StatusCode::OK, "dashboard/stats status");
     assert_eq!(body["totalEmailsArchived"], json!(7), "stats email count");
-    assert!(body["totalStorageUsed"].as_i64().unwrap() > 0, "stats storage");
+    assert!(
+        body["totalStorageUsed"].as_i64().unwrap() > 0,
+        "stats storage"
+    );
 
     // ---- archived-emails list (FTS query path): total == 7, hits populated ----
     let (s, body) = get_json(&app, "/api/v1/archived-emails?limit=50").await;
@@ -86,12 +94,27 @@ async fn api_handlers_smoke() {
     assert_eq!(body["id"], json!(some_id), "detail id echoes");
 
     // ---- raw + eml download (binary bodies) ----
-    let (s, bytes) = send(&app, "GET", &format!("/api/v1/archived-emails/{some_id}/raw"), None).await;
+    let (s, bytes) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/archived-emails/{some_id}/raw"),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "raw status");
     assert!(!bytes.is_empty(), "raw body non-empty");
-    let (s, bytes) = send(&app, "GET", &format!("/api/v1/archived-emails/{some_id}/eml"), None).await;
+    let (s, bytes) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/archived-emails/{some_id}/eml"),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "eml status");
-    assert!(bytes.windows(5).any(|w| w == b"From:"), "eml is a real message");
+    assert!(
+        bytes.windows(5).any(|w| w == b"From:"),
+        "eml is a real message"
+    );
 
     // ---- unknown id → 404 (not a 500) ----
     let (s, _) = get_json(&app, "/api/v1/archived-emails/does-not-exist").await;
@@ -128,12 +151,20 @@ async fn api_handlers_smoke() {
     )
     .await;
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    assert_eq!(s, StatusCode::OK, "contacts import status (schema still valid)");
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "contacts import status (schema still valid)"
+    );
     assert_eq!(body["imported"], json!(2), "two contacts imported");
 
     let (s, body) = get_json(&app, "/api/v1/contacts/map").await;
     assert_eq!(s, StatusCode::OK, "contacts/map after import");
-    assert_eq!(body["alice@example.com"], json!("Alice A"), "imported contact resolves");
+    assert_eq!(
+        body["alice@example.com"],
+        json!("Alice A"),
+        "imported contact resolves"
+    );
 
     // ---- bad request: missing format ----
     let (s, _) = send(

@@ -13,7 +13,14 @@ fn rich_html_email() -> String {
         <div style=\"background:url(http://127.0.0.1:1/d.png); width:100px; behavior:url(evil)\">styled</div>\
         <p>visible body text</p>\
         </body></html>";
-    mbox_msg("<rich@x>", "Alice <a@x.com>", "b@x.com", "Rich", &[mime], body)
+    mbox_msg(
+        "<rich@x>",
+        "Alice <a@x.com>",
+        "b@x.com",
+        "Rich",
+        &[mime],
+        body,
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -21,13 +28,25 @@ async fn preview_sanitizes_rich_html() {
     let a = TempArchive::new();
     a.import_mbox_str(&rich_html_email());
     let app = a.router();
-    let id = { let (_, b) = get_json(&app, "/api/v1/archived-emails").await; b["hits"][0]["id"].as_str().unwrap().to_string() };
-    let (s, bytes) = send(&app, "GET", &format!("/api/v1/archived-emails/{id}/preview"), None).await;
+    let id = {
+        let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
+        b["hits"][0]["id"].as_str().unwrap().to_string()
+    };
+    let (s, bytes) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/archived-emails/{id}/preview"),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let html = String::from_utf8_lossy(&bytes);
     assert!(html.contains("visible body text"), "text preserved");
     assert!(html.contains("good.example.com"), "safe link kept");
-    assert!(!html.contains("javascript:"), "javascript: link neutralized");
+    assert!(
+        !html.contains("javascript:"),
+        "javascript: link neutralized"
+    );
     assert!(!html.contains("behavior"), "css behavior stripped");
     assert!(!html.contains("@import"), "css @import stripped");
     // (unarchived remote URLs may remain — they're neutralized by the preview CSP,
@@ -39,11 +58,23 @@ async fn preview_plain_text_email() {
     let a = TempArchive::new();
     a.import_mbox_str(&simple_mbox("PlainSub", "line one\nline two"));
     let app = a.router();
-    let id = { let (_, b) = get_json(&app, "/api/v1/archived-emails").await; b["hits"][0]["id"].as_str().unwrap().to_string() };
-    let (s, bytes) = send(&app, "GET", &format!("/api/v1/archived-emails/{id}/preview"), None).await;
+    let id = {
+        let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
+        b["hits"][0]["id"].as_str().unwrap().to_string()
+    };
+    let (s, bytes) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/archived-emails/{id}/preview"),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let html = String::from_utf8_lossy(&bytes);
-    assert!(html.contains("line one") && html.contains("line two"), "text rendered");
+    assert!(
+        html.contains("line one") && html.contains("line two"),
+        "text rendered"
+    );
     assert!(html.contains("<br"), "newlines become <br>");
 }
 
@@ -54,9 +85,19 @@ async fn email_detail_has_full_shape() {
     let mime = r#"Content-Type: multipart/mixed; boundary="B""#;
     let parts = "--B\nContent-Type: text/plain\n\nhello\n\
         --B\nContent-Type: text/plain; name=\"notes.txt\"\nContent-Disposition: attachment; filename=\"notes.txt\"\n\nattached\n--B--\n";
-    a.import_mbox_str(&mbox_msg("<det@x>", "Alice <a@x.com>", "bob@x.com", "Detail", &[mime], parts));
+    a.import_mbox_str(&mbox_msg(
+        "<det@x>",
+        "Alice <a@x.com>",
+        "bob@x.com",
+        "Detail",
+        &[mime],
+        parts,
+    ));
     let app = a.router();
-    let id = { let (_, b) = get_json(&app, "/api/v1/archived-emails").await; b["hits"][0]["id"].as_str().unwrap().to_string() };
+    let id = {
+        let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
+        b["hits"][0]["id"].as_str().unwrap().to_string()
+    };
     let (s, d) = get_json(&app, &format!("/api/v1/archived-emails/{id}")).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(d["id"], json!(id));
@@ -76,17 +117,45 @@ async fn attachment_hollow_rebuild_round_trips() {
         --B\nContent-Type: application/octet-stream; name=\"data.bin\"\n\
         Content-Disposition: attachment; filename=\"data.bin\"\nContent-Transfer-Encoding: base64\n\n\
         SEVMTE9XT1JMRA==\n--B--\n";
-    a.import_mbox_str(&mbox_msg("<hb@x>", "A <a@x.com>", "b@x.com", "Att", &[mime], parts));
+    a.import_mbox_str(&mbox_msg(
+        "<hb@x>",
+        "A <a@x.com>",
+        "b@x.com",
+        "Att",
+        &[mime],
+        parts,
+    ));
     let app = a.router();
-    let id = { let (_, b) = get_json(&app, "/api/v1/archived-emails").await; b["hits"][0]["id"].as_str().unwrap().to_string() };
+    let id = {
+        let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
+        b["hits"][0]["id"].as_str().unwrap().to_string()
+    };
 
     // the stored (hollowed) .eml omits the attachment body inline...
-    let (_, raw) = send(&app, "GET", &format!("/api/v1/archived-emails/{id}/raw"), None).await;
-    assert!(!String::from_utf8_lossy(&raw).contains("SEVMTE9XT1JMRA=="), "attachment hollowed out of storage");
+    let (_, raw) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/archived-emails/{id}/raw"),
+        None,
+    )
+    .await;
+    assert!(
+        !String::from_utf8_lossy(&raw).contains("SEVMTE9XT1JMRA=="),
+        "attachment hollowed out of storage"
+    );
     // ...but the downloadable .eml splices it back in.
-    let (s, eml) = send(&app, "GET", &format!("/api/v1/archived-emails/{id}/eml"), None).await;
+    let (s, eml) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/archived-emails/{id}/eml"),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(String::from_utf8_lossy(&eml).contains("SEVMTE9XT1JMRA=="), "attachment restored on download");
+    assert!(
+        String::from_utf8_lossy(&eml).contains("SEVMTE9XT1JMRA=="),
+        "attachment restored on download"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -97,9 +166,16 @@ async fn jobs_queue_details_with_real_jobs() {
     let (_, overview) = get_json(&app, "/api/v1/jobs/queues").await;
     assert!(overview["queues"].as_array().unwrap().len() >= 1);
     // completed jobs from the import are visible
-    let (s, details) = get_json(&app, "/api/v1/jobs/queues/ingestion?status=completed&page=1&limit=10").await;
+    let (s, details) = get_json(
+        &app,
+        "/api/v1/jobs/queues/ingestion?status=completed&page=1&limit=10",
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(details["counts"]["completed"].as_i64().unwrap() >= 1, "import completed at least one ingestion job");
+    assert!(
+        details["counts"]["completed"].as_i64().unwrap() >= 1,
+        "import completed at least one ingestion job"
+    );
     // unknown status → error
     let (s, _) = get_json(&app, "/api/v1/jobs/queues/ingestion?status=bogus").await;
     assert!(s.is_client_error() || s.is_server_error());
@@ -110,13 +186,24 @@ async fn tags_combined_add_and_remove_in_one_call() {
     let a = TempArchive::new();
     a.import_mbox_str(&simple_mbox("Sub", "body"));
     let app = a.router();
-    let id = { let (_, b) = get_json(&app, "/api/v1/archived-emails").await; b["hits"][0]["id"].as_str().unwrap().to_string() };
-    let (s, res) = post_json(&app, "/api/v1/archived-emails/bulk/tags",
-        json!({ "emailIds": [id], "addTags": ["a", "b"], "removeTags": ["b"] })).await;
+    let id = {
+        let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
+        b["hits"][0]["id"].as_str().unwrap().to_string()
+    };
+    let (s, res) = post_json(
+        &app,
+        "/api/v1/archived-emails/bulk/tags",
+        json!({ "emailIds": [id], "addTags": ["a", "b"], "removeTags": ["b"] }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["updatedCount"], json!(1));
     let (_, detail) = get_json(&app, &format!("/api/v1/archived-emails/{id}")).await;
-    assert_eq!(detail["tags"].as_array().unwrap(), &vec![json!("a")], "net result is just 'a'");
+    assert_eq!(
+        detail["tags"].as_array().unwrap(),
+        &vec![json!("a")],
+        "net result is just 'a'"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -148,8 +235,12 @@ async fn bulk_delete_reports_partial_and_ignores_unknown() {
     let app = a.router();
     let (_, all) = get_json(&app, "/api/v1/archived-emails").await;
     let real = all["hits"][0]["id"].as_str().unwrap().to_string();
-    let (s, res) = post_json(&app, "/api/v1/archived-emails/bulk/delete",
-        json!({ "emailIds": [real, "does-not-exist"] })).await;
+    let (s, res) = post_json(
+        &app,
+        "/api/v1/archived-emails/bulk/delete",
+        json!({ "emailIds": [real, "does-not-exist"] }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(res["deletedCount"], json!(1), "only the real email deleted");
     let (_, after) = get_json(&app, "/api/v1/archived-emails").await;
@@ -160,14 +251,31 @@ async fn bulk_delete_reports_partial_and_ignores_unknown() {
 async fn remote_content_issue_surfaces_in_dashboard() {
     let a = TempArchive::new();
     let mime = "Content-Type: text/html; charset=utf-8";
-    a.import_mbox_str(&mbox_msg("<rci@x>", "A <a@x.com>", "b@x.com", "RC",
-        &[mime], "<html><body><img src=\"http://127.0.0.1:1/x.png\"></body></html>"));
+    a.import_mbox_str(&mbox_msg(
+        "<rci@x>",
+        "A <a@x.com>",
+        "b@x.com",
+        "RC",
+        &[mime],
+        "<html><body><img src=\"http://127.0.0.1:1/x.png\"></body></html>",
+    ));
     let app = a.router();
-    let id = { let (_, b) = get_json(&app, "/api/v1/archived-emails").await; b["hits"][0]["id"].as_str().unwrap().to_string() };
+    let id = {
+        let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
+        b["hits"][0]["id"].as_str().unwrap().to_string()
+    };
     // enqueue + run archiving (blocked by SSRF guard → a non-archived status)
-    let (_, _) = post_json(&app, &format!("/api/v1/archived-emails/{id}/remote-content/archive"), json!({})).await;
+    let (_, _) = post_json(
+        &app,
+        &format!("/api/v1/archived-emails/{id}/remote-content/archive"),
+        json!({}),
+    )
+    .await;
     pea_engine::queue::drain_for_cli(&a.state(false)).unwrap();
     let (s, issues) = get_json(&app, "/api/v1/dashboard/remote-content-issues").await;
     assert_eq!(s, StatusCode::OK);
-    assert!(issues.is_array() || issues.is_object(), "issues endpoint returns a well-formed body");
+    assert!(
+        issues.is_array() || issues.is_object(),
+        "issues endpoint returns a well-formed body"
+    );
 }

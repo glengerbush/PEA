@@ -78,7 +78,12 @@ impl Drop for TempArchive {
 
 // ---- HTTP helpers (drive the router directly) ----
 
-pub async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Vec<u8>) {
+pub async fn send(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Vec<u8>) {
     let builder = Request::builder().method(method).uri(uri);
     let req = match body {
         Some(v) => builder
@@ -89,7 +94,9 @@ pub async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) ->
     };
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     (status, bytes.to_vec())
 }
 
@@ -156,7 +163,14 @@ pub fn mbox_with_attachment(
          Content-Type: {content_type}; name=\"{filename}\"\n\
          Content-Disposition: attachment; filename=\"{filename}\"\n\n{att}\n--XB--\n"
     );
-    mbox_msg(mid, "Alice <alice@example.com>", "bob@example.com", subject, &[ct], &mime)
+    mbox_msg(
+        mid,
+        "Alice <alice@example.com>",
+        "bob@example.com",
+        subject,
+        &[ct],
+        &mime,
+    )
 }
 
 /// A single plain-text email as a full mbox (one message).

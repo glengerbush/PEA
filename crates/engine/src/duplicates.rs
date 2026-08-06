@@ -247,10 +247,7 @@ fn append_semantic_identity(out: &mut String, semantic: &SemanticKey) {
     append_optional_fingerprint_field(out, semantic.recipient_fingerprint.as_deref());
     append_fingerprint_field(out, &semantic.sent_at.to_string());
     append_optional_fingerprint_field(out, semantic.body_hash.as_deref());
-    append_optional_fingerprint_field(
-        out,
-        semantic.attachment_content_fingerprint.as_deref(),
-    );
+    append_optional_fingerprint_field(out, semantic.attachment_content_fingerprint.as_deref());
 }
 
 fn semantic_identity(semantic: &SemanticKey) -> String {
@@ -626,7 +623,9 @@ fn decide_with_current_clusters(
     include_ignored: bool,
     decide: impl FnOnce(&Connection, Vec<DuplicateCluster>) -> Result<Value, String>,
 ) -> Result<Value, String> {
-    let tx = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     let clusters = collect_duplicate_clusters(&tx, include_ignored);
     let result = decide(&tx, clusters)?;
     tx.commit().map_err(|error| error.to_string())?;

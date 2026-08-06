@@ -11,7 +11,10 @@ pub(crate) struct PreparedEmlZip {
 }
 
 fn display_name(provider_config: &Value) -> String {
-    if let Some(local) = provider_config.get("localFilePath").and_then(|v| v.as_str()) {
+    if let Some(local) = provider_config
+        .get("localFilePath")
+        .and_then(|v| v.as_str())
+    {
         let base = local.rsplit('/').next().unwrap_or(local);
         // Strip only the trailing ".zip", not every occurrence (so
         // "trip.zipped.zip" → "trip.zipped", not "tripped").
@@ -24,7 +27,10 @@ fn display_name(provider_config: &Value) -> String {
 }
 
 pub(crate) fn prepare(provider_config: &Value) -> Result<PreparedEmlZip, String> {
-    let local = provider_config.get("localFilePath").and_then(|v| v.as_str()).unwrap_or("");
+    let local = provider_config
+        .get("localFilePath")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if local.is_empty() {
         return Err("EML Zip file path not provided.".into());
     }
@@ -36,7 +42,11 @@ pub(crate) fn prepare(provider_config: &Value) -> Result<PreparedEmlZip, String>
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid EML Zip file at path {local}: {e}"))?;
     let total_bytes = (0..zip.len())
-        .filter_map(|index| zip.by_index(index).ok().map(|entry| entry.compressed_size()))
+        .filter_map(|index| {
+            zip.by_index(index)
+                .ok()
+                .map(|entry| entry.compressed_size())
+        })
         .sum();
     Ok(PreparedEmlZip {
         local_path: local.to_string(),
@@ -115,10 +125,22 @@ mod tests {
 
     #[test]
     fn display_name_strips_only_trailing_zip() {
-        assert_eq!(display_name(&json!({"localFilePath":"/x/trip.zipped.zip"})), "trip.zipped");
-        assert_eq!(display_name(&json!({"localFilePath":"/x/Backup.zip"})), "Backup");
-        assert_eq!(display_name(&json!({"localFilePath":"/x/Backup.ZIP"})), "Backup");
-        assert_eq!(display_name(&json!({"localFilePath":"noslash.zip"})), "noslash");
+        assert_eq!(
+            display_name(&json!({"localFilePath":"/x/trip.zipped.zip"})),
+            "trip.zipped"
+        );
+        assert_eq!(
+            display_name(&json!({"localFilePath":"/x/Backup.zip"})),
+            "Backup"
+        );
+        assert_eq!(
+            display_name(&json!({"localFilePath":"/x/Backup.ZIP"})),
+            "Backup"
+        );
+        assert_eq!(
+            display_name(&json!({"localFilePath":"noslash.zip"})),
+            "noslash"
+        );
     }
 
     #[test]
@@ -131,8 +153,16 @@ mod tests {
                 w.start_file(name, opts).unwrap();
                 std::io::Write::write_all(w, body.as_bytes()).unwrap();
             };
-            write(&mut w, "folder/one.eml", "From: a@x.com\nSubject: Hi\nMessage-ID: <e1@x>\n\nbody\n");
-            write(&mut w, "two.eml", "From: c@x.com\nSubject: Two\nMessage-ID: <e2@x>\n\nbody\n");
+            write(
+                &mut w,
+                "folder/one.eml",
+                "From: a@x.com\nSubject: Hi\nMessage-ID: <e1@x>\n\nbody\n",
+            );
+            write(
+                &mut w,
+                "two.eml",
+                "From: c@x.com\nSubject: Two\nMessage-ID: <e2@x>\n\nbody\n",
+            );
             write(&mut w, "readme.txt", "not an eml");
             write(&mut w, "__MACOSX/skip.eml", "junk");
             w.finish().unwrap();
@@ -152,7 +182,11 @@ mod tests {
             .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
-        assert_eq!(seen.len(), 2, "only the two real .eml entries, txt + __MACOSX skipped");
+        assert_eq!(
+            seen.len(),
+            2,
+            "only the two real .eml entries, txt + __MACOSX skipped"
+        );
         assert!(seen.iter().any(|(s, p)| s == "Hi" && p == "folder"));
         assert!(seen.iter().any(|(s, p)| s == "Two" && p.is_empty()));
     }

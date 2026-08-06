@@ -44,9 +44,7 @@ fn imports_the_sample_mbox() {
     );
     // Threading: the reply joined msg-001's thread.
     assert_eq!(
-        count(
-            "SELECT count(*) FROM archived_emails WHERE thread_id = '<msg-001@example.com>'"
-        ),
+        count("SELECT count(*) FROM archived_emails WHERE thread_id = '<msg-001@example.com>'"),
         2
     );
     // The source finished in the imported state.
@@ -61,7 +59,11 @@ fn imports_the_sample_mbox() {
     assert_eq!(message, "Import finished. Archived 1 mailbox(es).");
     // Stored emails are plain files.
     let storage_path: String = conn
-        .query_row("SELECT storage_path FROM archived_emails LIMIT 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT storage_path FROM archived_emails LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let raw = std::fs::read(state.storage_root().join(&storage_path)).unwrap();
     assert!(
@@ -72,7 +74,10 @@ fn imports_the_sample_mbox() {
     // Deleting a source that owns emails-with-attachments must fully tear down
     // (regression: the ON DELETE restrict on email_attachments.attachment_id
     // used to abort the cascade AFTER files/FTS were already wiped).
-    assert!(count("SELECT count(*) FROM attachments") > 0, "fixture has attachments");
+    assert!(
+        count("SELECT count(*) FROM attachments") > 0,
+        "fixture has attachments"
+    );
     let wstate = pea_engine::state_for_dir(&tmp, false).expect("writable state");
     let wconn = wstate.pool.get().unwrap();
     let source_id: String = wconn
@@ -80,11 +85,27 @@ fn imports_the_sample_mbox() {
         .unwrap();
     pea_engine::sources::delete_source(&wstate, &wconn, &source_id).expect("delete_source");
     let wcount = |sql: &str| -> i64 { wconn.query_row(sql, [], |r| r.get(0)).unwrap() };
-    assert_eq!(wcount("SELECT count(*) FROM archived_emails"), 0, "emails gone");
-    assert_eq!(wcount("SELECT count(*) FROM attachments"), 0, "attachments gone");
-    assert_eq!(wcount("SELECT count(*) FROM email_attachments"), 0, "junction gone");
+    assert_eq!(
+        wcount("SELECT count(*) FROM archived_emails"),
+        0,
+        "emails gone"
+    );
+    assert_eq!(
+        wcount("SELECT count(*) FROM attachments"),
+        0,
+        "attachments gone"
+    );
+    assert_eq!(
+        wcount("SELECT count(*) FROM email_attachments"),
+        0,
+        "junction gone"
+    );
     assert_eq!(wcount("SELECT count(*) FROM email_fts"), 0, "fts gone");
-    assert_eq!(wcount("SELECT count(*) FROM ingestion_sources"), 0, "source gone");
+    assert_eq!(
+        wcount("SELECT count(*) FROM ingestion_sources"),
+        0,
+        "source gone"
+    );
     assert!(
         !wstate.storage_root().join(&storage_path).exists(),
         "stored .eml blob removed"

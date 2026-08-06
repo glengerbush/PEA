@@ -1,10 +1,10 @@
 //! Archived-email deletion, tag updates, and contacts (csv/vcf import).
 
 use crate::state::AppState;
-use std::sync::LazyLock;
 use regex::Regex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::sync::LazyLock;
 
 /// Soft-delete: move an email to the trash by stamping `deleted_at`. Storage
 /// blobs, attachments, FTS rows, and the ingestion source are all left intact so
@@ -19,7 +19,11 @@ pub fn soft_delete_archived_email(conn: &Connection, email_id: &str) -> Result<(
     // Zero rows means it's missing or already trashed; only "missing" is an error.
     if affected == 0 {
         let exists: bool = conn
-            .query_row("SELECT 1 FROM archived_emails WHERE id = ?", [email_id], |_| Ok(true))
+            .query_row(
+                "SELECT 1 FROM archived_emails WHERE id = ?",
+                [email_id],
+                |_| Ok(true),
+            )
             .unwrap_or(false);
         if !exists {
             return Err("Archived email not found".to_string());
@@ -31,7 +35,10 @@ pub fn soft_delete_archived_email(conn: &Connection, email_id: &str) -> Result<(
 /// Restore an email from the trash (clear `deleted_at`).
 pub fn restore_archived_email(conn: &Connection, email_id: &str) -> Result<(), String> {
     let affected = conn
-        .execute("UPDATE archived_emails SET deleted_at = NULL WHERE id = ?", [email_id])
+        .execute(
+            "UPDATE archived_emails SET deleted_at = NULL WHERE id = ?",
+            [email_id],
+        )
         .map_err(|e| e.to_string())?;
     if affected == 0 {
         return Err("Archived email not found".to_string());
@@ -43,7 +50,11 @@ pub fn restore_archived_email(conn: &Connection, email_id: &str) -> Result<(), S
 /// shared with an email that remains is kept), storage, FTS, row, and
 /// auto-removal of an emptied file-based source in a terminal state. Used by the
 /// trash's "delete forever" / "empty trash" — soft delete is the default path.
-pub fn delete_archived_email(state: &AppState, conn: &Connection, email_id: &str) -> Result<(), String> {
+pub fn delete_archived_email(
+    state: &AppState,
+    conn: &Connection,
+    email_id: &str,
+) -> Result<(), String> {
     let email: (String, bool, Option<String>) = conn
         .query_row(
             "SELECT storage_path, has_attachments, ingestion_source_id FROM archived_emails WHERE id = ?",
@@ -136,7 +147,8 @@ const MAX_TAGS_PER_EMAIL: usize = 64;
 const MAX_TAG_LENGTH: usize = 64;
 
 fn normalize_tag(raw: &str) -> String {
-    static CTRL: LazyLock<Regex> = LazyLock::new(|| Regex::new("[\u{0000}-\u{001F}\u{007F}]").unwrap());
+    static CTRL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new("[\u{0000}-\u{001F}\u{007F}]").unwrap());
     static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
     static HASHES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#+").unwrap());
     let v = CTRL.replace_all(raw, "");
@@ -150,7 +162,10 @@ fn normalize_tag(raw: &str) -> String {
 fn normalize_tags(raw: &Value) -> Vec<String> {
     let source: Vec<String> = match raw {
         Value::String(s) => s.split(',').map(String::from).collect(),
-        Value::Array(a) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         _ => Vec::new(),
     };
     let mut tags = Vec::new();
@@ -198,7 +213,11 @@ fn apply_tag_changes(current: &Value, add: &[String], remove: &[String]) -> Vec<
 /// (the endpoint maps errors to 400 {message}).
 pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String> {
     let mut email_ids: Vec<String> = Vec::new();
-    for v in dto.get("emailIds").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
+    for v in dto
+        .get("emailIds")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&Vec::new())
+    {
         if let Some(s) = v.as_str() {
             if !s.is_empty() && !email_ids.contains(&s.to_string()) {
                 email_ids.push(s.to_string());
@@ -209,7 +228,9 @@ pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String
         return Err("At least one email must be selected".into());
     }
     if email_ids.len() > MAX_BULK_TAG_SIZE {
-        return Err(format!("At most {MAX_BULK_TAG_SIZE} emails can be updated at once"));
+        return Err(format!(
+            "At most {MAX_BULK_TAG_SIZE} emails can be updated at once"
+        ));
     }
     let added = normalize_tags(dto.get("addTags").unwrap_or(&Value::Null));
     let removed = normalize_tags(dto.get("removeTags").unwrap_or(&Value::Null));
@@ -262,7 +283,9 @@ pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .ok();
-        let Some((import_source, source_path, tags_raw)) = row else { continue };
+        let Some((import_source, source_path, tags_raw)) = row else {
+            continue;
+        };
         let tags: Vec<String> = tags_raw
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -270,7 +293,10 @@ pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String
         // sanitize_text each part exactly like index_email, so a re-index after a
         // tag edit produces the same meta as the original index.
         use crate::ingest::sanitize_text;
-        let mut meta_parts = vec![sanitize_text(&import_source), sanitize_text(&source_path.unwrap_or_default())];
+        let mut meta_parts = vec![
+            sanitize_text(&import_source),
+            sanitize_text(&source_path.unwrap_or_default()),
+        ];
         meta_parts.extend(tags.iter().map(|t| sanitize_text(t)));
         conn.execute(
             "UPDATE email_fts SET meta = ? WHERE rowid = (SELECT rowid FROM archived_emails WHERE id = ?)",
@@ -295,11 +321,17 @@ pub fn update_email_tags(conn: &Connection, dto: &Value) -> Result<Value, String
 // Contacts import (csv / vcf)
 // ---------------------------------------------------------------------------
 
-static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").unwrap());
+static EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").unwrap());
 
 fn normalize_email(value: &str) -> String {
     // trim again after dropping the scheme so "mailto: a@b.com" → "a@b.com".
-    value.trim().to_lowercase().trim_start_matches("mailto:").trim().to_string()
+    value
+        .trim()
+        .to_lowercase()
+        .trim_start_matches("mailto:")
+        .trim()
+        .to_string()
 }
 
 fn split_csv_line(line: &str) -> Vec<String> {
@@ -382,7 +414,10 @@ fn parse_csv(content: &str) -> Vec<(String, String)> {
     if records.is_empty() {
         return Vec::new();
     }
-    let header: Vec<String> = split_csv_line(&records[0]).iter().map(|h| h.to_lowercase()).collect();
+    let header: Vec<String> = split_csv_line(&records[0])
+        .iter()
+        .map(|h| h.to_lowercase())
+        .collect();
     let find_col = |needles: &[&str]| -> Option<usize> {
         header
             .iter()
@@ -398,13 +433,17 @@ fn parse_csv(content: &str) -> Vec<(String, String)> {
     let name_idx = (0..header.len()).find(|&i| {
         Some(i) != first_idx
             && Some(i) != last_idx
-            && ["display name", "full name", "name"].iter().any(|n| header[i] == *n || header[i].contains(n))
+            && ["display name", "full name", "name"]
+                .iter()
+                .any(|n| header[i] == *n || header[i].contains(n))
     });
 
     let mut results = Vec::new();
     for line in &records[1..] {
         let cells = split_csv_line(line);
-        let mut email = email_idx.and_then(|i| cells.get(i).cloned()).unwrap_or_default();
+        let mut email = email_idx
+            .and_then(|i| cells.get(i).cloned())
+            .unwrap_or_default();
         if email.is_empty() || !EMAIL_RE.is_match(&normalize_email(&email)) {
             email = cells
                 .iter()
@@ -474,7 +513,11 @@ fn parse_vcf(content: &str) -> Vec<(String, String)> {
         }
         let name = if !fn_name.is_empty() { fn_name } else { n_name };
         for email in emails {
-            let display = if name.is_empty() { email.clone() } else { name.clone() };
+            let display = if name.is_empty() {
+                email.clone()
+            } else {
+                name.clone()
+            };
             results.push((email, display));
         }
     }
@@ -483,7 +526,11 @@ fn parse_vcf(content: &str) -> Vec<(String, String)> {
 
 /// importContacts — parses, de-dupes by email (last wins), upserts.
 pub fn import_contacts(conn: &Connection, format: &str, content: &str) -> Result<Value, String> {
-    let parsed_raw = if format == "vcf" { parse_vcf(content) } else { parse_csv(content) };
+    let parsed_raw = if format == "vcf" {
+        parse_vcf(content)
+    } else {
+        parse_csv(content)
+    };
     // Dedup by email (last wins); the upserts below are independent per row,
     // so iteration order is irrelevant — a plain HashMap is sufficient.
     let mut by_email: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -494,7 +541,9 @@ pub fn import_contacts(conn: &Connection, format: &str, content: &str) -> Result
     let mut updated = 0usize;
     for (email, display_name) in &by_email {
         let existing: Option<String> = conn
-            .query_row("SELECT id FROM contacts WHERE email = ?", [email], |r| r.get(0))
+            .query_row("SELECT id FROM contacts WHERE email = ?", [email], |r| {
+                r.get(0)
+            })
             .ok();
         match existing {
             Some(id) => {
@@ -538,13 +587,20 @@ mod tests {
     fn split_csv_line_quotes_and_escapes() {
         assert_eq!(split_csv_line("a,b,c"), vec!["a", "b", "c"]);
         assert_eq!(split_csv_line(r#""a,b",c"#), vec!["a,b", "c"]);
-        assert_eq!(split_csv_line(r#""he said ""hi""",x"#), vec![r#"he said "hi""#, "x"]);
+        assert_eq!(
+            split_csv_line(r#""he said ""hi""",x"#),
+            vec![r#"he said "hi""#, "x"]
+        );
     }
 
     #[test]
     fn split_csv_records_respects_quoted_newlines() {
         let recs = split_csv_records("Name,Email\n\"Line1\nLine2\",a@x.com\n");
-        assert_eq!(recs.len(), 2, "a quoted embedded newline stays in one record");
+        assert_eq!(
+            recs.len(),
+            2,
+            "a quoted embedded newline stays in one record"
+        );
         assert_eq!(recs[0], "Name,Email");
     }
 
@@ -567,7 +623,10 @@ mod tests {
     #[test]
     fn parse_csv_keeps_quoted_newline_field() {
         let got = parse_csv("Name,Email\n\"Line1\nLine2\",a@x.com\n");
-        assert_eq!(got, vec![("a@x.com".to_string(), "Line1\nLine2".to_string())]);
+        assert_eq!(
+            got,
+            vec![("a@x.com".to_string(), "Line1\nLine2".to_string())]
+        );
     }
 
     #[test]
@@ -575,7 +634,10 @@ mod tests {
         // the email-header cell isn't a valid address → scan other cells; with no
         // name column the display defaults to the address.
         let got = parse_csv("email,other\nnotanemail,bob@x.com\n");
-        assert_eq!(got, vec![("bob@x.com".to_string(), "bob@x.com".to_string())]);
+        assert_eq!(
+            got,
+            vec![("bob@x.com".to_string(), "bob@x.com".to_string())]
+        );
     }
 
     #[test]

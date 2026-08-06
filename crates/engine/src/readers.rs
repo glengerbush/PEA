@@ -6,10 +6,10 @@
 //! alongside `Info.plist` / `Table of Contents` index files that we ignore).
 
 use crate::ingest::{parse_message, EmailObj, EmlxMeta};
-use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 static MBOX_EXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.mbox$").unwrap());
 
@@ -66,7 +66,11 @@ fn to_apple_mail_source_path(file_path: &str) -> String {
         .join("/")
 }
 
-fn find_local_inputs(import_root: &Path, dir: &Path, out: &mut Vec<MboxInput>) -> Result<(), String> {
+fn find_local_inputs(
+    import_root: &Path,
+    dir: &Path,
+    out: &mut Vec<MboxInput>,
+) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
@@ -137,7 +141,10 @@ fn find_local_inputs(import_root: &Path, dir: &Path, out: &mut Vec<MboxInput>) -
 /// getMboxInputs — resolves the source's local path (file or directory)
 /// into the list of mbox/eml/emlx inputs to import.
 fn get_mbox_inputs(provider_config: &Value) -> Result<Vec<MboxInput>, String> {
-    let local = provider_config.get("localFilePath").and_then(|v| v.as_str()).unwrap_or("");
+    let local = provider_config
+        .get("localFilePath")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if local.is_empty() {
         return Err("Mbox file or folder path not provided.".into());
     }
@@ -162,12 +169,16 @@ fn get_mbox_inputs(provider_config: &Value) -> Result<Vec<MboxInput>, String> {
     // A directly-selected inner `mbox` file counts only when its parent is a
     // `.mbox` export package (Foo.mbox/mbox), so a random `mbox` file is still
     // rejected with the same error as before.
-    let bare_mbox_in_bundle = is_bare_mbox_file(&path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
-        && path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| is_mbox_path(&n.to_string_lossy()))
-            .unwrap_or(false);
+    let bare_mbox_in_bundle = is_bare_mbox_file(
+        &path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    ) && path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| is_mbox_path(&n.to_string_lossy()))
+        .unwrap_or(false);
     if !is_mbox_path(local) && !is_eml_path(local) && !bare_mbox_in_bundle {
         return Err("Provided local file is not in the MBOX or EML format.".into());
     }
@@ -218,7 +229,10 @@ impl PreparedMbox {
 }
 
 fn mbox_display_name(provider_config: &Value) -> String {
-    if let Some(local) = provider_config.get("localFilePath").and_then(|v| v.as_str()) {
+    if let Some(local) = provider_config
+        .get("localFilePath")
+        .and_then(|v| v.as_str())
+    {
         let path = Path::new(local);
         let file = path
             .file_name()
@@ -241,11 +255,12 @@ fn mbox_display_name(provider_config: &Value) -> String {
 }
 
 fn extract_emlx_message(buffer: &[u8], file_path: &str) -> Result<(Vec<u8>, EmlxMeta), String> {
-    let newline = buffer
-        .iter()
-        .position(|b| *b == b'\n')
-        .ok_or_else(|| format!("Invalid Apple Mail EMLX file (missing length line): {file_path}"))?;
-    let length_line = String::from_utf8_lossy(&buffer[..newline]).trim().to_string();
+    let newline = buffer.iter().position(|b| *b == b'\n').ok_or_else(|| {
+        format!("Invalid Apple Mail EMLX file (missing length line): {file_path}")
+    })?;
+    let length_line = String::from_utf8_lossy(&buffer[..newline])
+        .trim()
+        .to_string();
     let message_length: usize = length_line
         .parse()
         .map_err(|_| format!("Invalid Apple Mail EMLX file (invalid length): {file_path}"))?;
@@ -255,7 +270,9 @@ fn extract_emlx_message(buffer: &[u8], file_path: &str) -> Result<(Vec<u8>, Emlx
         .checked_add(message_length)
         .ok_or_else(|| format!("Invalid Apple Mail EMLX file (truncated message): {file_path}"))?;
     if message_length == 0 || end > buffer.len() {
-        return Err(format!("Invalid Apple Mail EMLX file (truncated message): {file_path}"));
+        return Err(format!(
+            "Invalid Apple Mail EMLX file (truncated message): {file_path}"
+        ));
     }
     // Everything after the message is Apple's plist metadata trailer — parse it
     // as a fallback for messages whose own RFC-822 headers are missing.
@@ -372,7 +389,9 @@ fn for_each_mbox_message(
     let mut pending_bytes: u64 = 0;
     loop {
         line.clear();
-        let n = reader.read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
+        let n = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?;
         if n == 0 {
             break; // EOF
         }
@@ -488,8 +507,11 @@ mod tests {
             &b"From only\n\nsingle message body\n"[..],
             &b">From quoted\nFrom real\n\nbody"[..], // ">From" is not a boundary
         ] {
-            let dir = std::env::temp_dir()
-                .join(format!("pea-mboxstream-{}-{}", std::process::id(), data.len()));
+            let dir = std::env::temp_dir().join(format!(
+                "pea-mboxstream-{}-{}",
+                std::process::id(),
+                data.len()
+            ));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("s.mbox");
             std::fs::write(&path, data).unwrap();
@@ -502,9 +524,17 @@ mod tests {
             )
             .unwrap();
             std::fs::remove_dir_all(&dir).ok();
-            assert_eq!(streamed, split_mbox(data), "streaming differs from split_mbox for {data:?}");
+            assert_eq!(
+                streamed,
+                split_mbox(data),
+                "streaming differs from split_mbox for {data:?}"
+            );
             // Progress reporting must account for every input byte exactly once.
-            assert_eq!(reported_bytes, data.len() as u64, "byte progress mismatch for {data:?}");
+            assert_eq!(
+                reported_bytes,
+                data.len() as u64,
+                "byte progress mismatch for {data:?}"
+            );
         }
     }
 
@@ -516,7 +546,10 @@ mod tests {
         assert!(!is_bare_mbox_file("mbox.txt") && !is_bare_mbox_file("A.mbox"));
         assert_eq!(to_eml_source_path("a/b/c.eml"), "a/b");
         assert_eq!(to_eml_source_path("root.eml"), "");
-        assert_eq!(to_apple_mail_source_path("Parent.mbox/Data/msg.emlx"), "Parent");
+        assert_eq!(
+            to_apple_mail_source_path("Parent.mbox/Data/msg.emlx"),
+            "Parent"
+        );
         // The bare `mbox` filename is not a `.mbox` segment, so it never becomes
         // a folder — only the enclosing package name(s) do.
         assert_eq!(to_apple_mail_source_path("Parent.mbox/mbox"), "Parent");
@@ -549,10 +582,22 @@ mod tests {
             inputs.iter().all(|i| !i.is_emlx && !i.is_eml),
             "bare mbox is treated as a raw mbox stream"
         );
-        let top = inputs.iter().find(|i| i.file_path.contains("Archive.mbox")).unwrap();
-        assert_eq!(top.source_path, "Archive", "package name becomes the folder");
-        let child = inputs.iter().find(|i| i.file_path.contains("Parent.mbox")).unwrap();
-        assert_eq!(child.source_path, "Parent/Child", "nested packages nest the folder");
+        let top = inputs
+            .iter()
+            .find(|i| i.file_path.contains("Archive.mbox"))
+            .unwrap();
+        assert_eq!(
+            top.source_path, "Archive",
+            "package name becomes the folder"
+        );
+        let child = inputs
+            .iter()
+            .find(|i| i.file_path.contains("Parent.mbox"))
+            .unwrap();
+        assert_eq!(
+            child.source_path, "Parent/Child",
+            "nested packages nest the folder"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -589,7 +634,10 @@ mod tests {
         let cfg = serde_json::json!({ "localFilePath": pkg.to_string_lossy() });
         let inputs = get_mbox_inputs(&cfg).unwrap();
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].source_path, "", "package is the root, no folder prefix");
+        assert_eq!(
+            inputs[0].source_path, "",
+            "package is the root, no folder prefix"
+        );
         assert_eq!(mbox_display_name(&cfg), "Sent Messages");
 
         // Selecting the inner `mbox` file directly is also accepted and named
@@ -629,7 +677,10 @@ mod tests {
         assert_eq!(emails.len(), 2, "both mbox messages imported");
         assert_eq!(emails[0].subject, "One");
         assert_eq!(emails[1].subject, "Two");
-        assert!(emails.iter().all(|e| e.path == "Archive"), "folder tag is the package name");
+        assert!(
+            emails.iter().all(|e| e.path == "Archive"),
+            "folder tag is the package name"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -651,7 +702,12 @@ mod tests {
 
     #[test]
     fn extract_emlx_reads_declared_length() {
-        assert_eq!(extract_emlx_message(b"5\nhello world extra", "x.emlx").unwrap().0, b"hello");
+        assert_eq!(
+            extract_emlx_message(b"5\nhello world extra", "x.emlx")
+                .unwrap()
+                .0,
+            b"hello"
+        );
     }
 
     #[test]
@@ -703,7 +759,11 @@ mod tests {
         let mut inputs = Vec::new();
         find_local_inputs(&dir, &dir, &mut inputs).unwrap();
 
-        assert_eq!(inputs.len(), 1, "only the real .emlx is imported, sidecars skipped");
+        assert_eq!(
+            inputs.len(),
+            1,
+            "only the real .emlx is imported, sidecars skipped"
+        );
         assert!(inputs[0].is_emlx && inputs[0].file_path.ends_with("32590.emlx"));
         assert!(!inputs[0].file_path.contains("._"));
         std::fs::remove_dir_all(&dir).ok();
@@ -728,7 +788,10 @@ mod tests {
             .iter()
             .find(|i| i.file_path.ends_with("b.eml"))
             .unwrap();
-        assert_eq!(nested.source_path, "Saved", "folder becomes the source path");
+        assert_eq!(
+            nested.source_path, "Saved",
+            "folder becomes the source path"
+        );
         let root = inputs
             .iter()
             .find(|i| i.file_path.ends_with("a.eml"))

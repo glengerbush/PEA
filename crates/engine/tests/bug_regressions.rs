@@ -5,7 +5,12 @@ use common::*;
 
 async fn all_ids(app: &axum::Router) -> Vec<String> {
     let (_, b) = get_json(app, "/api/v1/archived-emails?limit=50").await;
-    b["hits"].as_array().unwrap().iter().map(|h| h["id"].as_str().unwrap().to_string()).collect()
+    b["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["id"].as_str().unwrap().to_string())
+        .collect()
 }
 
 // BUG (data loss): approving a duplicate group whose keeper does not exist must
@@ -13,7 +18,14 @@ async fn all_ids(app: &axum::Router) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approve_exact_preserves_data_when_keeper_missing() {
     let a = TempArchive::new();
-    let email = mbox_msg("<keeper@x>", "Alice <a@x.com>", "b@x.com", "Keeper", &[], "x");
+    let email = mbox_msg(
+        "<keeper@x>",
+        "Alice <a@x.com>",
+        "b@x.com",
+        "Keeper",
+        &[],
+        "x",
+    );
     a.import_mbox_str(&email);
     a.import_mbox_str(&email);
     let app = a.router();
@@ -30,8 +42,15 @@ async fn approve_exact_preserves_data_when_keeper_missing() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(res["deletedEmails"], json!(0), "nothing deleted when keeper absent");
-    assert_eq!(res["rejectedGroups"][0]["reason"], json!("keeper_not_member"));
+    assert_eq!(
+        res["deletedEmails"],
+        json!(0),
+        "nothing deleted when keeper absent"
+    );
+    assert_eq!(
+        res["rejectedGroups"][0]["reason"],
+        json!("keeper_not_member")
+    );
     let (_, after) = get_json(&app, "/api/v1/archived-emails").await;
     assert_eq!(after["total"], json!(2), "both emails preserved");
 
@@ -55,19 +74,34 @@ async fn approve_exact_preserves_data_when_keeper_missing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tagging_reindexes_fts_meta() {
     let a = TempArchive::new();
-    a.import_mbox_str(&mbox_msg("<m@x>", "Alice <a@x.com>", "b@x.com", "Sub", &[], "plainbody"));
+    a.import_mbox_str(&mbox_msg(
+        "<m@x>",
+        "Alice <a@x.com>",
+        "b@x.com",
+        "Sub",
+        &[],
+        "plainbody",
+    ));
     let app = a.router();
     let id = all_ids(&app).await[0].clone();
 
     let (_, before) = get_json(&app, "/api/v1/archived-emails?q=zebratag").await;
     assert_eq!(before["total"], json!(0), "tag term absent before tagging");
 
-    let (s, _) = post_json(&app, "/api/v1/archived-emails/bulk/tags",
-        json!({"emailIds":[id], "addTags":["zebratag"]})).await;
+    let (s, _) = post_json(
+        &app,
+        "/api/v1/archived-emails/bulk/tags",
+        json!({"emailIds":[id], "addTags":["zebratag"]}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 
     let (_, after) = get_json(&app, "/api/v1/archived-emails?q=zebratag").await;
-    assert_eq!(after["total"], json!(1), "tag is full-text searchable after re-index");
+    assert_eq!(
+        after["total"],
+        json!(1),
+        "tag is full-text searchable after re-index"
+    );
 }
 
 // BUG (data corruption): two distinct Message-IDs that sanitize to the same
@@ -78,8 +112,22 @@ async fn colliding_message_ids_keep_separate_storage() {
     let a = TempArchive::new();
     let n = a.import_mbox_str(&format!(
         "{}{}",
-        mbox_msg("<a/b@h>", "Alice <a@x.com>", "b@x.com", "SubA", &[], "AAAcontent"),
-        mbox_msg("<a_b@h>", "Alice <a@x.com>", "b@x.com", "SubB", &[], "BBBcontent"),
+        mbox_msg(
+            "<a/b@h>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "SubA",
+            &[],
+            "AAAcontent"
+        ),
+        mbox_msg(
+            "<a_b@h>",
+            "Alice <a@x.com>",
+            "b@x.com",
+            "SubB",
+            &[],
+            "BBBcontent"
+        ),
     ));
     assert_eq!(n, 2, "distinct Message-IDs both archived");
     let app = a.router();
@@ -87,11 +135,24 @@ async fn colliding_message_ids_keep_separate_storage() {
     for h in list["hits"].as_array().unwrap() {
         let id = h["id"].as_str().unwrap();
         let subj = h["subject"].as_str().unwrap();
-        let (s, bytes) = send(&app, "GET", &format!("/api/v1/archived-emails/{id}/eml"), None).await;
+        let (s, bytes) = send(
+            &app,
+            "GET",
+            &format!("/api/v1/archived-emails/{id}/eml"),
+            None,
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         let eml = String::from_utf8_lossy(&bytes);
-        let expected = if subj == "SubA" { "AAAcontent" } else { "BBBcontent" };
-        assert!(eml.contains(expected), "{subj}'s .eml must contain its own body, not the other's");
+        let expected = if subj == "SubA" {
+            "AAAcontent"
+        } else {
+            "BBBcontent"
+        };
+        assert!(
+            eml.contains(expected),
+            "{subj}'s .eml must contain its own body, not the other's"
+        );
     }
 }
 
@@ -102,7 +163,12 @@ async fn malformed_pdf_attachment_does_not_abort_import() {
     let a = TempArchive::new();
     let garbage = "%PDF-1.4 broken xref 9 0 obj trailer <<>> not-a-real-pdf endobj";
     let n = a.try_import_mbox_str(&mbox_with_attachment(
-        "<pdf@x>", "HasPdf", "cover text", "doc.pdf", "application/pdf", garbage,
+        "<pdf@x>",
+        "HasPdf",
+        "cover text",
+        "doc.pdf",
+        "application/pdf",
+        garbage,
     ));
     assert_eq!(n, Ok(1), "import completes despite the bad PDF");
 }
@@ -113,14 +179,29 @@ async fn malformed_pdf_attachment_does_not_abort_import() {
 async fn iso_date_range_filters_apply() {
     let a = TempArchive::new();
     // mbox_msg dates every message 2024-01-01T00:00:00Z.
-    a.import_mbox_str(&mbox_msg("<dt@x>", "Alice <a@x.com>", "b@x.com", "Dated", &[], "datebody"));
+    a.import_mbox_str(&mbox_msg(
+        "<dt@x>",
+        "Alice <a@x.com>",
+        "b@x.com",
+        "Dated",
+        &[],
+        "datebody",
+    ));
     let app = a.router();
 
     let (_, b) = get_json(&app, "/api/v1/archived-emails?sentAfter=2023-12-01").await;
     assert_eq!(b["total"], json!(1), "email is after 2023-12-01");
     let (_, b) = get_json(&app, "/api/v1/archived-emails?sentAfter=2024-06-01").await;
-    assert_eq!(b["total"], json!(0), "ISO sentAfter actually excludes the earlier email");
-    let (_, b) = get_json(&app, "/api/v1/archived-emails?sentBefore=2024-06-01T00:00:00Z").await;
+    assert_eq!(
+        b["total"],
+        json!(0),
+        "ISO sentAfter actually excludes the earlier email"
+    );
+    let (_, b) = get_json(
+        &app,
+        "/api/v1/archived-emails?sentBefore=2024-06-01T00:00:00Z",
+    )
+    .await;
     assert_eq!(b["total"], json!(1), "ISO datetime sentBefore includes it");
 }
 
@@ -133,12 +214,29 @@ async fn contacts_csv_name_and_mailto() {
     let csv = "Title,First Name,Last Name,E-mail Address\n\
                Dr,Ada,Lovelace,ada@x.com\n\
                Mr,Bob,Jones,mailto: bob@x.com\n";
-    let (s, res) = post_json(&app, "/api/v1/contacts/import", json!({ "format": "csv", "content": csv })).await;
+    let (s, res) = post_json(
+        &app,
+        "/api/v1/contacts/import",
+        json!({ "format": "csv", "content": csv }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(res["imported"], json!(2), "both rows imported (mailto: normalized)");
+    assert_eq!(
+        res["imported"],
+        json!(2),
+        "both rows imported (mailto: normalized)"
+    );
     let (_, map) = get_json(&app, "/api/v1/contacts/map").await;
-    assert_eq!(map["ada@x.com"], json!("Ada Lovelace"), "First + Last, not just First");
-    assert_eq!(map["bob@x.com"], json!("Bob Jones"), "mailto: address normalized");
+    assert_eq!(
+        map["ada@x.com"],
+        json!("Ada Lovelace"),
+        "First + Last, not just First"
+    );
+    assert_eq!(
+        map["bob@x.com"],
+        json!("Bob Jones"),
+        "mailto: address normalized"
+    );
 }
 
 // BUG (re-audit #3): a provided-but-unknown ingestionSourceId must scope to
@@ -150,8 +248,16 @@ async fn unknown_source_filter_returns_empty() {
     let app = a.router();
     let (_, all) = get_json(&app, "/api/v1/archived-emails").await;
     assert_eq!(all["total"], json!(1));
-    let (_, none) = get_json(&app, "/api/v1/archived-emails?ingestionSourceId=does-not-exist").await;
-    assert_eq!(none["total"], json!(0), "unknown source → 0 results, not all");
+    let (_, none) = get_json(
+        &app,
+        "/api/v1/archived-emails?ingestionSourceId=does-not-exist",
+    )
+    .await;
+    assert_eq!(
+        none["total"],
+        json!(0),
+        "unknown source → 0 results, not all"
+    );
 }
 
 // BUG (re-audit #4/#5/#6): ISO date filters with a timezone offset must still
@@ -159,18 +265,37 @@ async fn unknown_source_filter_returns_empty() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn iso_offset_and_adversarial_values_are_safe() {
     let a = TempArchive::new();
-    a.import_mbox_str(&mbox_msg("<d@x>", "A <a@x.com>", "b@x.com", "D", &[], "body")); // sent 2024-01-01
+    a.import_mbox_str(&mbox_msg(
+        "<d@x>",
+        "A <a@x.com>",
+        "b@x.com",
+        "D",
+        &[],
+        "body",
+    )); // sent 2024-01-01
     let app = a.router();
     // negative-offset ISO must be parsed (offset stripped) and the filter applied:
     // a June cutoff excludes the January email (the '-08:00' offset must not break
     // parsing).
-    let (_, b) = get_json(&app, "/api/v1/archived-emails?sentAfter=2024-06-01T00:00:00-08:00").await;
-    assert_eq!(b["total"], json!(0), "negative-offset ISO date filter applies");
+    let (_, b) = get_json(
+        &app,
+        "/api/v1/archived-emails?sentAfter=2024-06-01T00:00:00-08:00",
+    )
+    .await;
+    assert_eq!(
+        b["total"],
+        json!(0),
+        "negative-offset ISO date filter applies"
+    );
     // absurd year must not overflow/panic
     let (s, _) = get_json(&app, "/api/v1/archived-emails?sentAfter=300000000-01-01").await;
     assert_eq!(s, StatusCode::OK, "absurd year handled");
     // huge page on the remote-content-issues endpoint must not overflow
-    let (s, _) = get_json(&app, "/api/v1/dashboard/remote-content-issues?page=9223372036854775807").await;
+    let (s, _) = get_json(
+        &app,
+        "/api/v1/dashboard/remote-content-issues?page=9223372036854775807",
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "huge page does not overflow");
 }
 
@@ -180,18 +305,34 @@ async fn iso_offset_and_adversarial_values_are_safe() {
 async fn gmail_labels_all_become_tags() {
     let a = TempArchive::new();
     a.import_mbox_str(&mbox_msg(
-        "<g@x>", "Alice <a@x.com>", "b@x.com", "Labeled",
-        &["X-Gmail-Labels: Inbox,Work,Important"], "labelbody",
+        "<g@x>",
+        "Alice <a@x.com>",
+        "b@x.com",
+        "Labeled",
+        &["X-Gmail-Labels: Inbox,Work,Important"],
+        "labelbody",
     ));
     let app = a.router();
     for tag in ["Inbox", "Work", "Important"] {
         let (_, b) = get_json(&app, &format!("/api/v1/archived-emails?tags={tag}")).await;
-        assert_eq!(b["total"], json!(1), "message must be findable under tag '{tag}'");
+        assert_eq!(
+            b["total"],
+            json!(1),
+            "message must be findable under tag '{tag}'"
+        );
     }
     let (_, facets) = get_json(&app, "/api/v1/archived-emails/facets").await;
-    let tags: Vec<String> = facets["tags"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect();
+    let tags: Vec<String> = facets["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap().to_string())
+        .collect();
     for want in ["Important", "Inbox", "Work"] {
-        assert!(tags.contains(&want.to_string()), "facets must list '{want}', got {tags:?}");
+        assert!(
+            tags.contains(&want.to_string()),
+            "facets must list '{want}', got {tags:?}"
+        );
     }
 }
 
@@ -226,7 +367,11 @@ async fn bulk_delete_is_recoverable_from_trash() {
     assert_eq!(list["total"], json!(1), "removed from the default list");
     // …but recoverable in the trash (soft delete, not a permanent purge).
     let (_, trash) = get_json(&app, "/api/v1/archived-emails?trashed=true").await;
-    assert_eq!(trash["total"], json!(1), "bulk delete moves to the trash, not permanent");
+    assert_eq!(
+        trash["total"],
+        json!(1),
+        "bulk delete moves to the trash, not permanent"
+    );
     assert_eq!(trash["hits"][0]["id"], json!(ids[0]));
 
     // …and restorable back into the list.
@@ -250,7 +395,14 @@ async fn bulk_delete_is_recoverable_from_trash() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approve_exact_duplicates_are_recoverable_from_trash() {
     let a = TempArchive::new();
-    let email = mbox_msg("<dupr@x>", "Alice <a@x.com>", "b@x.com", "Dup", &[], "the body");
+    let email = mbox_msg(
+        "<dupr@x>",
+        "Alice <a@x.com>",
+        "b@x.com",
+        "Dup",
+        &[],
+        "the body",
+    );
     a.import_mbox_str(&email);
     a.import_mbox_str(&email);
     let app = a.router();
@@ -282,7 +434,11 @@ async fn approve_exact_duplicates_are_recoverable_from_trash() {
     assert_eq!(list["hits"][0]["id"], json!(keeper), "keeper survives");
     // …but the approved duplicate is recoverable in the trash, not purged.
     let (_, trash) = get_json(&app, "/api/v1/archived-emails?trashed=true").await;
-    assert_eq!(trash["total"], json!(1), "approved duplicate went to the trash");
+    assert_eq!(
+        trash["total"],
+        json!(1),
+        "approved duplicate went to the trash"
+    );
     assert_eq!(trash["hits"][0]["id"], json!(dups[0]));
 }
 
@@ -292,7 +448,14 @@ async fn approve_exact_duplicates_are_recoverable_from_trash() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sweep_clears_stale_tracking_assets_only() {
     let a = TempArchive::new();
-    a.import_mbox_str(&mbox_msg("<sw@x>", "A <a@x.com>", "b@x.com", "Sweep", &[], "body"));
+    a.import_mbox_str(&mbox_msg(
+        "<sw@x>",
+        "A <a@x.com>",
+        "b@x.com",
+        "Sweep",
+        &[],
+        "body",
+    ));
     let app = a.router();
     let id = {
         let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
@@ -304,14 +467,24 @@ async fn sweep_clears_stale_tracking_assets_only() {
         conn.execute(
             "INSERT INTO remote_content_assets (id, email_id, original_url, url_hash, status) \
              VALUES (?,?,?,?,'failed')",
-            ["trk", id.as_str(), "http://www.amazon.com/gp/r.html?U=http%3A%2F%2Fx%2Ftransp.gif", "h1"],
+            [
+                "trk",
+                id.as_str(),
+                "http://www.amazon.com/gp/r.html?U=http%3A%2F%2Fx%2Ftransp.gif",
+                "h1",
+            ],
         )
         .unwrap();
         // …and a genuine failed image that must be preserved for retry.
         conn.execute(
             "INSERT INTO remote_content_assets (id, email_id, original_url, url_hash, status) \
              VALUES (?,?,?,?,'failed')",
-            ["real", id.as_str(), "https://cdn.example.com/hero.png", "h2"],
+            [
+                "real",
+                id.as_str(),
+                "https://cdn.example.com/hero.png",
+                "h2",
+            ],
         )
         .unwrap();
     });
@@ -320,10 +493,18 @@ async fn sweep_clears_stale_tracking_assets_only() {
 
     a.with_conn(|conn| {
         let trk: i64 = conn
-            .query_row("SELECT count(*) FROM remote_content_assets WHERE id='trk'", [], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM remote_content_assets WHERE id='trk'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         let real: i64 = conn
-            .query_row("SELECT count(*) FROM remote_content_assets WHERE id='real'", [], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM remote_content_assets WHERE id='real'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(trk, 0, "stale tracker asset swept");
         assert_eq!(real, 1, "genuine failed asset preserved");
@@ -350,7 +531,14 @@ async fn repeated_identical_mime_part_links_attachment_once() {
         part.replace("%N%", "one"),
         part.replace("%N%", "two"),
     );
-    a.import_mbox_str(&mbox_msg("<dup@x>", "A <a@x.com>", "b@x.com", "Dup parts", &[ct], &mime));
+    a.import_mbox_str(&mbox_msg(
+        "<dup@x>",
+        "A <a@x.com>",
+        "b@x.com",
+        "Dup parts",
+        &[ct],
+        &mime,
+    ));
     let app = a.router();
 
     let id = {
@@ -361,11 +549,19 @@ async fn repeated_identical_mime_part_links_attachment_once() {
     // Exactly one link row, and the DB refuses a second one.
     a.with_conn(|conn| {
         let links: i64 = conn
-            .query_row("SELECT count(*) FROM email_attachments WHERE email_id = ?", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM email_attachments WHERE email_id = ?",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(links, 1, "the repeated part must be linked once");
         let att: String = conn
-            .query_row("SELECT attachment_id FROM email_attachments WHERE email_id = ?", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT attachment_id FROM email_attachments WHERE email_id = ?",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         let dup = conn.execute(
             "INSERT INTO email_attachments (id, email_id, attachment_id) VALUES ('x', ?, ?)",
@@ -377,7 +573,11 @@ async fn repeated_identical_mime_part_links_attachment_once() {
     // The detail payload carries one attachment, with a key that is unique.
     let (_, email) = get_json(&app, &format!("/api/v1/archived-emails/{id}")).await;
     let attachments = email["attachments"].as_array().unwrap();
-    assert_eq!(attachments.len(), 1, "detail must not repeat the attachment");
+    assert_eq!(
+        attachments.len(),
+        1,
+        "detail must not repeat the attachment"
+    );
     assert_eq!(attachments[0]["filename"], json!("photo.jpg"));
 }
 
@@ -406,7 +606,14 @@ async fn cid_referenced_inline_images_render_in_preview() {
          Content-Id: <ii_two>\nContent-Transfer-Encoding: base64\n\n{PNG_B64}\n--R--\n"
     );
     let a = TempArchive::new();
-    a.import_mbox_str(&mbox_msg("<swan@x>", "A <a@x.com>", "b@x.com", "Swans", &[ct], &body));
+    a.import_mbox_str(&mbox_msg(
+        "<swan@x>",
+        "A <a@x.com>",
+        "b@x.com",
+        "Swans",
+        &[ct],
+        &body,
+    ));
     let app = a.router();
     let id = {
         let (_, b) = get_json(&app, "/api/v1/archived-emails").await;
@@ -415,9 +622,19 @@ async fn cid_referenced_inline_images_render_in_preview() {
 
     // Identical bytes → one stored blob, linked once (see the dedupe test above).
     let (_, email) = get_json(&app, &format!("/api/v1/archived-emails/{id}")).await;
-    assert_eq!(email["attachments"].as_array().unwrap().len(), 1, "one distinct attachment");
+    assert_eq!(
+        email["attachments"].as_array().unwrap().len(),
+        1,
+        "one distinct attachment"
+    );
 
-    let (s, bytes) = send(&app, "GET", &format!("/api/v1/archived-emails/{id}/preview"), None).await;
+    let (s, bytes) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/archived-emails/{id}/preview"),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let html = String::from_utf8_lossy(&bytes);
 
@@ -428,6 +645,12 @@ async fn cid_referenced_inline_images_render_in_preview() {
         2,
         "each cid resolved to the stored bytes"
     );
-    assert!(!html.contains("cid:"), "no unresolved cid: reaches the reader");
-    assert!(html.contains("swans") && html.contains("woodpecker"), "body text preserved");
+    assert!(
+        !html.contains("cid:"),
+        "no unresolved cid: reaches the reader"
+    );
+    assert!(
+        html.contains("swans") && html.contains("woodpecker"),
+        "body text preserved"
+    );
 }

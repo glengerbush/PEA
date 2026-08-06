@@ -54,7 +54,10 @@ pub async fn update_source(
     }
 }
 
-pub async fn delete_source(State(app): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
+pub async fn delete_source(
+    State(app): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
     let conn = app.pool.get().unwrap();
     match sources::delete_source(&app, &conn, &id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -84,7 +87,10 @@ pub async fn reimport(State(app): State<AppState>, AxumPath(id): AxumPath<String
     }
 }
 
-pub async fn unmerge_source(State(app): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
+pub async fn unmerge_source(
+    State(app): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
     let conn = app.pool.get().unwrap();
     let source = match sources::find_by_id(&conn, &id) {
         Ok(s) => s,
@@ -97,7 +103,10 @@ pub async fn unmerge_source(State(app): State<AppState>, AxumPath(id): AxumPath<
         );
     }
     if conn
-        .execute("UPDATE ingestion_sources SET merged_into_id = NULL WHERE id = ?", [&id])
+        .execute(
+            "UPDATE ingestion_sources SET merged_into_id = NULL WHERE id = ?",
+            [&id],
+        )
         .is_err()
     {
         return internal_error();
@@ -125,7 +134,11 @@ pub async fn delete_email(State(app): State<AppState>, AxumPath(id): AxumPath<St
 
 pub async fn bulk_delete(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
     let conn = app.pool.get().unwrap();
-    let Some(ids) = dto.get("emailIds").and_then(|v| v.as_array()).filter(|a| !a.is_empty()) else {
+    let Some(ids) = dto
+        .get("emailIds")
+        .and_then(|v| v.as_array())
+        .filter(|a| !a.is_empty())
+    else {
         return message_response(StatusCode::BAD_REQUEST, "emailIds are required");
     };
     let mut deleted_ids: Vec<String> = Vec::new();
@@ -166,7 +179,11 @@ fn permanently_delete_ids<'a>(
 
 pub async fn restore_emails(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
     let conn = app.pool.get().unwrap();
-    let Some(ids) = dto.get("emailIds").and_then(|v| v.as_array()).filter(|a| !a.is_empty()) else {
+    let Some(ids) = dto
+        .get("emailIds")
+        .and_then(|v| v.as_array())
+        .filter(|a| !a.is_empty())
+    else {
         return message_response(StatusCode::BAD_REQUEST, "emailIds are required");
     };
     let mut restored_ids: Vec<String> = Vec::new();
@@ -186,9 +203,16 @@ pub async fn restore_emails(State(app): State<AppState>, Json(dto): Json<Value>)
     .into_response()
 }
 
-pub async fn permanent_delete_emails(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
+pub async fn permanent_delete_emails(
+    State(app): State<AppState>,
+    Json(dto): Json<Value>,
+) -> Response {
     let conn = app.pool.get().unwrap();
-    let Some(ids) = dto.get("emailIds").and_then(|v| v.as_array()).filter(|a| !a.is_empty()) else {
+    let Some(ids) = dto
+        .get("emailIds")
+        .and_then(|v| v.as_array())
+        .filter(|a| !a.is_empty())
+    else {
         return message_response(StatusCode::BAD_REQUEST, "emailIds are required");
     };
     let (deleted_ids, failed) =
@@ -205,10 +229,11 @@ pub async fn permanent_delete_emails(State(app): State<AppState>, Json(dto): Jso
 pub async fn empty_trash(State(app): State<AppState>) -> Response {
     let conn = app.pool.get().unwrap();
     let trashed_ids: Vec<String> = {
-        let mut stmt = match conn.prepare("SELECT id FROM archived_emails WHERE deleted_at IS NOT NULL") {
-            Ok(stmt) => stmt,
-            Err(_) => return internal_error(),
-        };
+        let mut stmt =
+            match conn.prepare("SELECT id FROM archived_emails WHERE deleted_at IS NOT NULL") {
+                Ok(stmt) => stmt,
+                Err(_) => return internal_error(),
+            };
         let rows = stmt
             .query_map([], |r| r.get::<_, String>(0))
             .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>());
@@ -249,9 +274,16 @@ pub async fn update_tags(State(app): State<AppState>, Json(dto): Json<Value>) ->
     }
 }
 
-pub async fn approve_exact_duplicates(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
+pub async fn approve_exact_duplicates(
+    State(app): State<AppState>,
+    Json(dto): Json<Value>,
+) -> Response {
     let conn = app.pool.get().unwrap();
-    let groups = dto.get("groups").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let groups = dto
+        .get("groups")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let intents = groups
         .into_iter()
         .map(|group| duplicates::ApproveGroupIntent {
@@ -369,8 +401,7 @@ pub async fn import_contacts(State(app): State<AppState>, Json(dto): Json<Value>
     }
 }
 
-const DEFAULT_SETTINGS: &str =
-    r#"{"language":"en","theme":"system","timeZone":null,"clockFormat":"12h","dateFormat":"system","autoCheckUpdates":true}"#;
+const DEFAULT_SETTINGS: &str = r#"{"language":"en","theme":"system","timeZone":null,"clockFormat":"12h","dateFormat":"system","autoCheckUpdates":true}"#;
 
 pub async fn update_settings(State(app): State<AppState>, Json(dto): Json<Value>) -> Response {
     let conn = app.pool.get().unwrap();
@@ -397,7 +428,10 @@ pub async fn update_settings(State(app): State<AppState>, Json(dto): Json<Value>
                     "Failed to update settings.",
                 );
             }
-            (conn.last_insert_rowid(), serde_json::from_str(DEFAULT_SETTINGS).unwrap())
+            (
+                conn.last_insert_rowid(),
+                serde_json::from_str(DEFAULT_SETTINGS).unwrap(),
+            )
         }
     };
     if let (Some(m), Some(c)) = (merged.as_object_mut(), current.as_object()) {
@@ -417,7 +451,10 @@ pub async fn update_settings(State(app): State<AppState>, Json(dto): Json<Value>
         )
         .is_err()
     {
-        return message_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to update settings.");
+        return message_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to update settings.",
+        );
     }
     Json(merged).into_response()
 }

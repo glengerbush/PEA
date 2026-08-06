@@ -58,7 +58,10 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
     };
     let mut doc = Map::new();
     doc.insert("id".into(), json!(row.get::<_, String>("id")?));
-    doc.insert("threadId".into(), json!(row.get::<_, Option<String>>("thread_id")?));
+    doc.insert(
+        "threadId".into(),
+        json!(row.get::<_, Option<String>>("thread_id")?),
+    );
     doc.insert(
         "ingestionSourceId".into(),
         json!(row.get::<_, String>("ingestion_source_id")?),
@@ -84,26 +87,55 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
     // the UI can label it truthfully. NULL (pre-backfill) → "sent", the old default.
     doc.insert(
         "sentAtKind".into(),
-        json!(row.get::<_, Option<String>>("sent_at_kind")?.unwrap_or_else(|| "sent".into())),
+        json!(row
+            .get::<_, Option<String>>("sent_at_kind")?
+            .unwrap_or_else(|| "sent".into())),
     );
-    doc.insert("subject".into(), json!(row.get::<_, Option<String>>("subject")?));
-    doc.insert("senderName".into(), json!(row.get::<_, Option<String>>("sender_name")?));
-    doc.insert("senderEmail".into(), json!(row.get::<_, String>("sender_email")?));
+    doc.insert(
+        "subject".into(),
+        json!(row.get::<_, Option<String>>("subject")?),
+    );
+    doc.insert(
+        "senderName".into(),
+        json!(row.get::<_, Option<String>>("sender_name")?),
+    );
+    doc.insert(
+        "senderEmail".into(),
+        json!(row.get::<_, String>("sender_email")?),
+    );
     doc.insert("recipients".into(), Value::Array(recipients));
-    doc.insert("storagePath".into(), json!(row.get::<_, String>("storage_path")?));
+    doc.insert(
+        "storagePath".into(),
+        json!(row.get::<_, String>("storage_path")?),
+    );
     doc.insert(
         "storageHashSha256".into(),
         json!(row.get::<_, String>("storage_hash_sha256")?),
     );
     doc.insert("sizeBytes".into(), json!(row.get::<_, i64>("size_bytes")?));
-    doc.insert("hasAttachments".into(), json!(row.get::<_, i64>("has_attachments")? != 0));
-    doc.insert("archivedAt".into(), json!(iso(row.get::<_, i64>("archived_at")?)));
-    doc.insert("sourcePath".into(), json!(row.get::<_, Option<String>>("source_path")?));
+    doc.insert(
+        "hasAttachments".into(),
+        json!(row.get::<_, i64>("has_attachments")? != 0),
+    );
+    doc.insert(
+        "archivedAt".into(),
+        json!(iso(row.get::<_, i64>("archived_at")?)),
+    );
+    doc.insert(
+        "sourcePath".into(),
+        json!(row.get::<_, Option<String>>("source_path")?),
+    );
     for (js, col) in [
         ("duplicateSubjectHash", "duplicate_subject_hash"),
         ("duplicateBodyHash", "duplicate_body_hash"),
-        ("duplicateRecipientFingerprint", "duplicate_recipient_fingerprint"),
-        ("duplicateAttachmentFingerprint", "duplicate_attachment_fingerprint"),
+        (
+            "duplicateRecipientFingerprint",
+            "duplicate_recipient_fingerprint",
+        ),
+        (
+            "duplicateAttachmentFingerprint",
+            "duplicate_attachment_fingerprint",
+        ),
     ] {
         doc.insert(js.into(), json!(row.get::<_, Option<String>>(col)?));
     }
@@ -117,7 +149,9 @@ fn email_full_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Map<String, Va
     );
     doc.insert(
         "remoteContentArchivedAt".into(),
-        json!(row.get::<_, Option<i64>>("remote_content_archived_at")?.map(iso)),
+        json!(row
+            .get::<_, Option<i64>>("remote_content_archived_at")?
+            .map(iso)),
     );
     doc.insert(
         "tags".into(),
@@ -158,10 +192,7 @@ fn source_full_row(conn: &Connection, id: &str) -> Option<Value> {
 // GET /archived-emails/:id — full email detail with raw bytes + thread.
 // ---------------------------------------------------------------------------
 
-pub async fn email_detail(
-    State(app): State<AppState>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+pub async fn email_detail(State(app): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
     let conn = app.pool.get().unwrap();
     let row = conn.query_row(
         "SELECT ae.*, COALESCE(src.name, ae.import_source) AS import_source_name \
@@ -186,7 +217,10 @@ pub async fn email_detail(
     let mut doc = doc;
 
     // Relation: full ingestion source row (provider_config included).
-    let source_id = doc["ingestionSourceId"].as_str().unwrap_or_default().to_string();
+    let source_id = doc["ingestionSourceId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     doc.insert(
         "ingestionSource".into(),
         source_full_row(&conn, &source_id).unwrap_or(Value::Null),
@@ -345,7 +379,9 @@ pub async fn remote_content_issues(
     let in_clause = vec!["?"; statuses.len()].join(", ");
     let total: i64 = conn
         .query_row(
-            &format!("SELECT count(*) FROM archived_emails WHERE remote_content_status IN ({in_clause})"),
+            &format!(
+                "SELECT count(*) FROM archived_emails WHERE remote_content_status IN ({in_clause})"
+            ),
             rusqlite::params_from_iter(statuses.iter()),
             |r| r.get(0),
         )
@@ -518,7 +554,11 @@ pub async fn jobs_queue_details(
         .query_map([&queue_name], |row| {
             let payload_raw: String = row.get(2)?;
             let payload: Value = serde_json::from_str(&payload_raw).unwrap_or(Value::Null);
-            let payload = if payload.is_null() { json!({}) } else { payload };
+            let payload = if payload.is_null() {
+                json!({})
+            } else {
+                payload
+            };
             let error: Option<String> = row.get(4)?;
             let started_at: Option<i64> = row.get(6)?;
             let finished_at: Option<i64> = row.get(7)?;
@@ -635,11 +675,19 @@ pub fn materialize_quicklook_temp(
         .unwrap_or("attachment")
         .to_string();
     let dir = std::env::temp_dir().join("pea-quicklook");
-    std::fs::create_dir_all(&dir)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "An internal server error occurred"))?;
+    std::fs::create_dir_all(&dir).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "An internal server error occurred",
+        )
+    })?;
     let target = dir.join(name);
-    std::fs::write(&target, &content)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "An internal server error occurred"))?;
+    std::fs::write(&target, &content).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "An internal server error occurred",
+        )
+    })?;
 
     // Best-effort cleanup once the previewer has had time to read it.
     let cleanup = target.clone();
@@ -703,7 +751,9 @@ pub async fn download_email_eml(
 ) -> Response {
     let stored_path = match conn_email_storage_path(&app, &id) {
         Ok(p) => p,
-        Err(StatusCode::NOT_FOUND) => return text_response(StatusCode::NOT_FOUND, "File not found"),
+        Err(StatusCode::NOT_FOUND) => {
+            return text_response(StatusCode::NOT_FOUND, "File not found")
+        }
         Err(code) => return text_response(code, "Error reading email"),
     };
     let Ok(stored) = app.storage_get(&stored_path) else {
@@ -718,7 +768,9 @@ pub async fn download_email_eml(
          INNER JOIN attachments a ON ea.attachment_id = a.id WHERE ea.email_id = ?",
     ) {
         let rows = stmt
-            .query_map([&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .query_map([&id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
             .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
             .unwrap_or_default();
         for (hash, path) in rows {
@@ -727,7 +779,9 @@ pub async fn download_email_eml(
     }
 
     let rebuilt = crate::ingest::rebuild_eml(&stored, &|hash| {
-        blob_paths.get(hash).and_then(|path| app.storage_get(path).ok())
+        blob_paths
+            .get(hash)
+            .and_then(|path| app.storage_get(path).ok())
     });
     (
         [
@@ -745,7 +799,10 @@ pub async fn download_email_eml(
 /// Ok(path), Err(NOT_FOUND) when the email doesn't exist, Err(INTERNAL...) for a
 /// real failure (pool exhausted, DB error) — so callers don't turn a 500 into 404.
 fn conn_email_storage_path(app: &AppState, email_id: &str) -> Result<String, StatusCode> {
-    let conn = app.pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = app
+        .pool
+        .get()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match conn.query_row(
         "SELECT storage_path FROM archived_emails WHERE id = ?",
         [email_id],
@@ -765,15 +822,13 @@ pub async fn download_email_raw(
 ) -> Response {
     let storage_path = match conn_email_storage_path(&app, &id) {
         Ok(p) => p,
-        Err(StatusCode::NOT_FOUND) => return text_response(StatusCode::NOT_FOUND, "File not found"),
+        Err(StatusCode::NOT_FOUND) => {
+            return text_response(StatusCode::NOT_FOUND, "File not found")
+        }
         Err(code) => return text_response(code, "Error reading email"),
     };
     match app.storage_get(&storage_path) {
-        Ok(bytes) => (
-            [(header::CONTENT_TYPE, "application/octet-stream")],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => ([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response(),
         Err(_) => text_response(StatusCode::INTERNAL_SERVER_ERROR, "Error reading file"),
     }
 }

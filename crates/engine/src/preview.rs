@@ -6,16 +6,16 @@
 //! (allowed tags/attributes/schemes, link hardening, img rewriting).
 
 use crate::state::AppState;
-use mail_parser::MimeHeaders;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use base64::Engine as _;
-use std::sync::LazyLock;
+use mail_parser::MimeHeaders;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 /// Largest inline image the preview will embed. Not an attachment-size policy —
 /// ingest stores attachments of any size — but a payload bound: each reference
@@ -125,10 +125,17 @@ fn decode_html_entity(name: &str) -> Option<String> {
         _ => {}
     }
     if let Some(hex) = name.strip_prefix("#x").or_else(|| name.strip_prefix("#X")) {
-        return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32).map(String::from);
+        return u32::from_str_radix(hex, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .map(String::from);
     }
     if let Some(dec) = name.strip_prefix('#') {
-        return dec.parse::<u32>().ok().and_then(char::from_u32).map(String::from);
+        return dec
+            .parse::<u32>()
+            .ok()
+            .and_then(char::from_u32)
+            .map(String::from);
     }
     None
 }
@@ -301,7 +308,10 @@ fn rewrite_image_source(
     if let Some(m) = CID.captures(trimmed) {
         // Lowercase to match how cid_map keys and the referenced set are
         // normalized — cid:Logo must resolve a `Content-ID: <logo>` part.
-        let cid = m[1].trim_start_matches('<').trim_end_matches('>').to_lowercase();
+        let cid = m[1]
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_lowercase();
         return cid_map.get(&cid).cloned();
     }
     static DATA_IMG: LazyLock<Regex> =
@@ -313,7 +323,9 @@ fn rewrite_image_source(
     let asset = asset_by_url.get(&remote_url)?;
     if asset.status != "archived"
         || asset.storage_path.is_none()
-        || !is_safe_preview_content_type(normalize_content_type(asset.content_type.as_deref()).as_deref())
+        || !is_safe_preview_content_type(
+            normalize_content_type(asset.content_type.as_deref()).as_deref(),
+        )
     {
         return None;
     }
@@ -342,7 +354,11 @@ fn rewrite_srcset(
             let raw_url = parts.next().unwrap_or("");
             let rewritten = rewrite_image_source(email_id, raw_url, cid_map, asset_by_url)?;
             let mut out = vec![rewritten];
-            out.extend(parts.filter(|d| safe_srcset_descriptor(d)).map(String::from));
+            out.extend(
+                parts
+                    .filter(|d| safe_srcset_descriptor(d))
+                    .map(String::from),
+            );
             Some(out.join(" "))
         })
         .collect();
@@ -354,9 +370,7 @@ fn rewrite_srcset(
 }
 
 fn get_tag_attribute(tag: &str, name: &str) -> Option<String> {
-    let pattern = format!(
-        r#"(?i)\b{name}\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))"#
-    );
+    let pattern = format!(r#"(?i)\b{name}\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))"#);
     let re = Regex::new(&pattern).ok()?;
     let m = re.captures(tag)?;
     m.get(2)
@@ -385,7 +399,8 @@ fn get_attribute_map(raw_attributes: &str) -> HashMap<String, String> {
 }
 
 fn parse_pixel_dimension(value: Option<&str>) -> Option<f64> {
-    static DIM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+(?:\.\d+)?)(?:px)?$").unwrap());
+    static DIM: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^(\d+(?:\.\d+)?)(?:px)?$").unwrap());
     let value = value?;
     let lowered = value.trim().to_lowercase();
     let m = DIM.captures(&lowered)?;
@@ -402,7 +417,11 @@ fn is_likely_tracking_pixel(attributes: &HashMap<String, String>) -> bool {
         LazyLock::new(|| Regex::new(r"(?:^|;)\s*display\s*:\s*none").unwrap());
     static INVISIBLE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?:^|;)\s*visibility\s*:\s*hidden").unwrap());
-    let style = attributes.get("style").cloned().unwrap_or_default().to_lowercase();
+    let style = attributes
+        .get("style")
+        .cloned()
+        .unwrap_or_default()
+        .to_lowercase();
     if HIDDEN.is_match(&style) || INVISIBLE.is_match(&style) {
         return true;
     }
@@ -455,7 +474,9 @@ fn is_amazon_storefront_host(host: &str) -> bool {
 /// tracking endpoints on hosts that also serve real content (path-gated so a real
 /// image from those providers is never skipped).
 fn is_known_domain_tracker(url: &str) -> bool {
-    let Ok(parsed) = url::Url::parse(url) else { return false };
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
     if host.is_empty() {
         return false;
@@ -510,8 +531,12 @@ impl OrderedSet {
 }
 
 fn extract_remote_urls(html: &str) -> OrderedSet {
-    static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<([a-zA-Z][\w:-]*)([^>]*)>").unwrap());
-    let mut urls = OrderedSet { seen: HashSet::new(), ordered: Vec::new() };
+    static TAG: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"<([a-zA-Z][\w:-]*)([^>]*)>").unwrap());
+    let mut urls = OrderedSet {
+        seen: HashSet::new(),
+        ordered: Vec::new(),
+    };
     let add_url = |url: Option<String>, urls: &mut OrderedSet| {
         if let Some(u) = url {
             if !is_likely_tracking_url(&u) {
@@ -554,7 +579,10 @@ fn extract_remote_urls(html: &str) -> OrderedSet {
 
 fn render_text_preview(text: &str) -> String {
     static NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\r?\n").unwrap());
-    format!("<div>{}</div>", NEWLINE.replace_all(&escape_html(text), "<br>"))
+    format!(
+        "<div>{}</div>",
+        NEWLINE.replace_all(&escape_html(text), "<br>")
+    )
 }
 
 /// Resolves a part's bytes: directly from the message, or — for hollowed
@@ -580,10 +608,9 @@ fn inline_images_without_reference(
     let mut images = Vec::new();
     for &id in msg.attachments.iter() {
         let Some(part) = msg.part(id) else { continue };
-        let disposition = part
-            .content_disposition()
-            .map(|d| d.ctype().to_lowercase());
-        let content_type = normalize_content_type(crate::ingest::part_content_type(part).as_deref());
+        let disposition = part.content_disposition().map(|d| d.ctype().to_lowercase());
+        let content_type =
+            normalize_content_type(crate::ingest::part_content_type(part).as_deref());
         let is_image = content_type
             .as_deref()
             .map_or(false, |ct| ct.starts_with("image/"));
@@ -596,12 +623,17 @@ fn inline_images_without_reference(
             continue;
         }
         if let Some(cid) = part.content_id() {
-            let cid = cid.trim_start_matches('<').trim_end_matches('>').to_lowercase();
+            let cid = cid
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_lowercase();
             if referenced.contains(&cid) {
                 continue;
             }
         }
-        let Some(contents) = resolve(part) else { continue };
+        let Some(contents) = resolve(part) else {
+            continue;
+        };
         if contents.is_empty() || contents.len() > MAX_INLINE_CID_BYTES {
             continue;
         }
@@ -642,7 +674,9 @@ fn build_preview_body(msg: &mail_parser::Message, resolve: &PartResolver) -> Str
         if crate::ingest::part_content_type(part).as_deref() == Some("text/html") {
             continue;
         }
-        let Some(text) = part.text_contents() else { continue };
+        let Some(text) = part.text_contents() else {
+            continue;
+        };
         if text.trim().is_empty() {
             continue;
         }
@@ -657,16 +691,69 @@ fn build_preview_body(msg: &mail_parser::Message, resolve: &PartResolver) -> Str
 }
 
 const ALLOWED_TAGS: [&str; 43] = [
-    "a", "abbr", "b", "big", "blockquote", "br", "caption", "center", "cite", "code", "col",
-    "colgroup", "dd", "del", "div", "dl", "dt", "em", "font", "h1", "h2", "h3", "h4", "h5", "h6",
-    "hr", "i", "img", "li", "ol", "p", "pre", "s", "small", "span", "strong", "sub", "sup",
-    "table", "tbody", "td", "tfoot", "th",
+    "a",
+    "abbr",
+    "b",
+    "big",
+    "blockquote",
+    "br",
+    "caption",
+    "center",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "dd",
+    "del",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "font",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "s",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
 ];
 const ALLOWED_TAGS_2: [&str; 4] = ["thead", "tr", "u", "ul"];
 
 const SAFE_GLOBAL_ATTRIBUTES: [&str; 16] = [
-    "align", "alt", "bgcolor", "border", "cellpadding", "cellspacing", "class", "colspan", "dir",
-    "height", "lang", "rowspan", "style", "title", "valign", "width",
+    "align",
+    "alt",
+    "bgcolor",
+    "border",
+    "cellpadding",
+    "cellspacing",
+    "class",
+    "colspan",
+    "dir",
+    "height",
+    "lang",
+    "rowspan",
+    "style",
+    "title",
+    "valign",
+    "width",
 ];
 
 /// Sanitizes the email preview HTML: cleans the CSS and runs the HTML through
@@ -686,8 +773,7 @@ fn sanitize_email_preview_html(
         }
     }
 
-    let rewrite_url =
-        |raw: &str| rewrite_image_source(email_id, raw, cid_map, &asset_by_url);
+    let rewrite_url = |raw: &str| rewrite_image_source(email_id, raw, cid_map, &asset_by_url);
 
     let mut style_blocks: Vec<String> = Vec::new();
 
@@ -696,14 +782,18 @@ fn sanitize_email_preview_html(
         static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<link\b[^>]*>").unwrap());
         for m in LINK.find_iter(html) {
             let tag = m.as_str();
-            let rel = get_tag_attribute(tag, "rel").unwrap_or_default().to_lowercase();
+            let rel = get_tag_attribute(tag, "rel")
+                .unwrap_or_default()
+                .to_lowercase();
             if !rel.split_whitespace().any(|r| r == "stylesheet") {
                 continue;
             }
             let href = get_tag_attribute(tag, "href")
                 .and_then(|h| to_remote_url(&decode_html_attribute(&h)));
             let Some(href) = href else { continue };
-            let Some(css) = css_by_url.get(&href) else { continue };
+            let Some(css) = css_by_url.get(&href) else {
+                continue;
+            };
             let sheet_rewrite = |raw: &str| -> Option<String> {
                 // Resolve sub-resource URLs against the stylesheet's FINAL url
                 // (post-redirect), matching the keys archive_stylesheet_subresources
@@ -739,7 +829,11 @@ fn sanitize_email_preview_html(
         String::new()
     });
 
-    let tags: HashSet<&str> = ALLOWED_TAGS.iter().chain(ALLOWED_TAGS_2.iter()).copied().collect();
+    let tags: HashSet<&str> = ALLOWED_TAGS
+        .iter()
+        .chain(ALLOWED_TAGS_2.iter())
+        .copied()
+        .collect();
     let generic: HashSet<&str> = SAFE_GLOBAL_ATTRIBUTES.iter().copied().collect();
     let mut tag_attrs: HashMap<&str, HashSet<&str>> = HashMap::new();
     tag_attrs.insert("a", ["href", "target"].into_iter().collect());
@@ -774,7 +868,11 @@ fn sanitize_email_preview_html(
             };
             if attribute == "style" {
                 let safe = sanitize_style(value, &rewrite);
-                return if safe.is_empty() { None } else { Some(safe.into()) };
+                return if safe.is_empty() {
+                    None
+                } else {
+                    Some(safe.into())
+                };
             }
             match (element, attribute) {
                 ("a", "href") => {
@@ -840,7 +938,9 @@ fn get_email_for_preview(conn: &rusqlite::Connection, email_id: &str) -> Option<
 }
 
 fn read_storage(app: &AppState, path: &str) -> Option<Vec<u8>> {
-    app.storage_abs(path).ok().and_then(|file| std::fs::read(file).ok())
+    app.storage_abs(path)
+        .ok()
+        .and_then(|file| std::fs::read(file).ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -918,7 +1018,9 @@ pub async fn email_preview(
     let mut cid_map: HashMap<String, String> = HashMap::new();
     if let Some(msg) = &message {
         for attachment in msg.attachments() {
-            let Some(cid) = attachment.content_id() else { continue };
+            let Some(cid) = attachment.content_id() else {
+                continue;
+            };
             let content_type = attachment.content_type().map(|ct| match ct.subtype() {
                 Some(sub) => format!("{}/{}", ct.ctype(), sub),
                 None => ct.ctype().to_string(),
@@ -927,11 +1029,16 @@ pub async fn email_preview(
             if !is_safe_preview_content_type(normalized.as_deref()) {
                 continue;
             }
-            let Some(contents) = resolve(attachment) else { continue };
+            let Some(contents) = resolve(attachment) else {
+                continue;
+            };
             if contents.is_empty() || contents.len() > MAX_INLINE_CID_BYTES {
                 continue;
             }
-            let cid = cid.trim_start_matches('<').trim_end_matches('>').to_lowercase();
+            let cid = cid
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_lowercase();
             cid_map.insert(
                 cid,
                 format!(
@@ -949,7 +1056,9 @@ pub async fn email_preview(
         if asset.status != "archived" {
             continue;
         }
-        let Some(path) = &asset.storage_path else { continue };
+        let Some(path) = &asset.storage_path else {
+            continue;
+        };
         if normalize_content_type(asset.content_type.as_deref()).as_deref() != Some("text/css") {
             continue;
         }
@@ -1069,7 +1178,10 @@ pub async fn get_remote_asset(
         header::HeaderName::from_static("cross-origin-resource-policy"),
         HeaderValue::from_static("same-origin"),
     );
-    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=86400"),
@@ -1083,8 +1195,14 @@ mod tests {
 
     #[test]
     fn normalize_content_type_cases() {
-        assert_eq!(normalize_content_type(Some("image/jpg")).as_deref(), Some("image/jpeg"));
-        assert_eq!(normalize_content_type(Some("image/PNG; charset=x")).as_deref(), Some("image/png"));
+        assert_eq!(
+            normalize_content_type(Some("image/jpg")).as_deref(),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            normalize_content_type(Some("image/PNG; charset=x")).as_deref(),
+            Some("image/png")
+        );
         assert_eq!(normalize_content_type(Some("")), None);
         assert_eq!(normalize_content_type(None), None);
     }
@@ -1098,7 +1216,10 @@ mod tests {
 
     #[test]
     fn escape_and_decode_html() {
-        assert_eq!(escape_html(r#"<a href="x">&'"#), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;");
+        assert_eq!(
+            escape_html(r#"<a href="x">&'"#),
+            "&lt;a href=&quot;x&quot;&gt;&amp;&#39;"
+        );
         assert_eq!(decode_html_attribute("&amp;&lt;&gt;&#65;&#x42;"), "&<>AB");
         // Single-pass: a '&' produced by decoding must NOT start another entity.
         assert_eq!(decode_html_attribute("&amp;#38;"), "&#38;");
@@ -1118,24 +1239,41 @@ mod tests {
         ));
         assert!(is_likely_tracking_url("https://amazon.co.uk/gp/r.html?U=x"));
         // Dedicated whole-host trackers.
-        assert!(is_likely_tracking_url("https://www.google-analytics.com/collect?v=1"));
-        assert!(is_likely_tracking_url("https://region1.google-analytics.com/g/collect"));
-        assert!(is_likely_tracking_url("https://sb.scorecardresearch.com/b?c1=2"));
-        assert!(is_likely_tracking_url("https://px.ads.linkedin.com/collect?pid=1"));
+        assert!(is_likely_tracking_url(
+            "https://www.google-analytics.com/collect?v=1"
+        ));
+        assert!(is_likely_tracking_url(
+            "https://region1.google-analytics.com/g/collect"
+        ));
+        assert!(is_likely_tracking_url(
+            "https://sb.scorecardresearch.com/b?c1=2"
+        ));
+        assert!(is_likely_tracking_url(
+            "https://px.ads.linkedin.com/collect?pid=1"
+        ));
         // Meta pixel (path-gated).
-        assert!(is_likely_tracking_url("https://www.facebook.com/tr?id=123&ev=Open"));
+        assert!(is_likely_tracking_url(
+            "https://www.facebook.com/tr?id=123&ev=Open"
+        ));
 
         // NOT filtered: real images, and the tracker path on an unrelated host.
-        assert!(!is_likely_tracking_url("https://images-na.ssl-images-amazon.com/images/I/abc.jpg"));
+        assert!(!is_likely_tracking_url(
+            "https://images-na.ssl-images-amazon.com/images/I/abc.jpg"
+        ));
         assert!(!is_likely_tracking_url("https://example.com/gp/r.html?U=x"));
         assert!(!is_likely_tracking_url("https://www.facebook.com/logo.png"));
-        assert!(!is_likely_tracking_url("https://notgoogle-analytics.com/hero.jpg"));
+        assert!(!is_likely_tracking_url(
+            "https://notgoogle-analytics.com/hero.jpg"
+        ));
         assert!(!is_likely_tracking_url("https://cdn.example.com/hero.jpg"));
     }
 
     #[test]
     fn to_remote_url_only_http() {
-        assert_eq!(to_remote_url("  http://x.com/a  ").as_deref(), Some("http://x.com/a"));
+        assert_eq!(
+            to_remote_url("  http://x.com/a  ").as_deref(),
+            Some("http://x.com/a")
+        );
         assert!(to_remote_url("https://y.com").is_some());
         assert!(to_remote_url("javascript:alert(1)").is_none());
         assert!(to_remote_url("cid:logo").is_none());
@@ -1167,7 +1305,10 @@ mod tests {
     #[test]
     fn sanitize_style_strips_js_and_image_set() {
         let keep = |u: &str| Some(u.to_string());
-        let out = sanitize_style("color:red; background:image-set('cid:x'); width:javascript:x", &keep);
+        let out = sanitize_style(
+            "color:red; background:image-set('cid:x'); width:javascript:x",
+            &keep,
+        );
         assert!(!out.contains("image-set"));
         assert!(!out.contains("javascript:"));
         assert!(out.contains("color:red"));
@@ -1207,7 +1348,10 @@ mod tests {
 
     #[test]
     fn inline_style_property_and_text_render() {
-        assert_eq!(get_inline_style_property("width: 10px; color: red", "width").as_deref(), Some("10px"));
+        assert_eq!(
+            get_inline_style_property("width: 10px; color: red", "width").as_deref(),
+            Some("10px")
+        );
         assert_eq!(get_inline_style_property("color:red", "width"), None);
         assert_eq!(render_text_preview("a\nb"), "<div>a<br>b</div>");
     }
@@ -1247,8 +1391,12 @@ mod tests {
         let msg = mail_parser::MessageParser::default()
             .parse(eml.as_bytes())
             .unwrap();
-        let html = build_preview_body(&msg, &|part: &mail_parser::MessagePart| Some(part.contents().to_vec()));
-        let text1 = html.find("Look at this!").expect("first text part rendered");
+        let html = build_preview_body(&msg, &|part: &mail_parser::MessagePart| {
+            Some(part.contents().to_vec())
+        });
+        let text1 = html
+            .find("Look at this!")
+            .expect("first text part rendered");
         let img = html
             .find("data:image/jpeg;base64,")
             .expect("inline photo rendered as data URI");
@@ -1282,7 +1430,9 @@ mod tests {
         let msg = mail_parser::MessageParser::default()
             .parse(eml.as_bytes())
             .unwrap();
-        let html = build_preview_body(&msg, &|part: &mail_parser::MessagePart| Some(part.contents().to_vec()));
+        let html = build_preview_body(&msg, &|part: &mail_parser::MessagePart| {
+            Some(part.contents().to_vec())
+        });
         assert_eq!(
             html.matches("data:image/png;base64,").count(),
             1,
@@ -1361,8 +1511,14 @@ mod hollow_tests {
             &HashMap::new(),
         );
         assert_eq!(out.matches("<img").count(), 1, "the cid image survives");
-        assert!(out.contains("data:image/jpeg;base64,/9j/4AAQSkZJRg=="), "resolved to its bytes");
-        assert!(!out.contains("cid:"), "no raw cid: reference reaches the reader");
+        assert!(
+            out.contains("data:image/jpeg;base64,/9j/4AAQSkZJRg=="),
+            "resolved to its bytes"
+        );
+        assert!(
+            !out.contains("cid:"),
+            "no raw cid: reference reaches the reader"
+        );
 
         // Uppercase reference against a lowercased map key (Content-ID: <Logo>).
         let out = sanitize_email_preview_html(
@@ -1372,7 +1528,10 @@ mod hollow_tests {
             &[],
             &HashMap::new(),
         );
-        assert!(out.contains("data:image/jpeg;base64,"), "cid match is case-insensitive");
+        assert!(
+            out.contains("data:image/jpeg;base64,"),
+            "cid match is case-insensitive"
+        );
 
         // An unresolvable cid leaves nothing behind — not a broken <img>.
         let out = sanitize_email_preview_html(
@@ -1393,7 +1552,10 @@ mod hollow_tests {
             &[],
             &HashMap::new(),
         );
-        assert!(!out.contains("cid:"), "cid href stripped by is_safe_link_url");
+        assert!(
+            !out.contains("cid:"),
+            "cid href stripped by is_safe_link_url"
+        );
     }
 
     /// The inline cap is a preview-payload bound, not an attachment limit. An
@@ -1419,21 +1581,30 @@ mod hollow_tests {
             "\r\n",
             "--BOUND--\r\n",
         );
-        let msg = mail_parser::MessageParser::default().parse(eml.as_bytes()).unwrap();
+        let msg = mail_parser::MessageParser::default()
+            .parse(eml.as_bytes())
+            .unwrap();
 
         // One byte over the cap: resolved from the blob store, then rejected.
         let oversize = |_: &mail_parser::MessagePart| -> Option<Vec<u8>> {
             Some(vec![0u8; MAX_INLINE_CID_BYTES + 1])
         };
         let html = build_preview_body(&msg, &oversize);
-        assert!(!html.contains("<img"), "over-cap image is dropped, silently");
-        assert!(html.contains("Look at this!"), "surrounding text still renders");
+        assert!(
+            !html.contains("<img"),
+            "over-cap image is dropped, silently"
+        );
+        assert!(
+            html.contains("Look at this!"),
+            "surrounding text still renders"
+        );
 
         // Exactly at the cap: inlined.
-        let at_cap = |_: &mail_parser::MessagePart| -> Option<Vec<u8>> {
-            Some(vec![0u8; 64])
-        };
+        let at_cap = |_: &mail_parser::MessagePart| -> Option<Vec<u8>> { Some(vec![0u8; 64]) };
         let html = build_preview_body(&msg, &at_cap);
-        assert!(html.contains("data:image/jpeg;base64,"), "an image within the cap inlines");
+        assert!(
+            html.contains("data:image/jpeg;base64,"),
+            "an image within the cap inlines"
+        );
     }
 }

@@ -1,19 +1,14 @@
-export const SNAPSHOT_QUIET_PERIOD_MS = 700;
+export const SNAPSHOT_SETTLE_DELAY_MS = 16;
 
 export class SwipeBackSnapshotScheduler {
 	#timer: ReturnType<typeof setTimeout> | null = null;
 
-	schedule(capture: () => void, delay = SNAPSHOT_QUIET_PERIOD_MS): void {
+	schedule(capture: () => void, delay = SNAPSHOT_SETTLE_DELAY_MS): void {
 		this.cancel();
 		this.#timer = setTimeout(() => {
 			this.#timer = null;
 			capture();
 		}, delay);
-	}
-
-	deferIfPending(capture: () => void): void {
-		if (!this.#timer) return;
-		this.schedule(capture);
 	}
 
 	cancel(): void {

@@ -47,10 +47,6 @@
 		snapshotScheduler.schedule(captureCurrentSnapshot, delay);
 	}
 
-	function deferSnapshotWhileInteracting(): void {
-		snapshotScheduler.deferIfPending(captureCurrentSnapshot);
-	}
-
 	function handleResize(): void {
 		invalidateSwipeBackSnapshots();
 		scheduleSnapshot();
@@ -104,9 +100,6 @@
 
 <svelte:window
 	onwheel={swipe.handleWheel}
-	onpointermove={deferSnapshotWhileInteracting}
-	onpointerdown={deferSnapshotWhileInteracting}
-	onkeydown={deferSnapshotWhileInteracting}
 	onscroll={() => scheduleSnapshot()}
 	onresize={handleResize}
 />

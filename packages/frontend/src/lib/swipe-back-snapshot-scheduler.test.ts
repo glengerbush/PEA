@@ -1,36 +1,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-	SNAPSHOT_QUIET_PERIOD_MS,
+	SNAPSHOT_SETTLE_DELAY_MS,
 	SwipeBackSnapshotScheduler,
 } from './swipe-back-snapshot-scheduler';
 
 describe('swipe-back snapshot scheduling', () => {
 	afterEach(() => vi.useRealTimers());
 
-	it('waits for a quiet period after pointer activity', () => {
+	it('captures shortly after navigation settles', () => {
 		vi.useFakeTimers();
 		const scheduler = new SwipeBackSnapshotScheduler();
 		const capture = vi.fn();
 
 		scheduler.schedule(capture);
-		vi.advanceTimersByTime(SNAPSHOT_QUIET_PERIOD_MS - 100);
-		scheduler.deferIfPending(capture);
-		vi.advanceTimersByTime(SNAPSHOT_QUIET_PERIOD_MS - 1);
+		vi.advanceTimersByTime(SNAPSHOT_SETTLE_DELAY_MS - 1);
 		expect(capture).not.toHaveBeenCalled();
 
 		vi.advanceTimersByTime(1);
 		expect(capture).toHaveBeenCalledOnce();
 	});
 
-	it('does not schedule new work for activity after capture', () => {
+	it('coalesces repeated capture requests', () => {
 		vi.useFakeTimers();
 		const scheduler = new SwipeBackSnapshotScheduler();
 		const capture = vi.fn();
 
 		scheduler.schedule(capture);
-		vi.advanceTimersByTime(SNAPSHOT_QUIET_PERIOD_MS);
-		scheduler.deferIfPending(capture);
-		vi.runAllTimers();
+		vi.advanceTimersByTime(SNAPSHOT_SETTLE_DELAY_MS - 1);
+		scheduler.schedule(capture);
+		vi.advanceTimersByTime(SNAPSHOT_SETTLE_DELAY_MS);
 
 		expect(capture).toHaveBeenCalledOnce();
 	});

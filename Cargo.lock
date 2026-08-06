@@ -3022,6 +3022,7 @@ version = "1.2.7"
 dependencies = [
  "arboard",
  "axum",
+ "cairo-rs",
  "http",
  "objc2",
  "objc2-foundation",
@@ -3034,6 +3035,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tower",
+ "webkit2gtk",
 ]
 
 [[package]]

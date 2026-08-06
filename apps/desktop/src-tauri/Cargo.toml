@@ -22,6 +22,12 @@ axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 http = "1"
 
+# Linux webview snapshots for the swipe-back capture prototype. These versions
+# match Tauri's WebKitGTK/Cairo dependency graph.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0.2"
+cairo-rs = { version = "0.18.5", features = ["png"] }
+
 # Native Quick Look: the shared QLPreviewPanel (the same panel Finder shows on
 # Space) is an AppKit API, reachable only via Objective-C from the app process.
 [target.'cfg(target_os = "macos")'.dependencies]

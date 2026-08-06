@@ -56,11 +56,15 @@ mod quicklook {
                 // No `?` and no `return` in here: define_class! evaluates this
                 // block as an expression inside a function that returns objc2's
                 // RetainedReturnValue, so an early exit can't typecheck.
-                CURRENT_PATH.lock().ok().and_then(|p| p.clone()).map(|path| {
-                    // NSURL conforms to QLPreviewItem, so a file URL is the item.
-                    let url = unsafe { NSURL::fileURLWithPath(&NSString::from_str(&path)) };
-                    ProtocolObject::from_retained(url)
-                })
+                CURRENT_PATH
+                    .lock()
+                    .ok()
+                    .and_then(|p| p.clone())
+                    .map(|path| {
+                        // NSURL conforms to QLPreviewItem, so a file URL is the item.
+                        let url = unsafe { NSURL::fileURLWithPath(&NSString::from_str(&path)) };
+                        ProtocolObject::from_retained(url)
+                    })
             }
         }
     );
@@ -116,7 +120,9 @@ fn check_for_updates(app: tauri::AppHandle) {
     use tauri_plugin_updater::UpdaterExt;
     tauri::async_runtime::spawn(async move {
         let Ok(updater) = app.updater() else { return };
-        let Ok(Some(update)) = updater.check().await else { return };
+        let Ok(Some(update)) = updater.check().await else {
+            return;
+        };
         let version = update.version.clone();
         let confirmed = app
             .dialog()
@@ -201,10 +207,17 @@ async fn handle_native_clipboard(body: Vec<u8>) -> http::Response<Vec<u8>> {
     let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return respond(400, "Invalid JSON body");
     };
-    let Some(text) = parsed.get("text").and_then(|v| v.as_str()).map(String::from) else {
+    let Some(text) = parsed
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    else {
         return respond(400, "Missing text");
     };
-    let html = parsed.get("html").and_then(|v| v.as_str()).map(String::from);
+    let html = parsed
+        .get("html")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         static CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> =
@@ -229,15 +242,92 @@ async fn handle_native_clipboard(body: Vec<u8>) -> http::Response<Vec<u8>> {
     }
 }
 
+/// Captures the rendered Linux WebKit viewport without walking the DOM. PNG
+/// encoding runs off the GTK thread so capture does not stall interaction.
+#[cfg(target_os = "linux")]
+async fn handle_native_snapshot(app: tauri::AppHandle) -> http::Response<Vec<u8>> {
+    use std::time::Instant;
+    use webkit2gtk::{SnapshotOptions, SnapshotRegion, WebViewExt};
+
+    let respond_error = |message: String| {
+        http::Response::builder()
+            .status(500)
+            .header("content-type", "text/plain")
+            .body(message.into_bytes())
+            .unwrap()
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return respond_error("Main webview unavailable".into());
+    };
+    let (tx, mut rx) = tauri::async_runtime::channel::<Result<(Vec<u8>, u128, u128), String>>(1);
+    let scheduled = window.with_webview(move |platform| {
+        let started = Instant::now();
+        platform.inner().snapshot(
+            SnapshotRegion::Visible,
+            SnapshotOptions::NONE,
+            None::<&webkit2gtk::gio::Cancellable>,
+            move |result| {
+                let capture_ms = started.elapsed().as_millis();
+                let image_data = result
+                    .map_err(|error| error.to_string())
+                    .and_then(|surface| {
+                        cairo::ImageSurface::try_from(surface)
+                            .map_err(|_| "WebKit returned a non-image surface".to_string())?
+                            .take_data()
+                            .map_err(|error| error.to_string())
+                    });
+                tauri::async_runtime::spawn(async move {
+                    let encoded = match image_data {
+                        Ok(image_data) => tauri::async_runtime::spawn_blocking(move || {
+                            let encode_started = Instant::now();
+                            let mut png = Vec::new();
+                            image_data
+                                .into_inner()
+                                .write_to_png(&mut png)
+                                .map_err(|error| error.to_string())?;
+                            Ok((png, capture_ms, encode_started.elapsed().as_millis()))
+                        })
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string())),
+                        Err(error) => Err(error),
+                    };
+                    let _ = tx.try_send(encoded);
+                });
+            },
+        );
+    });
+    if let Err(error) = scheduled {
+        return respond_error(error.to_string());
+    }
+
+    match rx.recv().await {
+        Some(Ok((png, capture_ms, encode_ms))) => http::Response::builder()
+            .status(200)
+            .header("content-type", "image/png")
+            .header("x-pea-capture-ms", capture_ms.to_string())
+            .header("x-pea-encode-ms", encode_ms.to_string())
+            .body(png)
+            .unwrap(),
+        Some(Err(error)) => respond_error(error),
+        None => respond_error("Native snapshot channel closed".into()),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn handle_native_snapshot(_app: tauri::AppHandle) -> http::Response<Vec<u8>> {
+    http::Response::builder()
+        .status(404)
+        .header("content-type", "text/plain")
+        .body(b"Native snapshots are not implemented on this platform".to_vec())
+        .unwrap()
+}
+
 /// Native Quick Look, exposed as POST /api/v1/native/quicklook with a {path}
 /// JSON body (a storage-relative attachment path). The engine materializes the
 /// file into the temp dir; on macOS the shell then presents the native
 /// QLPreviewPanel. Elsewhere this returns 404 so the frontend falls back to
 /// the engine's /attachments/quicklook previewer (sushi/xdg-open).
-async fn handle_native_quicklook(
-    app: tauri::AppHandle,
-    body: Vec<u8>,
-) -> http::Response<Vec<u8>> {
+async fn handle_native_quicklook(app: tauri::AppHandle, body: Vec<u8>) -> http::Response<Vec<u8>> {
     let respond = |status: u16, message: &str| {
         http::Response::builder()
             .status(status)
@@ -516,6 +606,10 @@ fn main() {
                 }
                 if request.uri().path() == "/api/v1/native/clipboard" {
                     responder.respond(handle_native_clipboard(request.into_body()).await);
+                    return;
+                }
+                if request.uri().path() == "/api/v1/native/snapshot" {
+                    responder.respond(handle_native_snapshot(app).await);
                     return;
                 }
                 if request.uri().path() == "/api/v1/native/quicklook" {

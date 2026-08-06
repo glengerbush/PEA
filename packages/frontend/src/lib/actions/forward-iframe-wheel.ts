@@ -12,6 +12,7 @@ export function forwardIframeWheel(node: HTMLIFrameElement, handler: WheelHandle
 			deltaX: event.deltaX,
 			deltaY: event.deltaY,
 			deltaMode: event.deltaMode,
+			timeStamp: event.timeStamp,
 			preventDefault: () => event.preventDefault(),
 		});
 	}

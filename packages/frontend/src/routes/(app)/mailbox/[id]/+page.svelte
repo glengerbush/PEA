@@ -7,7 +7,6 @@
 	import TagCombobox from '$lib/components/custom/TagCombobox.svelte';
 	import { contactName } from '$lib/stores/contacts.svelte';
 	import AttachmentPreview from '$lib/components/custom/AttachmentPreview.svelte';
-	import SwipeBackIndicator from '$lib/components/custom/SwipeBackIndicator.svelte';
 	import EmailThread from '$lib/components/custom/EmailThread.svelte';
 	import { formatDateTime, formatDate, describeDate } from '$lib/stores/datetime.svelte';
 	import { api } from '$lib/api.client';
@@ -28,15 +27,14 @@
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
 	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
-	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import SwipeBackLink from '$lib/components/custom/SwipeBackLink.svelte';
 	import Download from '@lucide/svelte/icons/download';
 	import Reply from '@lucide/svelte/icons/reply';
 	import ScrollText from '@lucide/svelte/icons/scroll-text';
 	import X from '@lucide/svelte/icons/x';
 	import { get } from 'svelte/store';
 	import { lastMailboxListUrl } from '$lib/stores/mailbox-nav';
-	import { disableTwoFingerSwipe } from '$lib/stores/swipe.store';
-	import { SwipeBackGesture } from '$lib/stores/swipe-back.svelte';
+	import { swipeBackGesture } from '$lib/stores/swipe-back.svelte';
 	import { page } from '$app/state';
 	import { onDestroy } from 'svelte';
 	import { enhance } from '$app/forms';
@@ -75,16 +73,6 @@
 	function backTarget(): string {
 		return backTargetUrl;
 	}
-
-	function goBack() {
-		goto(backTarget());
-	}
-
-	const swipe = new SwipeBackGesture({
-		onComplete: goBack,
-		isDisabled: () => get(disableTwoFingerSwipe),
-	});
-	onDestroy(() => swipe.destroy());
 
 	/** "Name <email>" when a name (contact or header) is known, else the bare address. */
 	function identityLabel(addr: string | null | undefined, fallback?: string | null): string {
@@ -762,15 +750,11 @@
 	<title>{email?.subject} | {$t('app.archive.title')} - PEA</title>
 </svelte:head>
 
-<svelte:window onwheel={swipe.handleWheel} />
-<SwipeBackIndicator progress={swipe.progress} />
-
 {#if email}
 	<div class="mb-4">
-		<Button variant="ghost" size="sm" class="gap-2" onclick={goBack}>
-			<ArrowLeft class="h-4 w-4" />
+		<SwipeBackLink target={backTargetUrl} class="gap-2">
 			{$t(backLabelKey)}
-		</Button>
+		</SwipeBackLink>
 	</div>
 	<div class="grid grid-cols-3 gap-6">
 		<div class="col-span-3 md:col-span-2">
@@ -898,7 +882,7 @@
 							<EmailPreview
 								emailId={email.id}
 								refreshKey={remoteContentRefreshKey}
-								onWheel={swipe.handleWheel}
+								onWheel={swipeBackGesture.handleWheel}
 							/>
 						</div>
 					</div>
@@ -1041,7 +1025,7 @@
 								modifiedAt={attachment.originalModifiedAt}
 								fetchBlob={() => fetchAttachmentBlob(attachment.storagePath)}
 								onQuickLook={() => quickLook(attachment.storagePath)}
-								onWheel={swipe.handleWheel}
+								onWheel={swipeBackGesture.handleWheel}
 							/>
 						{/each}
 					</Card.Content>
@@ -1065,7 +1049,7 @@
 											type: attachment.mimeType || 'application/octet-stream',
 										})
 									)}
-								onWheel={swipe.handleWheel}
+								onWheel={swipeBackGesture.handleWheel}
 							/>
 						{/each}
 					</Card.Content>
@@ -1115,7 +1099,7 @@
 								mimeType={asset.contentType}
 								canPreview={asset.previewable}
 								fetchBlob={() => fetchRemoteAssetBlob(asset.id)}
-								onWheel={swipe.handleWheel}
+								onWheel={swipeBackGesture.handleWheel}
 							/>
 						{/each}
 

@@ -28,7 +28,7 @@
 	import Paperclip from '@lucide/svelte/icons/paperclip';
 	import Search from '@lucide/svelte/icons/search';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
-	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import SwipeBackLink from '$lib/components/custom/SwipeBackLink.svelte';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
@@ -359,10 +359,9 @@
 
 {#if cameFromDashboard}
 	<div class="mb-2">
-		<Button variant="ghost" size="sm" class="gap-2" onclick={() => goto(fromParam)}>
-			<ArrowLeft class="h-4 w-4" />
+		<SwipeBackLink target={fromParam} class="gap-2">
 			{$t('app.archive.back_to_dashboard')}
-		</Button>
+		</SwipeBackLink>
 	</div>
 {/if}
 

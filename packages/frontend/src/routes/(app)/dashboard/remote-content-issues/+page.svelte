@@ -10,16 +10,11 @@
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
 	import { t } from '$lib/translations';
 	import { formatDateTime } from '$lib/stores/datetime.svelte';
-	import { disableTwoFingerSwipe } from '$lib/stores/swipe.store';
-	import { get } from 'svelte/store';
-	import { onDestroy } from 'svelte';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
-	import SwipeBackIndicator from '$lib/components/custom/SwipeBackIndicator.svelte';
-	import { SwipeBackGesture } from '$lib/stores/swipe-back.svelte';
+	import SwipeBackLink from '$lib/components/custom/SwipeBackLink.svelte';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
-	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 
 	let { data }: { data: PageData } = $props();
@@ -96,15 +91,6 @@
 		}
 	}
 
-	function goBack() {
-		goto('/dashboard');
-	}
-
-	const swipe = new SwipeBackGesture({
-		onComplete: goBack,
-		isDisabled: () => get(disableTwoFingerSwipe),
-	});
-	onDestroy(() => swipe.destroy());
 </script>
 
 {#snippet sortHeader(field: string, label: string)}
@@ -130,15 +116,11 @@
 	<title>Remote content issues - PEA</title>
 </svelte:head>
 
-<svelte:window onwheel={swipe.handleWheel} />
-<SwipeBackIndicator progress={swipe.progress} />
-
 <div class="space-y-4">
 	<div>
-		<Button variant="ghost" size="sm" class="-ml-2 gap-2" onclick={goBack}>
-			<ArrowLeft class="h-4 w-4" />
+		<SwipeBackLink target="/dashboard" class="-ml-2 gap-2">
 			{$t('app.archive.back_to_dashboard')}
-		</Button>
+		</SwipeBackLink>
 	</div>
 	<div class="flex flex-wrap items-center justify-between gap-3">
 		<div>

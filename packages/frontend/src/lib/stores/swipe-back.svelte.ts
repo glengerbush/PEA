@@ -1,90 +1,177 @@
+import {
+	advanceSwipeMotion,
+	createSwipeMotion,
+	releaseSwipeMotion,
+	type SwipeMotion,
+} from '$lib/swipe-back-motion';
+import { getSwipeBackSnapshot, type SwipeBackSnapshot } from '$lib/swipe-back-snapshot';
+
 export interface SwipeWheelInput {
 	deltaX: number;
 	deltaY: number;
 	deltaMode?: number;
+	timeStamp?: number;
 	preventDefault?: () => void;
 }
 
-interface SwipeBackOptions {
-	onComplete: () => void;
+export interface SwipeBackOptions {
+	onComplete: () => Promise<void>;
+	targetUrl: () => string;
 	isDisabled?: () => boolean;
 }
 
-/**
- * Turns trackpad wheel deltas into a deliberate, animated back gesture.
- *
- * The gesture locks onto the first clearly-horizontal movement, tolerates the
- * small vertical wobble common to trackpads, and eases both toward and away
- * from the edge instead of flashing at a hard threshold.
- */
-export class SwipeBackGesture {
-	progress = $state(0);
+export type SwipeBackPhase = 'idle' | 'tracking' | 'completing' | 'cancelling';
 
-	#distance = 0;
-	#direction = 0;
-	#targetProgress = 0;
-	#frame: number | null = null;
+const RELEASE_DELAY_MS = 90;
+const COMPLETE_DURATION_MS = 210;
+const CANCEL_DURATION_MS = 150;
+
+/** One app-wide gesture coordinator, rendered by the root layout. */
+class SwipeBackGesture {
+	distance = $state(0);
+	phase = $state<SwipeBackPhase>('idle');
+	viewportWidth = $state(1);
+	snapshot = $state.raw<SwipeBackSnapshot | null>(null);
+	reducedMotion = $state(false);
+
+	#motion: SwipeMotion = createSwipeMotion();
+	#options: SwipeBackOptions | null = null;
+	#configuration: symbol | null = null;
 	#releaseTimer: ReturnType<typeof setTimeout> | null = null;
-	#completeTimer: ReturnType<typeof setTimeout> | null = null;
-	#completing = false;
-	#onComplete: () => void;
-	#isDisabled: () => boolean;
+	#settleTimer: ReturnType<typeof setTimeout> | null = null;
 
-	constructor({ onComplete, isDisabled = () => false }: SwipeBackOptions) {
-		this.#onComplete = onComplete;
-		this.#isDisabled = isDisabled;
+	get active(): boolean {
+		return this.phase !== 'idle';
+	}
+
+	get progress(): number {
+		return Math.min(1, Math.max(0, this.distance / this.viewportWidth));
+	}
+
+	get visualDistance(): number {
+		return this.reducedMotion ? 0 : this.distance;
+	}
+
+	get transitionDurationMs(): number {
+		if (this.reducedMotion) return 0;
+		if (this.phase === 'completing') return COMPLETE_DURATION_MS;
+		if (this.phase === 'cancelling') return CANCEL_DURATION_MS;
+		return 0;
+	}
+
+	setReducedMotion(reduced: boolean): void {
+		this.reducedMotion = reduced;
+	}
+
+	configure(options: SwipeBackOptions): () => void {
+		const configuration = Symbol('swipe-back-configuration');
+		this.#configuration = configuration;
+		this.#options = options;
+
+		return () => {
+			if (this.#configuration !== configuration) return;
+			this.#configuration = null;
+			this.#options = null;
+			// Completion owns cleanup while navigation swaps the route underneath.
+			if (this.phase !== 'completing') this.#reset();
+		};
 	}
 
 	handleWheel = (event: SwipeWheelInput): void => {
-		if (this.#isDisabled()) {
-			this.#release();
+		const options = this.#options;
+		if (!options || options.isDisabled?.()) {
+			if (this.active) this.#cancel();
 			return;
 		}
-		if (this.#completing) return;
+		if (this.phase === 'completing' || this.phase === 'cancelling') return;
 
-		const deltaX = this.#normalizeDelta(event.deltaX, event.deltaMode);
-		const deltaY = this.#normalizeDelta(event.deltaY, event.deltaMode);
-		const horizontal = Math.abs(deltaX);
-		const vertical = Math.abs(deltaY);
+		const timeStamp = event.timeStamp ?? performance.now();
+		const next = advanceSwipeMotion(this.#motion, {
+			deltaX: this.#normalizeDelta(event.deltaX, event.deltaMode),
+			deltaY: this.#normalizeDelta(event.deltaY, event.deltaMode),
+			timeStamp,
+		});
 
-		if (this.#direction === 0) {
-			// A slight horizontal lead is enough to begin. Once locked, vertical
-			// trackpad noise does not make the gesture repeatedly start and stop.
-			if (horizontal < 1 || horizontal <= vertical * 1.08) return;
-			this.#direction = Math.sign(deltaX) || 1;
+		if (!next.tracking) {
+			this.#motion = next;
+			return;
 		}
 
-		if (horizontal < 0.35 || horizontal < vertical * 0.45) return;
-		// Once this is clearly our horizontal gesture, keep the webview's native
-		// history/overscroll handling from animating underneath it. Competing
-		// compositor gestures can leave visual and pointer coordinates out of sync.
 		event.preventDefault?.();
+		if (!this.#motion.tracking) {
+			this.viewportWidth = Math.max(1, window.innerWidth);
+			this.snapshot = getSwipeBackSnapshot(options.targetUrl());
+			this.phase = 'tracking';
+		}
 
-		const directedDelta = deltaX * this.#direction;
-		this.#distance = Math.max(
-			0,
-			this.#distance + (directedDelta >= 0 ? directedDelta : directedDelta * 1.7)
-		);
+		this.#motion = next;
+		this.distance = Math.min(this.viewportWidth, next.distance);
+		this.#scheduleRelease(timeStamp);
 
-		const threshold = this.#clamp(window.innerWidth * 0.2, 180, 300) * 0.72;
-		const rawProgress = this.#clamp(this.#distance / threshold, 0, 1);
-		// The edge responds immediately, then gains resistance near completion.
-		this.#targetProgress = 1 - Math.pow(1 - rawProgress, 2.15);
-		this.#animate();
-
-		if (this.#releaseTimer) clearTimeout(this.#releaseTimer);
-		this.#releaseTimer = setTimeout(() => this.#release(), 240);
-
-		if (rawProgress >= 1) this.#complete();
+		if (this.distance >= this.viewportWidth) this.#settle(timeStamp, 'complete');
 	};
 
-	destroy(): void {
-		if (this.#frame != null) cancelAnimationFrame(this.#frame);
+	cancel(): void {
+		if (this.active) this.#cancel();
+	}
+
+	#scheduleRelease(lastEventTime: number): void {
 		if (this.#releaseTimer) clearTimeout(this.#releaseTimer);
-		if (this.#completeTimer) clearTimeout(this.#completeTimer);
-		this.#frame = null;
+		this.#releaseTimer = setTimeout(() => {
+			this.#releaseTimer = null;
+			this.#settle(lastEventTime + RELEASE_DELAY_MS);
+		}, RELEASE_DELAY_MS);
+	}
+
+	#settle(timeStamp: number, forced?: 'complete'): void {
+		if (this.phase !== 'tracking') return;
+		const decision = forced ?? releaseSwipeMotion(this.#motion, this.viewportWidth, timeStamp);
+		if (decision === 'cancel') {
+			this.#cancel();
+			return;
+		}
+
+		if (this.#releaseTimer) clearTimeout(this.#releaseTimer);
 		this.#releaseTimer = null;
-		this.#completeTimer = null;
+		const complete = this.#options?.onComplete;
+		this.phase = 'completing';
+		this.distance = this.viewportWidth;
+		this.#settleTimer = setTimeout(
+			async () => {
+				this.#settleTimer = null;
+				try {
+					await complete?.();
+				} finally {
+					this.#reset();
+				}
+			},
+			this.reducedMotion ? 0 : COMPLETE_DURATION_MS
+		);
+	}
+
+	#cancel(): void {
+		if (this.#releaseTimer) clearTimeout(this.#releaseTimer);
+		this.#releaseTimer = null;
+		this.phase = 'cancelling';
+		this.distance = 0;
+		this.#settleTimer = setTimeout(
+			() => {
+				this.#settleTimer = null;
+				this.#reset();
+			},
+			this.reducedMotion ? 0 : CANCEL_DURATION_MS
+		);
+	}
+
+	#reset(): void {
+		if (this.#releaseTimer) clearTimeout(this.#releaseTimer);
+		if (this.#settleTimer) clearTimeout(this.#settleTimer);
+		this.#releaseTimer = null;
+		this.#settleTimer = null;
+		this.#motion = createSwipeMotion();
+		this.distance = 0;
+		this.phase = 'idle';
+		this.snapshot = null;
 	}
 
 	#normalizeDelta(value: number, mode = 0): number {
@@ -92,46 +179,6 @@ export class SwipeBackGesture {
 		if (mode === 2) return value * window.innerWidth;
 		return value;
 	}
-
-	#release(): void {
-		if (this.#completing) return;
-		this.#distance = 0;
-		this.#direction = 0;
-		this.#targetProgress = 0;
-		this.#releaseTimer = null;
-		this.#animate();
-	}
-
-	#complete(): void {
-		this.#completing = true;
-		this.#targetProgress = 1;
-		if (this.#releaseTimer) clearTimeout(this.#releaseTimer);
-		this.#releaseTimer = null;
-		this.#animate();
-		// Let the edge visibly finish its pull before changing the route.
-		this.#completeTimer = setTimeout(() => this.#onComplete(), 260);
-	}
-
-	#animate(): void {
-		if (this.#frame != null) return;
-
-		const tick = () => {
-			const difference = this.#targetProgress - this.progress;
-			this.progress += difference * (this.#targetProgress > this.progress ? 0.24 : 0.16);
-
-			if (Math.abs(difference) < 0.002) {
-				this.progress = this.#targetProgress;
-				this.#frame = null;
-				return;
-			}
-
-			this.#frame = requestAnimationFrame(tick);
-		};
-
-		this.#frame = requestAnimationFrame(tick);
-	}
-
-	#clamp(value: number, minimum: number, maximum: number): number {
-		return Math.min(maximum, Math.max(minimum, value));
-	}
 }
+
+export const swipeBackGesture = new SwipeBackGesture();

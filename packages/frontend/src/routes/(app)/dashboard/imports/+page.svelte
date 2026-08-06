@@ -3,7 +3,7 @@
 	import * as Table from '$lib/components/ui/table';
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import SwipeBackLink from '$lib/components/custom/SwipeBackLink.svelte';
 	import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
 	import Trash from '@lucide/svelte/icons/trash';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -424,10 +424,9 @@
 
 <div class="">
 	<div class="mb-2">
-		<Button variant="ghost" size="sm" class="-ml-2 gap-2" href="/dashboard">
-			<ArrowLeft class="h-4 w-4" />
+		<SwipeBackLink target="/dashboard" class="-ml-2 gap-2">
 			{$t('app.archive.back_to_dashboard')}
-		</Button>
+		</SwipeBackLink>
 	</div>
 	<div class="mb-4 flex items-center justify-between">
 		<div class="flex items-center gap-4">

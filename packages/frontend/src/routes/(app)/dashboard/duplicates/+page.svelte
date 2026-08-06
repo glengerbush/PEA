@@ -15,7 +15,7 @@
 		duplicateGroupsPageUrl,
 		refreshAfterGroupRemoval,
 	} from '$lib/duplicate-review';
-	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import SwipeBackLink from '$lib/components/custom/SwipeBackLink.svelte';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import { t } from '$lib/translations';
 	import * as Dialog from '$lib/components/ui/dialog';
@@ -241,10 +241,9 @@
 />
 
 <div class="mb-2">
-	<Button variant="ghost" size="sm" class="-ml-2 gap-2" href="/dashboard">
-		<ArrowLeft class="h-4 w-4" />
+	<SwipeBackLink target="/dashboard" class="-ml-2 gap-2">
 		{$t('app.archive.back_to_dashboard')}
-	</Button>
+	</SwipeBackLink>
 </div>
 
 <div class="mb-4">

@@ -9,8 +9,6 @@ use regex::Regex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
-pub const FILE_BASED_PROVIDERS: [&str; 2] = ["eml_import", "mbox_import"];
-
 /// deriveSourceName — mbox folder → top-level folder → single filename →
 /// "<provider minus _import> import".
 pub fn derive_source_name(dto: &Value) -> String {
@@ -255,11 +253,7 @@ pub fn create_source(state: &AppState, conn: &Connection, dto: &Value) -> Result
     .map_err(|e| e.to_string())?;
 
     let source = find_by_id(conn, &id)?;
-    let test = match provider.as_str() {
-        "mbox_import" => crate::readers::get_mbox_inputs(&source.provider_config).map(|_| ()),
-        "eml_import" => crate::eml::validate(&source.provider_config),
-        other => Err(format!("Unsupported provider: {other}")),
-    };
+    let test = crate::import_source::prepare(&provider, &source.provider_config).map(|_| ());
     match test {
         Ok(()) => {
             update_source(state, conn, &id, &json!({ "status": "ready" }))?;
@@ -308,7 +302,7 @@ pub fn trigger_reimport(state: &AppState, conn: &Connection, id: &str) -> Result
             .filter_map(Result::ok)
             .collect();
         for (child_id, provider, status) in children {
-            if !FILE_BASED_PROVIDERS.contains(&provider.as_str())
+            if !crate::import_source::supports(&provider)
                 && (status == "active" || status == "error")
             {
                 queue::send_job(

@@ -47,6 +47,20 @@ pub fn add_progress(conn: &Connection, session_id: &str, delta_bytes: i64) {
     .ok();
 }
 
+/// Records the denominator from the same prepared snapshot that will stream.
+pub fn set_total_bytes(
+    conn: &Connection,
+    session_id: &str,
+    total_bytes: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE import_sessions SET total_bytes = ?, last_activity_at = ? WHERE id = ?",
+        rusqlite::params![total_bytes, crate::search::now_ms(), session_id],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 pub fn find_by_id(conn: &Connection, session_id: &str) -> Result<SessionRecord, String> {
     conn.query_row(
         "SELECT ingestion_source_id, is_initial_import, total_mailboxes, completed_mailboxes, \

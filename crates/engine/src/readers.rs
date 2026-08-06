@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 static MBOX_EXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.mbox$").unwrap());
 
 #[derive(Clone)]
-pub struct MboxInput {
-    pub file_path: String,
-    pub source_path: String,
-    pub is_emlx: bool,
+struct MboxInput {
+    file_path: String,
+    source_path: String,
+    is_emlx: bool,
     /// A plain RFC 5322 .eml file: the whole file is one message.
-    pub is_eml: bool,
+    is_eml: bool,
 }
 
 fn is_mbox_path(p: &str) -> bool {
@@ -136,7 +136,7 @@ fn find_local_inputs(import_root: &Path, dir: &Path, out: &mut Vec<MboxInput>) -
 
 /// getMboxInputs — resolves the source's local path (file or directory)
 /// into the list of mbox/eml/emlx inputs to import.
-pub fn get_mbox_inputs(provider_config: &Value) -> Result<Vec<MboxInput>, String> {
+fn get_mbox_inputs(provider_config: &Value) -> Result<Vec<MboxInput>, String> {
     let local = provider_config.get("localFilePath").and_then(|v| v.as_str()).unwrap_or("");
     if local.is_empty() {
         return Err("Mbox file or folder path not provided.".into());
@@ -179,9 +179,42 @@ pub fn get_mbox_inputs(provider_config: &Value) -> Result<Vec<MboxInput>, String
     }])
 }
 
-/// The import's display name (from the mbox file name), used as its Import Source.
-pub fn mbox_import_source(provider_config: &Value) -> String {
-    mbox_display_name(provider_config)
+pub(crate) struct PreparedMbox {
+    inputs: Vec<MboxInput>,
+    display_name: String,
+    total_bytes: u64,
+}
+
+pub(crate) fn prepare(provider_config: &Value) -> Result<PreparedMbox, String> {
+    let inputs = get_mbox_inputs(provider_config)?;
+    let total_bytes = inputs
+        .iter()
+        .filter_map(|input| std::fs::metadata(&input.file_path).ok())
+        .map(|metadata| metadata.len())
+        .sum();
+    Ok(PreparedMbox {
+        inputs,
+        display_name: mbox_display_name(provider_config),
+        total_bytes,
+    })
+}
+
+impl PreparedMbox {
+    pub(crate) fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    pub(crate) fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+
+    pub(crate) fn stream(
+        &self,
+        handle: &mut dyn FnMut(EmailObj),
+        on_bytes: &mut dyn FnMut(u64),
+    ) -> Result<(), String> {
+        stream_inputs(&self.inputs, handle, on_bytes)
+    }
 }
 
 fn mbox_display_name(provider_config: &Value) -> String {
@@ -364,22 +397,20 @@ fn for_each_mbox_message(
     Ok(())
 }
 
-/// fetchEmails — iterates every message of every input. `on_bytes` receives
-/// consumed-input byte deltas as reading progresses (for progress reporting).
-pub fn for_each_email(
-    provider_config: &Value,
-    mut handle: impl FnMut(EmailObj),
-    mut on_bytes: impl FnMut(u64),
+/// Streams the discovered messages. `on_bytes` receives consumed-input byte
+/// deltas as reading progresses (for progress reporting).
+fn stream_inputs(
+    inputs: &[MboxInput],
+    handle: &mut dyn FnMut(EmailObj),
+    on_bytes: &mut dyn FnMut(u64),
 ) -> Result<(), String> {
-    let inputs = get_mbox_inputs(provider_config)?;
-
     // No reader-level content dedup: the same message can appear in several
     // folders (Apple Mail bundles, copied .eml), each with a distinct
     // source_path. process_email dedups by message-id within the merge group
     // AND merges each duplicate's folder into the surviving email's tags, so a
     // message stays findable under every folder it appeared in. (Deduping here
     // would drop those extra folder tags — the mbox path never did.)
-    for input in &inputs {
+    for input in inputs {
         // .emlx / .eml are single, small messages — read them whole. An .mbox can
         // be many GB, so it is streamed below rather than read into memory.
         if input.is_emlx || input.is_eml {
@@ -417,7 +448,7 @@ pub fn for_each_email(
                     Err(e) => eprintln!("[reader] mbox message parse failed: {e}"),
                 }
             },
-            &mut on_bytes,
+            &mut *on_bytes,
         );
         if let Err(e) = read_result {
             eprintln!("[reader] failed to read input {}: {e}", input.file_path);
@@ -589,7 +620,10 @@ mod tests {
 
         let cfg = serde_json::json!({ "localFilePath": dir.to_string_lossy() });
         let mut emails = Vec::new();
-        for_each_email(&cfg, |e| emails.push(e), |_| {}).unwrap();
+        prepare(&cfg)
+            .unwrap()
+            .stream(&mut |e| emails.push(e), &mut |_| {})
+            .unwrap();
         emails.sort_by(|a, b| a.subject.cmp(&b.subject));
 
         assert_eq!(emails.len(), 2, "both mbox messages imported");
@@ -601,10 +635,9 @@ mod tests {
     }
 
     #[test]
-    fn mbox_display_name_and_import_source() {
+    fn mbox_display_name_uses_selected_input() {
         let c = serde_json::json!({ "localFilePath": "/x/My Mail.mbox" });
         assert_eq!(mbox_display_name(&c), "My Mail");
-        assert_eq!(mbox_import_source(&c), "My Mail");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Job processors, dispatched by (queue, job name).
 
 use crate::state::AppState;
-use crate::{readers, ingest, queue, search, sessions, sources};
+use crate::{import_source, ingest, queue, search, sessions, sources};
 use serde_json::{json, Value};
 
 pub fn dispatch(state: &AppState, queue_name: &str, name: &str, payload: &Value) -> Result<(), String> {
@@ -28,36 +28,38 @@ fn source_id_of(payload: &Value) -> Result<String, String> {
         .ok_or_else(|| "missing ingestionSourceId".into())
 }
 
-/// The import sources for a source row — one entry per importable mailbox/file.
-fn list_import_sources(source: &sources::SourceRow) -> Result<Vec<String>, String> {
-    match source.provider.as_str() {
-        "mbox_import" => Ok(vec![readers::mbox_import_source(&source.provider_config)]),
-        "eml_import" => Ok(vec![crate::eml::eml_import_source(&source.provider_config)]),
-        other => Err(format!("Unsupported provider: {other}")),
-    }
+#[derive(Clone, Copy)]
+enum ImportRun {
+    Initial,
+    Reimport,
 }
 
-/// Sum of the source's input file sizes, known before streaming starts — the
-/// denominator for import progress percentages. 0 when enumeration fails
-/// (progress is then simply not shown).
-fn total_input_bytes(source: &sources::SourceRow) -> i64 {
-    let paths: Vec<String> = match source.provider.as_str() {
-        "mbox_import" => readers::get_mbox_inputs(&source.provider_config)
-            .map(|inputs| inputs.into_iter().map(|i| i.file_path).collect())
-            .unwrap_or_default(),
-        "eml_import" => source
-            .provider_config
-            .get("localFilePath")
-            .and_then(|v| v.as_str())
-            .map(|p| vec![p.to_string()])
-            .unwrap_or_default(),
-        _ => Vec::new(),
+fn enqueue_import(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    source: &sources::SourceRow,
+    run: ImportRun,
+) -> Result<(), String> {
+    let is_initial = matches!(run, ImportRun::Initial);
+    let update = match run {
+        ImportRun::Initial => {
+            json!({ "status": "importing", "lastImportStatusMessage": "Starting initial import..." })
+        }
+        ImportRun::Reimport => json!({ "status": "importing", "lastImportStartedAt": true }),
     };
-    paths
-        .iter()
-        .filter_map(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len() as i64)
-        .sum()
+    sources::update_source(state, conn, &source.id, &update)?;
+    let session_id = sessions::create(conn, &source.id, 1, is_initial, 0)?;
+    queue::send_job(
+        state,
+        "ingestion",
+        "process-mailbox",
+        &json!({
+            "ingestionSourceId": source.id,
+            "sessionId": session_id,
+        }),
+        queue::no_retry(),
+    );
+    Ok(())
 }
 
 fn initial_import(state: &AppState, payload: &Value) -> Result<(), String> {
@@ -65,52 +67,7 @@ fn initial_import(state: &AppState, payload: &Value) -> Result<(), String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let result = (|| -> Result<(), String> {
         let source = sources::find_by_id(&conn, &source_id)?;
-        sources::update_source(
-            state,
-            &conn,
-            &source_id,
-            &json!({ "status": "importing", "lastImportStatusMessage": "Starting initial import..." }),
-        )?;
-        let import_sources = list_import_sources(&source)?;
-        if import_sources.is_empty() {
-            let status = if sources::FILE_BASED_PROVIDERS.contains(&source.provider.as_str()) {
-                "imported"
-            } else {
-                "active"
-            };
-            sources::update_source(
-                state,
-                &conn,
-                &source_id,
-                &json!({
-                    "status": status,
-                    "lastImportFinishedAt": true,
-                    "lastImportStatusMessage": "Initial import complete. No import sources found.",
-                }),
-            )?;
-            return Ok(());
-        }
-        let session_id = sessions::create(
-            &conn,
-            &source_id,
-            import_sources.len() as i64,
-            true,
-            total_input_bytes(&source),
-        )?;
-        for import_source in import_sources {
-            queue::send_job(
-                state,
-                "ingestion",
-                "process-mailbox",
-                &json!({
-                    "ingestionSourceId": source_id,
-                    "importSource": import_source,
-                    "sessionId": session_id,
-                }),
-                queue::no_retry(),
-            );
-        }
-        Ok(())
+        enqueue_import(state, &conn, &source, ImportRun::Initial)
     })();
     if let Err(e) = &result {
         sources::update_source(
@@ -126,11 +83,6 @@ fn initial_import(state: &AppState, payload: &Value) -> Result<(), String> {
 
 fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
     let source_id = source_id_of(payload)?;
-    let import_source = payload
-        .get("importSource")
-        .and_then(|v| v.as_str())
-        .ok_or("missing importSource")?
-        .to_string();
     let session_id = payload
         .get("sessionId")
         .and_then(|v| v.as_str())
@@ -142,8 +94,22 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
         .unwrap_or(500);
 
     let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let mut import_name = source_id.clone();
     let run = (|| -> Result<(), String> {
         let source = sources::find_by_id(&conn, &source_id)?;
+        import_name = source
+            .provider_config
+            .get("localFilePath")
+            .and_then(|value| value.as_str())
+            .unwrap_or(&source.name)
+            .to_string();
+        let prepared = import_source::prepare(&source.provider, &source.provider_config)?;
+        import_name = prepared.display_name().to_string();
+        sessions::set_total_bytes(
+            &conn,
+            &session_id,
+            i64::try_from(prepared.total_bytes()).unwrap_or(i64::MAX),
+        )?;
         // Child sources are assistants: content ownership goes to the root.
         let effective = match &source.merged_into_id {
             Some(root_id) => sources::find_by_id(&conn, root_id)?,
@@ -159,9 +125,9 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
             // stale-session cutoff. Heartbeat during ingestion (not only after)
             // so clean_stale_sessions never falsely reaps a live import.
             let mut last_beat = std::time::Instant::now();
-            let handler = |email: ingest::EmailObj| {
+            let mut handler = |email: ingest::EmailObj| {
                 match ingest::process_email(
-                    state, &conn, &source_id, &group_ids, &effective, &email, &import_source,
+                    state, &conn, &source_id, &group_ids, &effective, &email, &import_name,
                 ) {
                     Ok(Some(id)) => pending.push(id),
                     Ok(None) => {}
@@ -176,7 +142,7 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
             // 1s, so this keeps the percentage moving without a write per message.
             let mut unflushed: u64 = 0;
             let mut last_flush = std::time::Instant::now();
-            let on_bytes = |delta: u64| {
+            let mut on_bytes = |delta: u64| {
                 unflushed += delta;
                 if last_flush.elapsed().as_secs() >= 2 {
                     sessions::add_progress(&conn, &session_id, unflushed as i64);
@@ -184,15 +150,7 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
                     last_flush = std::time::Instant::now();
                 }
             };
-            match source.provider.as_str() {
-                "mbox_import" => {
-                    readers::for_each_email(&source.provider_config, handler, on_bytes)?
-                }
-                "eml_import" => {
-                    crate::eml::for_each_email(&source.provider_config, handler, on_bytes)?
-                }
-                other => return Err(format!("Unsupported provider: {other}")),
-            }
+            prepared.stream(&mut handler, &mut on_bytes)?;
             if unflushed > 0 {
                 sessions::add_progress(&conn, &session_id, unflushed as i64);
             }
@@ -234,7 +192,7 @@ fn process_mailbox(state: &AppState, payload: &Value) -> Result<(), String> {
         }
         Err(message) => {
             // Wrap the reader failure with the mailbox context.
-            let message = format!("Failed to process import {import_source}: {message}");
+            let message = format!("Failed to process import {import_name}: {message}");
             let outcome = sessions::record_mailbox_result(&conn, &session_id, Err(&message))?;
             if outcome.is_last {
                 let session = sessions::find_by_id(&conn, &session_id)?;
@@ -270,7 +228,7 @@ fn import_cycle_finished(state: &AppState, payload: &Value) -> Result<(), String
     let source = sources::find_by_id(&conn, &source_id)?;
 
     let mut status = "active";
-    if sources::FILE_BASED_PROVIDERS.contains(&source.provider.as_str()) {
+    if import_source::supports(&source.provider) {
         status = "imported";
     }
     let message = if session.failed_mailboxes > 0 {
@@ -307,47 +265,21 @@ fn reimport_source(state: &AppState, payload: &Value) -> Result<(), String> {
     if source.status != "active" && source.status != "error" {
         return Ok(()); // skip non-active/error sources
     }
-    sources::update_source(
-        state,
-        &conn,
-        &source_id,
-        &json!({ "status": "importing", "lastImportStartedAt": true }),
-    )?;
-    let import_sources = list_import_sources(&source)?;
-    if import_sources.is_empty() {
+    let result = enqueue_import(state, &conn, &source, ImportRun::Reimport);
+    if let Err(error) = &result {
         sources::update_source(
             state,
             &conn,
             &source_id,
             &json!({
-                "status": "active",
+                "status": "error",
                 "lastImportFinishedAt": true,
-                "lastImportStatusMessage": "Re-import complete. No import sources found.",
+                "lastImportStatusMessage": format!("Re-import failed: {error}"),
             }),
-        )?;
-        return Ok(());
+        )
+        .ok();
     }
-    let session_id = sessions::create(
-        &conn,
-        &source_id,
-        import_sources.len() as i64,
-        false,
-        total_input_bytes(&source),
-    )?;
-    for import_source in import_sources {
-        queue::send_job(
-            state,
-            "ingestion",
-            "process-mailbox",
-            &json!({
-                "ingestionSourceId": source.id,
-                "importSource": import_source,
-                "sessionId": session_id,
-            }),
-            queue::no_retry(),
-        );
-    }
-    Ok(())
+    result
 }
 
 fn index_email_batch(state: &AppState, payload: &Value) -> Result<(), String> {

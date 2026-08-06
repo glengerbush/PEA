@@ -4,10 +4,11 @@
 //! pea-engine binary wraps it for standalone/debug serving and CLI imports.
 
 pub mod api;
-pub mod readers;
+pub mod import_source;
+mod readers;
 pub mod duplicates;
 pub mod emails;
-pub mod eml;
+mod eml;
 pub mod handlers;
 pub mod ingest;
 pub mod preview;

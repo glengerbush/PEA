@@ -118,7 +118,7 @@ pub fn delete_archived_email(state: &AppState, conn: &Connection, email_id: &str
                 .ok();
             if let Some((provider, status)) = source {
                 let terminal = status == "imported" || status == "error";
-                if crate::sources::FILE_BASED_PROVIDERS.contains(&provider.as_str()) && terminal {
+                if crate::import_source::supports(&provider) && terminal {
                     crate::sources::delete_source(state, conn, &source_id).ok();
                 }
             }

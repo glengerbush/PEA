@@ -1,94 +1,12 @@
 import { api } from '$lib/api.load';
+import { decodeMailboxSearchRequest } from '$lib/mailbox-search-state';
 import { error } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
-import type {
-	ArchiveSearchField,
-	ArchiveSortField,
-	IngestionSource,
-	MatchingStrategy,
-	SearchResult,
-	SortDirection,
-} from '@pea/types';
-
-type SearchFieldMatch = 'all' | 'any';
-
-const SORT_FIELDS = new Set<ArchiveSortField>([
-	'sentAt',
-	'archivedAt',
-	'sender',
-	'subject',
-	'sizeBytes',
-]);
-const DIRECTIONS = new Set<SortDirection>(['asc', 'desc']);
-const MATCHING_STRATEGIES = new Set<MatchingStrategy>(['last', 'all']);
-const SEARCH_FIELDS = new Set<ArchiveSearchField>([
-	'subject',
-	'body',
-	'from',
-	'senderName',
-	'to',
-	'cc',
-	'bcc',
-	'attachments.filename',
-	'attachments.content',
-	'importSource',
-	'sourcePath',
-	'tags',
-]);
-
-function getPositiveInteger(value: string | null, fallback: number): number {
-	const parsed = Number(value);
-	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-}
-
-function getSort(value: string | null): ArchiveSortField {
-	return value && SORT_FIELDS.has(value as ArchiveSortField)
-		? (value as ArchiveSortField)
-		: 'sentAt';
-}
-
-function getDirection(value: string | null): SortDirection {
-	return value && DIRECTIONS.has(value as SortDirection) ? (value as SortDirection) : 'desc';
-}
-
-function getMatchingStrategy(value: string | null): MatchingStrategy {
-	return value && MATCHING_STRATEGIES.has(value as MatchingStrategy)
-		? (value as MatchingStrategy)
-		: 'last';
-}
-
-function getFieldMatch(value: string | null): SearchFieldMatch {
-	return value === 'any' ? 'any' : 'all';
-}
-
-function getFields(value: string | null): ArchiveSearchField[] {
-	if (!value || value === 'all') return [];
-	return value
-		.split(',')
-		.map((field) => field.trim())
-		.filter((field): field is ArchiveSearchField =>
-			SEARCH_FIELDS.has(field as ArchiveSearchField)
-		);
-}
+import type { IngestionSource, SearchResult } from '@pea/types';
 
 export const load: PageLoad = async (event) => {
 	const { url } = event;
-	const q = url.searchParams.get('q') || '';
-	const fields = getFields(url.searchParams.get('fields'));
-	const senderQuery = url.searchParams.get('senderQuery') || '';
-	const recipientsQuery = url.searchParams.get('recipientsQuery') || '';
-	const subjectQuery = url.searchParams.get('subjectQuery') || '';
-	const bodyQuery = url.searchParams.get('bodyQuery') || '';
-	const fieldMatch = getFieldMatch(url.searchParams.get('fieldMatch'));
-	const ingestionSourceId = url.searchParams.get('ingestionSourceId') || 'all';
-	const hasAttachments = url.searchParams.get('hasAttachments') || 'any';
-	const attachmentExt = url.searchParams.get('attachmentExt') || '';
-	const tags = url.searchParams.get('tags') || '';
-	const page = getPositiveInteger(url.searchParams.get('page'), 1);
-	const limit = Math.min(getPositiveInteger(url.searchParams.get('limit'), 25), 100);
-	const sort = getSort(url.searchParams.get('sort'));
-	const direction = getDirection(url.searchParams.get('direction'));
-	const matchingStrategy = getMatchingStrategy(url.searchParams.get('matchingStrategy'));
+	const { intent: searchIntent, params: archiveParams } = decodeMailboxSearchRequest(url);
 
 	const sourcesResponse = await api('/ingestion-sources', event);
 	const sourcesResponseText = await sourcesResponse.json();
@@ -113,33 +31,11 @@ export const load: PageLoad = async (event) => {
 		return error(facetsResponse.status, facetsBody.message || 'Failed to load filter options.');
 	}
 
-	const archiveParams = new URLSearchParams({
-		page: page.toString(),
-		limit: limit.toString(),
-		sort,
-		direction,
-		matchingStrategy,
-	});
-
-	if (q) archiveParams.set('q', q);
-	if (fields.length > 0) archiveParams.set('fields', fields.join(','));
-	if (senderQuery) archiveParams.set('senderQuery', senderQuery);
-	if (recipientsQuery) archiveParams.set('recipientsQuery', recipientsQuery);
-	if (subjectQuery) archiveParams.set('subjectQuery', subjectQuery);
-	if (bodyQuery) archiveParams.set('bodyQuery', bodyQuery);
-	if (fieldMatch === 'any') archiveParams.set('fieldMatch', fieldMatch);
-	if (ingestionSourceId !== 'all') archiveParams.set('ingestionSourceId', ingestionSourceId);
-	if (hasAttachments === 'true' || hasAttachments === 'false') {
-		archiveParams.set('hasAttachments', hasAttachments);
-	}
-	if (attachmentExt) archiveParams.set('attachmentExt', attachmentExt);
-	if (tags) archiveParams.set('tags', tags);
-
 	const emptySearchResult: SearchResult = {
 		hits: [],
 		total: 0,
-		page,
-		limit,
+		page: searchIntent.page,
+		limit: searchIntent.limit,
 		totalPages: 0,
 		processingTimeMs: 0,
 	};
@@ -157,23 +53,6 @@ export const load: PageLoad = async (event) => {
 		ingestionSources,
 		filterFacets,
 		searchResult: (emailsResponseBody as SearchResult) || emptySearchResult,
-		filters: {
-			q,
-			fields: fields.join(',') || 'all',
-			senderQuery,
-			recipientsQuery,
-			subjectQuery,
-			bodyQuery,
-			fieldMatch,
-			ingestionSourceId,
-			hasAttachments,
-			attachmentExt,
-			tags,
-			page,
-			limit,
-			sort,
-			direction,
-			matchingStrategy,
-		},
+		searchIntent,
 	};
 };

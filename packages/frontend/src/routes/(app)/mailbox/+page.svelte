@@ -12,14 +12,18 @@
 	import EmailIdentity from '$lib/components/custom/EmailIdentity.svelte';
 	import { describeDate } from '$lib/stores/datetime.svelte';
 	import { goto, afterNavigate, beforeNavigate } from '$app/navigation';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { page as appPage } from '$app/state';
 	import { lastMailboxListUrl } from '$lib/stores/mailbox-nav';
 	import { saveListScroll, getListScroll, lastOpenedEmailId } from '$lib/stores/list-view-state';
 	import { api } from '$lib/api.client';
 	import { t } from '$lib/translations';
 	import { setAlert } from '$lib/components/custom/alert/alert-state.svelte';
-	import { shouldSyncInputsFromUrl } from '$lib/search-filters';
+	import {
+		createMailboxSearchState,
+		type MailboxSearchEvent,
+		type MailboxSearchOutput,
+	} from '$lib/mailbox-search-state';
 	import TablePagination from '$lib/components/custom/TablePagination.svelte';
 	import Paperclip from '@lucide/svelte/icons/paperclip';
 	import Search from '@lucide/svelte/icons/search';
@@ -35,11 +39,8 @@
 		ArchiveSortField,
 		BulkDeleteArchivedEmailsResult,
 		SearchHit,
-		SortDirection,
 		UpdateArchivedEmailTagsResult,
 	} from '@pea/types';
-
-	type SearchFieldMatch = 'all' | 'any';
 
 	type SelectOption = {
 		value: string;
@@ -50,93 +51,68 @@
 
 	let ingestionSources = $derived(data.ingestionSources);
 	let searchResult = $derived(data.searchResult);
-	let filters = $derived(data.filters);
-
-	// The form inputs are the user's to edit, not the search's to overwrite.
-	// They are seeded from the URL once here, then owned locally: typing/selecting
-	// writes them, and buildArchiveUrl() writes them INTO the URL. A search
-	// returning must never write back — when they were $derived(filters.…), a slow
-	// response overwrote characters typed while it was in flight (deleting letters
-	// mid-word). The URL re-seeds them only on user-initiated navigation, in the
-	// afterNavigate reconcile below. resultsMatchQuery lets the UI compare the two
-	// instead of syncing them.
-	let q = $state(data.filters.q);
-	let senderQuery = $state(data.filters.senderQuery);
-	let recipientsQuery = $state(data.filters.recipientsQuery);
-	let subjectQuery = $state(data.filters.subjectQuery);
-	let bodyQuery = $state(data.filters.bodyQuery);
-	let fieldMatch: SearchFieldMatch = $state(data.filters.fieldMatch);
-	let ingestionSourceId = $state(data.filters.ingestionSourceId);
-	let hasAttachments = $state(data.filters.hasAttachments);
-	let attachmentExt = $state(data.filters.attachmentExt);
-	let tags = $state(data.filters.tags);
-	let sort: ArchiveSortField = $state(data.filters.sort);
-	let direction: SortDirection = $state(data.filters.direction);
-	let limit = $state(String(data.filters.limit));
-	let showAdvanced = $state(
-		Boolean(
-			data.filters.senderQuery ||
-			data.filters.recipientsQuery ||
-			data.filters.subjectQuery ||
-			data.filters.bodyQuery ||
-			data.filters.ingestionSourceId !== 'all' ||
-			data.filters.hasAttachments !== 'any' ||
-			data.filters.attachmentExt ||
-			data.filters.tags ||
-			data.filters.fieldMatch === 'any'
-		)
-	);
-
-	// True when the visible results are for exactly what's in the search box.
-	// data.filters.q is the query the currently-shown results ran with (only the
-	// last-fired navigation's data is ever applied), so this is false only while a
-	// newer search is still pending — never because of an out-of-order response.
-	let resultsMatchQuery = $derived(
-		showAdvanced
-			? data.filters.q === '' &&
-					data.filters.senderQuery === senderQuery.trim() &&
-					data.filters.recipientsQuery === recipientsQuery.trim() &&
-					data.filters.subjectQuery === subjectQuery.trim() &&
-					data.filters.bodyQuery === bodyQuery.trim() &&
-					data.filters.fieldMatch === fieldMatch &&
-					data.filters.ingestionSourceId === ingestionSourceId &&
-					data.filters.hasAttachments === hasAttachments &&
-					data.filters.attachmentExt === attachmentExt &&
-					data.filters.tags === tags
-			: data.filters.q === q.trim() &&
-					data.filters.senderQuery === '' &&
-					data.filters.recipientsQuery === '' &&
-					data.filters.subjectQuery === '' &&
-					data.filters.bodyQuery === '' &&
-					data.filters.ingestionSourceId === 'all' &&
-					data.filters.hasAttachments === 'any' &&
-					data.filters.attachmentExt === '' &&
-					data.filters.tags === ''
-	);
-
-	// Origin breadcrumb: dashboard drill-downs (charts/stat cards) land here with
-	// ?from=/dashboard so the list can offer a way back up. Preserved by
-	// buildArchiveUrl() so it survives searching/filtering on the way.
-	const fromParam = $derived(appPage.url.searchParams.get('from') || '');
-	const cameFromDashboard = $derived(fromParam.startsWith('/dashboard'));
-
-	// The Clear button resets to the pristine /mailbox view, so it should show
-	// whenever any filter/search is active. buildArchiveUrl() only writes a query
-	// param when its value deviates from the default, so "any param present that
-	// isn't display/pagination" is exactly the set of active filters. Listing the
-	// non-filter params (rather than the filters) means a filter added to
-	// buildArchiveUrl() in the future lights up Clear automatically — only a new
-	// display/pagination/origin param would need to be added to this set.
-	const DISPLAY_PARAMS = new Set(['sort', 'direction', 'limit', 'page', 'from']);
-	let hasActiveFilters = $derived(
-		[...appPage.url.searchParams.keys()].some((key) => !DISPLAY_PARAMS.has(key))
-	);
 	let selectedIds = $state<string[]>([]);
+	const mailboxSearch = createMailboxSearchState(
+		untrack(() => data.searchIntent),
+		{
+			onOutput: consumeSearch,
+		}
+	);
+	let searchState = $state.raw(mailboxSearch.state);
+	let draft = $derived(searchState.draft);
+	let q = $derived(draft.q);
+	let senderQuery = $derived(draft.senderQuery);
+	let recipientsQuery = $derived(draft.recipientsQuery);
+	let subjectQuery = $derived(draft.subjectQuery);
+	let bodyQuery = $derived(draft.bodyQuery);
+	let fieldMatch = $derived(draft.fieldMatch);
+	let ingestionSourceId = $derived(draft.ingestionSourceId);
+	let hasAttachments = $derived(draft.hasAttachments);
+	let attachmentExt = $derived(draft.attachmentExt);
+	let tags = $derived(draft.tags);
+	let sort = $derived(draft.sort);
+	let direction = $derived(draft.direction);
+	let limit = $derived(String(draft.limit));
+	let showAdvanced = $derived(searchState.showAdvanced);
+	let resultsMatchQuery = $derived(searchState.resultsMatchDraft);
+	let hasActiveFilters = $derived(searchState.hasActiveFilters);
+	let fromParam = $derived(draft.from);
+	let cameFromDashboard = $derived(fromParam.startsWith('/dashboard'));
 	let tagInput = $state('');
 	let removeTagInput = $state('');
 	let isUpdatingTags = $state(false);
 	let isDeleting = $state(false);
 	let isDeleteDialogOpen = $state(false);
+
+	function consumeSearch(output: MailboxSearchOutput): void {
+		searchState = output.state;
+		if (output.clearSelection) selectedIds = [];
+		if (!output.navigation) return;
+		const navigation = output.navigation;
+		void goto(navigation.url, {
+			keepFocus: navigation.keepFocus,
+			replaceState: navigation.replaceState,
+		}).then(
+			() => {
+				consumeSearch(
+					mailboxSearch.dispatch({
+						type: 'navigation-completed',
+						navigationId: navigation.id,
+						url: navigation.url,
+					})
+				);
+			},
+			() => undefined
+		);
+	}
+
+	function sendSearch(event: MailboxSearchEvent): void {
+		consumeSearch(mailboxSearch.dispatch(event));
+	}
+
+	function inputValue(event: Event): string {
+		return (event.currentTarget as HTMLInputElement).value;
+	}
 
 	// Remember this list view (with its full search/filter/page query) so the
 	// email detail page's Back button can return to the exact same view.
@@ -154,36 +130,7 @@
 		if (openedId) lastOpenedEmailId.set(openedId);
 	});
 	afterNavigate(({ type }) => {
-		// Re-seed the inputs from the URL only on user-initiated navigation
-		// (initial load, back/forward, Clear link, deep link) — never after our
-		// own search-as-you-type goto, so a returning search can't edit what's
-		// being typed. See the $state seeds above and shouldSyncInputsFromUrl.
-		if (shouldSyncInputsFromUrl(type)) {
-			q = data.filters.q;
-			senderQuery = data.filters.senderQuery;
-			recipientsQuery = data.filters.recipientsQuery;
-			subjectQuery = data.filters.subjectQuery;
-			bodyQuery = data.filters.bodyQuery;
-			fieldMatch = data.filters.fieldMatch;
-			ingestionSourceId = data.filters.ingestionSourceId;
-			hasAttachments = data.filters.hasAttachments;
-			attachmentExt = data.filters.attachmentExt;
-			tags = data.filters.tags;
-			sort = data.filters.sort;
-			direction = data.filters.direction;
-			limit = String(data.filters.limit);
-			showAdvanced = Boolean(
-				data.filters.senderQuery ||
-				data.filters.recipientsQuery ||
-				data.filters.subjectQuery ||
-				data.filters.bodyQuery ||
-				data.filters.ingestionSourceId !== 'all' ||
-				data.filters.hasAttachments !== 'any' ||
-				data.filters.attachmentExt ||
-				data.filters.tags ||
-				data.filters.fieldMatch === 'any'
-			);
-		}
+		sendSearch({ type: 'navigated', navigationType: type, url: appPage.url });
 
 		const y = getListScroll(appPage.url.pathname + appPage.url.search);
 		if (y !== undefined) requestAnimationFrame(() => window.scrollTo(0, y));
@@ -202,23 +149,11 @@
 
 	const sourceLabel = $derived(getOptionLabel(sourceOptions, ingestionSourceId, 'All sources'));
 
-	// Column-header sorting: clicking a sortable header sets/toggles sort+direction
-	// and reloads immediately (page size does the same). buildArchiveUrl() reads
-	// these reactive vars, so we just update them and navigate.
 	function toggleSort(field: ArchiveSortField) {
-		if (sort === field) {
-			direction = direction === 'asc' ? 'desc' : 'asc';
-		} else {
-			sort = field;
-			direction = 'desc';
-		}
-		selectedIds = [];
-		goto(buildArchiveUrl(1), { keepFocus: true });
+		sendSearch({ type: 'sort-changed', field });
 	}
 	function changePageSize(value: string) {
-		limit = value;
-		selectedIds = [];
-		goto(buildArchiveUrl(1), { keepFocus: true });
+		sendSearch({ type: 'limit-changed', limit: Number(value) });
 	}
 
 	// Filter dropdown options sourced from existing archive data instead of free text.
@@ -266,87 +201,13 @@
 		return options.find((option) => option.value === value)?.label || fallback;
 	}
 
-	function setParam(params: URLSearchParams, key: string, value: string, skipValue = '') {
-		const trimmed = value.trim();
-		if (trimmed && trimmed !== skipValue) {
-			params.set(key, trimmed);
-		}
-	}
-
-	// Overrides let change callbacks pass their fresh value directly: the bound
-	// vars are $derived from loader data, so a navigation racing this build (e.g.
-	// a debounced search keystroke) can reset them before the URL is assembled.
-	type FilterOverrides = Partial<{
-		senderQuery: string;
-		recipientsQuery: string;
-		subjectQuery: string;
-		bodyQuery: string;
-		fieldMatch: SearchFieldMatch;
-		ingestionSourceId: string;
-		hasAttachments: string;
-		attachmentExt: string;
-		tags: string;
-	}>;
-
-	function buildArchiveUrl(pageNumber = 1, overrides: FilterOverrides = {}): string {
-		const params = new URLSearchParams();
-		if (showAdvanced) {
-			setParam(params, 'senderQuery', overrides.senderQuery ?? senderQuery);
-			setParam(params, 'recipientsQuery', overrides.recipientsQuery ?? recipientsQuery);
-			setParam(params, 'subjectQuery', overrides.subjectQuery ?? subjectQuery);
-			setParam(params, 'bodyQuery', overrides.bodyQuery ?? bodyQuery);
-			setParam(params, 'fieldMatch', overrides.fieldMatch ?? fieldMatch, 'all');
-			setParam(
-				params,
-				'ingestionSourceId',
-				overrides.ingestionSourceId ?? ingestionSourceId,
-				'all'
-			);
-			setParam(params, 'hasAttachments', overrides.hasAttachments ?? hasAttachments, 'any');
-			setParam(params, 'attachmentExt', overrides.attachmentExt ?? attachmentExt);
-			setParam(params, 'tags', overrides.tags ?? tags);
-		} else {
-			setParam(params, 'q', q);
-		}
-		setParam(params, 'sort', sort, 'sentAt');
-		setParam(params, 'direction', direction, 'desc');
-		setParam(params, 'limit', limit, '25');
-		setParam(params, 'from', fromParam);
-		if (pageNumber > 1) {
-			params.set('page', String(pageNumber));
-		}
-		const query = params.toString();
-		return `/mailbox${query ? `?${query}` : ''}`;
-	}
-
-	// Search-as-you-type / instant filtering. Navigation re-derives all inputs
-	// from the URL, so an apply after each change round-trips cleanly (no loops).
-	let searchDebounce: ReturnType<typeof setTimeout> | undefined;
-	function applyNow(overrides: FilterOverrides = {}) {
-		if (searchDebounce) clearTimeout(searchDebounce);
-		selectedIds = [];
-		goto(buildArchiveUrl(1, overrides), { keepFocus: true, replaceState: true });
-	}
-	function setAdvancedMode(enabled: boolean) {
-		showAdvanced = enabled;
-		applyNow();
-	}
-	// Keystrokes: FTS5 prefix search answers in ~10-30ms; a short debounce just
-	// avoids piling a navigation on every character.
-	function applyDebounced() {
-		if (searchDebounce) clearTimeout(searchDebounce);
-		searchDebounce = setTimeout(applyNow, 250);
-	}
-	// Clear a pending debounce on unmount, or a keystroke-then-navigate within
-	// 250ms fires applyNow() after we've left, bouncing back to /mailbox.
 	onDestroy(() => {
-		if (searchDebounce) clearTimeout(searchDebounce);
+		mailboxSearch.dispose();
 	});
 
-	// Enter in the search box applies immediately (skips the debounce).
 	function handleApplyFilters(event: SubmitEvent) {
 		event.preventDefault();
-		applyNow();
+		sendSearch({ type: 'submitted' });
 	}
 
 	function toggleEmailSelection(emailId: string) {
@@ -450,9 +311,9 @@
 			// Deleting can empty the current page entirely, so clamp to the
 			// last page that still exists.
 			const remaining = Math.max(0, searchResult.total - result.deletedCount);
-			const totalPages = Math.max(1, Math.ceil(remaining / Number(limit || '25')));
-			const targetPage = Math.min(filters.page, totalPages);
-			await goto(buildArchiveUrl(targetPage), {
+			const totalPages = Math.max(1, Math.ceil(remaining / Number(limit)));
+			const targetPage = Math.min(searchState.applied.page, totalPages);
+			await goto(mailboxSearch.urlForPage(targetPage), {
 				invalidateAll: true,
 				keepFocus: true,
 				replaceState: true,
@@ -531,18 +392,14 @@
 					name="q"
 					aria-label="Search everything"
 					placeholder="Search everything in your archive"
-					bind:value={q}
-					oninput={applyDebounced}
+					value={q}
+					oninput={(event) =>
+						sendSearch({ type: 'typed', field: 'q', value: inputValue(event) })}
 					class="h-10 border-0 bg-transparent pl-10 text-base font-normal shadow-none focus-visible:ring-0"
 				/>
 			</div>
 			{#if hasActiveFilters}
-				<Button
-					href="/mailbox{fromParam ? `?from=${encodeURIComponent(fromParam)}` : ''}"
-					variant="ghost"
-					size="sm"
-					class="gap-2"
-				>
+				<Button href={searchState.clearUrl} variant="ghost" size="sm" class="gap-2">
 					<X class="h-4 w-4" />
 					<span class="hidden sm:inline">Clear</span>
 				</Button>
@@ -551,7 +408,7 @@
 				type="button"
 				variant="ghost"
 				class="gap-2"
-				onclick={() => setAdvancedMode(true)}
+				onclick={() => sendSearch({ type: 'mode-changed', mode: 'advanced' })}
 			>
 				<SlidersHorizontal class="h-4 w-4" />
 				<span class="hidden sm:inline">Advanced</span>
@@ -575,7 +432,7 @@
 					type="button"
 					variant="ghost"
 					size="sm"
-					onclick={() => setAdvancedMode(false)}
+					onclick={() => sendSearch({ type: 'mode-changed', mode: 'simple' })}
 				>
 					<X class="h-4 w-4" />
 					<span class="sr-only">Close advanced search</span>
@@ -596,8 +453,13 @@
 								type="search"
 								name="senderQuery"
 								placeholder="Name or email address"
-								bind:value={senderQuery}
-								oninput={applyDebounced}
+								value={senderQuery}
+								oninput={(event) =>
+									sendSearch({
+										type: 'typed',
+										field: 'senderQuery',
+										value: inputValue(event),
+									})}
 								class="h-10 rounded-none border-0 bg-transparent px-0 font-normal shadow-none focus-visible:ring-0"
 							/>
 						</label>
@@ -608,8 +470,13 @@
 								type="search"
 								name="recipientsQuery"
 								placeholder="To, Cc, or Bcc"
-								bind:value={recipientsQuery}
-								oninput={applyDebounced}
+								value={recipientsQuery}
+								oninput={(event) =>
+									sendSearch({
+										type: 'typed',
+										field: 'recipientsQuery',
+										value: inputValue(event),
+									})}
 								class="h-10 rounded-none border-0 bg-transparent px-0 font-normal shadow-none focus-visible:ring-0"
 							/>
 						</label>
@@ -619,8 +486,13 @@
 								type="search"
 								name="subjectQuery"
 								placeholder="Words in the subject line"
-								bind:value={subjectQuery}
-								oninput={applyDebounced}
+								value={subjectQuery}
+								oninput={(event) =>
+									sendSearch({
+										type: 'typed',
+										field: 'subjectQuery',
+										value: inputValue(event),
+									})}
 								class="h-10 rounded-none border-0 bg-transparent px-0 font-normal shadow-none focus-visible:ring-0"
 							/>
 						</label>
@@ -630,8 +502,13 @@
 								type="search"
 								name="bodyQuery"
 								placeholder="Words in the message"
-								bind:value={bodyQuery}
-								oninput={applyDebounced}
+								value={bodyQuery}
+								oninput={(event) =>
+									sendSearch({
+										type: 'typed',
+										field: 'bodyQuery',
+										value: inputValue(event),
+									})}
 								class="h-10 rounded-none border-0 bg-transparent px-0 font-normal shadow-none focus-visible:ring-0"
 							/>
 						</label>
@@ -650,8 +527,13 @@
 							<Select.Root
 								type="single"
 								name="ingestionSourceId"
-								bind:value={ingestionSourceId}
-								onValueChange={(value) => applyNow({ ingestionSourceId: value })}
+								value={ingestionSourceId}
+								onValueChange={(value) =>
+									sendSearch({
+										type: 'filter-changed',
+										field: 'ingestionSourceId',
+										value,
+									})}
 							>
 								<Select.Trigger class="w-full">{sourceLabel}</Select.Trigger>
 								<Select.Content>
@@ -668,18 +550,24 @@
 							<span>Tags</span>
 							<SearchableSelect
 								name="tags"
-								bind:value={tags}
+								value={tags}
 								options={tagFilterOptions}
 								placeholder="Any tag"
-								onValueChange={(value) => applyNow({ tags: value })}
+								onValueChange={(value) =>
+									sendSearch({ type: 'filter-changed', field: 'tags', value })}
 							/>
 						</label>
 
 						<label class="flex min-w-0 flex-col gap-1.5 text-sm font-medium">
 							<span>Attachment type</span>
 							<AttachmentTypeFilter
-								bind:value={attachmentExt}
-								onValueChange={(value) => applyNow({ attachmentExt: value })}
+								value={attachmentExt}
+								onValueChange={(value) =>
+									sendSearch({
+										type: 'filter-changed',
+										field: 'attachmentExt',
+										value,
+									})}
 							/>
 						</label>
 
@@ -690,8 +578,11 @@
 									checked={hasAttachments === 'true'}
 									onCheckedChange={(checked) => {
 										const value = checked === true ? 'true' : 'any';
-										hasAttachments = value;
-										applyNow({ hasAttachments: value });
+										sendSearch({
+											type: 'filter-changed',
+											field: 'hasAttachments',
+											value,
+										});
 									}}
 								/>
 								<label for="hasAttachments" class="text-sm font-medium"
@@ -714,9 +605,8 @@
 						aria-label="Match any field instead of all fields"
 						checked={fieldMatch === 'any'}
 						onCheckedChange={(checked) => {
-							const value: SearchFieldMatch = checked ? 'any' : 'all';
-							fieldMatch = value;
-							applyNow({ fieldMatch: value });
+							const value = checked ? 'any' : 'all';
+							sendSearch({ type: 'filter-changed', field: 'fieldMatch', value });
 						}}
 					/>
 					<label for="fieldMatch" class="text-sm font-medium">any field</label>
@@ -724,13 +614,7 @@
 
 				<div class="flex items-center gap-2">
 					{#if hasActiveFilters}
-						<Button
-							href="/mailbox{fromParam
-								? `?from=${encodeURIComponent(fromParam)}`
-								: ''}"
-							variant="ghost"
-							class="gap-2"
-						>
+						<Button href={searchState.clearUrl} variant="ghost" class="gap-2">
 							<X class="h-4 w-4" />
 							Clear
 						</Button>
@@ -959,7 +843,7 @@
 		count={searchResult.total}
 		perPage={searchResult.limit}
 		page={searchResult.page}
-		buildHref={buildArchiveUrl}
+		buildHref={(page) => mailboxSearch.urlForPage(page)}
 		prevLabel={$t('app.archived_emails_page.prev')}
 		nextLabel={$t('app.archived_emails_page.next')}
 	/>

@@ -19,7 +19,8 @@
 				"title": "PEA (Personal Email Archive)",
 				"width": 1360,
 				"height": 860,
-				"url": "pea://localhost/"
+				"url": "index.html",
+				"backgroundColor": "#272e33"
 			}
 		],
 		"security": {

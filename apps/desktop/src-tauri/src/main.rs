@@ -575,11 +575,6 @@ async fn handle_request(
 }
 
 fn main() {
-    let data_dir = pea_engine::default_data_dir();
-    std::fs::create_dir_all(&data_dir).expect("create data dir");
-    pea_engine::provision::provision(&data_dir).expect("provision data dir");
-    let state = pea_engine::state_for_dir(&data_dir, false).expect("engine state");
-
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -628,11 +623,17 @@ fn main() {
                     responder.respond(handle_native_update_progress().await);
                     return;
                 }
-                let router: axum::Router = {
-                    let engine = app.state::<EngineRouter>();
-                    engine.0.clone()
+                let Some(engine) = app.try_state::<EngineRouter>() else {
+                    responder.respond(
+                        http::Response::builder()
+                            .status(503)
+                            .header("content-type", "text/plain")
+                            .body(b"archive engine is starting".to_vec())
+                            .unwrap(),
+                    );
+                    return;
                 };
-                responder.respond(handle_request(router, request).await);
+                responder.respond(handle_request(engine.0.clone(), request).await);
             });
         })
         .on_page_load(|_webview, _payload| {
@@ -647,25 +648,74 @@ fn main() {
                  e.preventDefault();location.reload();}});}",
             );
         })
-        .setup(move |app| {
-            // Launch check only when "Automatically check for updates" is on
-            // (default). Off → the user drives it from Settings. Dev builds never
-            // auto-check. Either way the install still asks first.
-            #[cfg(not(debug_assertions))]
-            if pea_engine::auto_check_updates(&state) {
-                check_for_updates(app.handle().clone());
-            }
+        .setup(|app| {
+            // Let the bundled splash paint before database migrations and
+            // recovery work begin. The main SPA is loaded only after the
+            // engine state and router are fully ready, so it can never race a
+            // schema change.
+            let app_handle = app.handle().clone();
+            let frontend_dir = frontend_dir(app.handle());
+            tauri::async_runtime::spawn(async move {
+                let initialized = tauri::async_runtime::spawn_blocking(move || {
+                    let data_dir = pea_engine::default_data_dir();
+                    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+                    pea_engine::provision::provision(&data_dir)?;
+                    let mut state = pea_engine::state_for_dir(&data_dir, false)?;
+                    state.frontend_dir = Some(frontend_dir);
+                    Ok::<_, String>(state)
+                })
+                .await;
 
-            // Finish wiring the engine now that the resource dir is resolvable.
-            let mut state = state.clone();
-            state.frontend_dir = Some(frontend_dir(app.handle()));
-            tauri::async_runtime::spawn(pea_engine::queue::start_queue(state.clone()));
-            app.manage(EngineState(state.clone()));
-            app.manage(EngineRouter(pea_engine::api::router(state)));
+                let state = match initialized {
+                    Ok(Ok(state)) => state,
+                    Ok(Err(error)) => {
+                        show_startup_error(&app_handle, &error);
+                        return;
+                    }
+                    Err(error) => {
+                        show_startup_error(&app_handle, &error.to_string());
+                        return;
+                    }
+                };
+
+                // Launch check only when "Automatically check for updates" is on
+                // (default). Dev builds never auto-check; installs still ask first.
+                #[cfg(not(debug_assertions))]
+                let auto_check_updates = pea_engine::auto_check_updates(&state);
+
+                app_handle.manage(EngineState(state.clone()));
+                app_handle.manage(EngineRouter(pea_engine::api::router(state.clone())));
+                tauri::async_runtime::spawn(pea_engine::queue::start_queue(state));
+
+                #[cfg(not(debug_assertions))]
+                if auto_check_updates {
+                    check_for_updates(app_handle.clone());
+                }
+
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    match tauri::Url::parse("pea://localhost/") {
+                        Ok(url) => {
+                            if let Err(error) = window.navigate(url) {
+                                show_startup_error(&app_handle, &error.to_string());
+                            }
+                        }
+                        Err(error) => show_startup_error(&app_handle, &error.to_string()),
+                    }
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn show_startup_error(app: &tauri::AppHandle, error: &str) {
+    eprintln!("[startup] {error}");
+    let message = "PEA couldn’t open your archive. Quit and reopen the app. If this continues, check that the disk has free space.";
+    let message = serde_json::to_string(message).unwrap();
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.eval(format!("window.setSplashError?.({message})"));
+    }
 }
 
 /// The engine's router, shared with the protocol handler via managed state.

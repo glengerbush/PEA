@@ -2,58 +2,259 @@
 <html lang="en">
 	<head>
 		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>PEA</title>
 		<style>
-			/* Everforest-flavored splash to match the app theme */
+			:root {
+				color-scheme: light dark;
+				--background: #fffbef;
+				--tile: #f2efdf;
+				--tile-edge: #e6e0c9;
+				--foreground: #5c6a72;
+				--muted: #7a8478;
+				--bracket: #3c4841;
+				--pea-top: #83a598;
+				--pea-middle: #8da101;
+				--pea-bottom: #a4b448;
+				--error: #f85552;
+			}
+
+			@media (prefers-color-scheme: dark) {
+				:root {
+					--background: #272e33;
+					--tile: #2e383c;
+					--tile-edge: #3a464b;
+					--foreground: #d3c6aa;
+					--muted: #9da9a0;
+					--bracket: #d3c6aa;
+					--pea-top: #83c092;
+					--pea-middle: #a7c080;
+					--pea-bottom: #93b06e;
+					--error: #e67e80;
+				}
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			[hidden] {
+				display: none !important;
+			}
+
 			html,
 			body {
 				height: 100%;
 				margin: 0;
+			}
+
+			body {
 				display: grid;
 				place-items: center;
-				background: #2d353b;
-				color: #d3c6aa;
-				font-family: system-ui, sans-serif;
+				overflow: hidden;
+				background: var(--background);
+				color: var(--foreground);
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 			}
-			.wrap {
+
+			.splash {
+				display: grid;
+				justify-items: center;
+				gap: 22px;
+				padding: 32px;
 				text-align: center;
 			}
-			.spinner {
-				width: 42px;
-				height: 42px;
-				margin: 0 auto 18px;
-				border: 4px solid #475258;
-				border-top-color: #a7c080;
-				border-radius: 50%;
-				animation: spin 0.9s linear infinite;
+
+			.logo {
+				width: 88px;
+				height: 88px;
+				overflow: visible;
+				animation: breathe 2.4s ease-in-out 0.85s infinite;
 			}
-			@keyframes spin {
-				to {
-					transform: rotate(360deg);
+
+			.tile {
+				fill: var(--tile);
+				stroke: var(--tile-edge);
+				stroke-width: 1;
+			}
+
+			.bracket {
+				fill: none;
+				stroke: var(--bracket);
+				stroke-width: 4;
+				stroke-linecap: round;
+				stroke-linejoin: round;
+				transform-box: fill-box;
+				transform-origin: center;
+			}
+
+			.bracket-left {
+				animation: bracket-left 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+			}
+
+			.bracket-right {
+				animation: bracket-right 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+			}
+
+			.pea {
+				transform-box: fill-box;
+				transform-origin: center;
+				animation: pea-settle 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+			}
+
+			.pea-top {
+				fill: var(--pea-top);
+				animation-delay: 0.08s;
+			}
+
+			.pea-middle {
+				fill: var(--pea-middle);
+				animation-delay: 0.16s;
+			}
+
+			.pea-bottom {
+				fill: var(--pea-bottom);
+				animation-delay: 0.24s;
+			}
+
+			.status-row {
+				display: flex;
+				align-items: baseline;
+				justify-content: center;
+				min-height: 22px;
+				color: var(--muted);
+				font-size: 14px;
+				font-weight: 500;
+				letter-spacing: 0.01em;
+			}
+
+			.dots {
+				display: inline-flex;
+				gap: 3px;
+				margin-left: 5px;
+			}
+
+			.dot {
+				width: 3px;
+				height: 3px;
+				border-radius: 50%;
+				background: var(--pea-middle);
+				animation: dot 1.2s ease-in-out infinite;
+			}
+
+			.dot:nth-child(2) {
+				animation-delay: 0.14s;
+			}
+
+			.dot:nth-child(3) {
+				animation-delay: 0.28s;
+			}
+
+			.paused .logo,
+			.paused .dot {
+				animation-play-state: paused;
+			}
+
+			.error .logo,
+			.error .pea,
+			.error .bracket {
+				animation: none;
+			}
+
+			.error .status-row {
+				max-width: 34rem;
+				color: var(--error);
+				line-height: 1.5;
+			}
+
+			@keyframes bracket-left {
+				from {
+					opacity: 0.25;
+					transform: translateX(-8px);
 				}
 			}
-			p {
-				opacity: 0.8;
-				font-size: 14px;
+
+			@keyframes bracket-right {
+				from {
+					opacity: 0.25;
+					transform: translateX(8px);
+				}
+			}
+
+			@keyframes pea-settle {
+				from {
+					opacity: 0;
+					transform: translateY(-10px) scale(0.72);
+				}
+			}
+
+			@keyframes breathe {
+				50% {
+					transform: scale(1.018);
+				}
+			}
+
+			@keyframes dot {
+				0%,
+				60%,
+				100% {
+					opacity: 0.28;
+					transform: translateY(0);
+				}
+				30% {
+					opacity: 1;
+					transform: translateY(-2px);
+				}
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				.logo,
+				.bracket,
+				.pea,
+				.dot {
+					animation: none;
+				}
 			}
 		</style>
 	</head>
 	<body>
-		<div class="wrap">
-			<svg width="72" height="72" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-				<!-- PEA logo candidate D: Bracket Stack -->
-				<rect x="2" y="2" width="60" height="60" rx="14" fill="#3a4248" />
-				<g fill="none" stroke="#d3c6aa" stroke-width="4" stroke-linecap="round">
-					<path d="M26 16h-7v32h7" />
-					<path d="M38 16h7v32h-7" />
-				</g>
-				<circle cx="32" cy="21.5" r="5" fill="#83c092" />
-				<circle cx="32" cy="32" r="5" fill="#a7c080" />
-				<circle cx="32" cy="42.5" r="5" fill="#93b06e" />
+		<main class="splash" aria-labelledby="status">
+			<svg class="logo" viewBox="0 0 64 64" role="img" aria-label="PEA">
+				<rect class="tile" x="2.5" y="2.5" width="59" height="59" rx="14" />
+				<path class="bracket bracket-left" d="M26 16h-7v32h7" />
+				<path class="bracket bracket-right" d="M38 16h7v32h-7" />
+				<circle class="pea pea-top" cx="32" cy="21.5" r="5" />
+				<circle class="pea pea-middle" cx="32" cy="32" r="5" />
+				<circle class="pea pea-bottom" cx="32" cy="42.5" r="5" />
 			</svg>
-			<div class="spinner"></div>
-			<h2>PEA</h2>
-			<p id="status">Starting the archive engine…</p>
-		</div>
+
+			<div class="status-row" role="status" aria-live="polite">
+				<span id="status">Opening your archive</span>
+				<span class="dots" id="dots" aria-hidden="true">
+					<span class="dot"></span>
+					<span class="dot"></span>
+					<span class="dot"></span>
+				</span>
+			</div>
+		</main>
+
+		<script>
+			const status = document.getElementById('status');
+			const dots = document.getElementById('dots');
+
+			window.setSplashStatus = (message) => {
+				status.textContent = message;
+			};
+
+			window.setSplashError = (message) => {
+				document.body.classList.add('error');
+				dots.hidden = true;
+				status.textContent = message;
+			};
+
+			document.addEventListener('visibilitychange', () => {
+				document.body.classList.toggle('paused', document.hidden);
+			});
+		</script>
 	</body>
 </html>

@@ -15,7 +15,9 @@ action still handles updater signatures, assets and draft releases as before.
 
 With verified inputs, setup skips the Rust build cache and frontend build, and
 installs runtime libraries rather than compiler headers. In a clean Ubuntu 22.04
-dependency-resolution check this reduced newly installed packages from 429 to 207.
+dependency-resolution check this reduced newly installed packages from 429 to 273.
+Recommended runtime components (graphics, SVG loaders and desktop portals) remain
+enabled, matching the normal build's installation policy.
 This avoids adding a separately maintained CI image; hosted timing must still
 measure the installation gain. The existing Ubuntu baseline is unchanged.
 

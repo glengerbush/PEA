@@ -15,8 +15,9 @@ runs:
           run: |
               sudo apt-get update
               if [ "$PEA_PREBUILT" = true ]; then
-                  # Bundling needs runtime libraries, not compiler headers.
-                  sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-0 libappindicator3-1 librsvg2-2 patchelf
+                  # Keep recommended graphics, SVG and portal runtime components;
+                  # omit only compiler headers from the packaging-only job.
+                  sudo apt-get install -y libwebkit2gtk-4.1-0 libappindicator3-1 librsvg2-2 patchelf
               else
                   sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
               fi

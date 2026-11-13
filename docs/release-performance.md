@@ -44,6 +44,28 @@ An extracted release executable/resources also completed a real local Debian
 bundle through the wrapper without compilation (updater signing disabled for this
 local smoke check). Hosted benchmarks exercise fresh unbundled inputs and signing.
 
+### Verified packaging-only benchmark — 2026-11-13
+
+The final [Linux benchmark](https://github.com/glengerbush/PEA/actions/runs/43475120304)
+passed in **2m50s** at revision `9a4b16c`, including artifact verification, setup,
+all three Linux package formats and updater signatures. Logs confirm zero Rust
+compilation. Input lookup/download/verification took **6s**, setup **41s**, and
+packaging/signing **116.2s**. Publication was explicitly skipped, so release upload
+time must be added when comparing against the previous 8m35s release job.
+
+The matching [preparation job](https://github.com/glengerbush/PEA/actions/runs/43474358778)
+took **4m24s** separately. Starting from a fresh main push, preparation plus the
+measured packaging job therefore took **7m14s** of sequential job time, excluding
+queues and publication. The fast release stage reuses work already done on main;
+it does not eliminate the initial compilation.
+
+An earlier [benchmark](https://github.com/glengerbush/PEA/actions/runs/43473517993)
+also passed in 2m50s, but used a smaller package list without recommended runtime
+components. The final run above retains those components. Both Linux jobs passed;
+their still-queued macOS benchmark jobs were canceled to avoid redundant cold
+builds. macOS preparation remains queued; its artifact/bundle path is unverified
+on a hosted macOS runner.
+
 ## Dependency cache fallback
 
 Release tags and the main-branch cache workflow use the same local composite action

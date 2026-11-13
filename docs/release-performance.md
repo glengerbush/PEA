@@ -1,5 +1,49 @@
 # Desktop release caches
 
+## Exact-revision release inputs
+
+Main builds now upload the unbundled executable and frontend resources as a
+14-day artifact, keyed by commit, OS and architecture. Tagged builds look only in
+the main workflow for the exact commit and require the matching platform job to
+have succeeded. This works even if the other platform is still queued.
+
+Before restoring files, the release validates revision, version, platform, every
+file checksum and allowed archive paths. Missing, expired or unavailable artifacts
+fall back to the normal locked build; invalid downloaded artifacts fail the job.
+`tauri bundle` packages verified inputs without recompiling. The Tauri release
+action still handles updater signatures, assets and draft releases as before.
+
+With verified inputs, setup skips the Rust build cache and frontend build, and
+installs runtime libraries rather than compiler headers. In a clean Ubuntu 22.04
+dependency-resolution check this reduced newly installed packages from 429 to 207.
+This avoids adding a separately maintained CI image; hosted timing must still
+measure the installation gain. The existing Ubuntu baseline is unchanged.
+
+Dispatch `release.yml` manually to benchmark the same packaging/signing path
+without publishing anything. It reports whether it reused inputs or compiled, and
+elapsed build/bundle time in the job summary. For a warm benchmark, wait for the
+matching platform's main preparation job to finish first. No version bump is needed.
+
+Compression was measured locally on the actual 1.2.9 AppImage payload using Ubuntu
+22.04 squashfs-tools, two compression workers and 128 KiB blocks: Zstandard took
+26.86s and produced 86,691,840 bytes; gzip took 31.21s and produced 94,531,584 bytes.
+The existing Zstandard setting is retained. This measures compression alone, not
+the full packaging step. Compiler optimization settings are also unchanged.
+
+Verification: artifact round-trip, executable permissions, stale resource cleanup,
+revision/version/platform mismatches, corruption, traversal/link rejection, trusted
+main job selection and normal-build fallback are covered by Python tests:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_desktop_release.py'
+```
+
+An extracted release executable/resources also completed a real local Debian
+bundle through the wrapper without compilation (updater signing disabled for this
+local smoke check). Hosted benchmarks exercise fresh unbundled inputs and signing.
+
+## Dependency cache fallback
+
 Release tags and the main-branch cache workflow use the same local composite action
 to prepare Rust 1.99.1, Node 22, locked pnpm dependencies and frontend resources.
 The Cargo cache covers the root workspace's `target` directory, with separate keys

@@ -16,11 +16,14 @@ on:
     push:
         tags:
             - 'v*'
+    # Exercises the same signing/packaging path without creating a release.
+    workflow_dispatch:
 
 jobs:
     build:
         permissions:
             contents: write
+            actions: read
         strategy:
             fail-fast: false
             matrix:
@@ -43,6 +46,7 @@ jobs:
             # source of truth; a v1.2.0 tag on a commit still at 1.1.0 would ship a
             # release whose in-app updater never fires. Bump with scripts/set-version.mjs.
             - name: Verify tag matches package.json version
+              if: github.event_name == 'push'
               shell: bash
               run: |
                   tag="${GITHUB_REF_NAME#v}"
@@ -53,9 +57,23 @@ jobs:
                   fi
                   echo "✓ Tag and package.json agree on $pkg"
 
+            - name: Check artifact handoff and build fallback
+              run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_desktop_release.py'
+
+            - name: Restore verified inputs from the same main-branch revision
+              id: prebuilt
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  PEA_PLATFORM: ${{ runner.os }}-${{ runner.arch }}
+                  PEA_JOB_NAME: build (${{ matrix.platform }})
+              run: python3 scripts/desktop-artifact.py fetch --platform "$PEA_PLATFORM" --job-name "$PEA_JOB_NAME"
+
             - uses: ./.github/actions/desktop-build
+              with:
+                  prebuilt: ${{ steps.prebuilt.outputs.restored || 'false' }}
 
             - name: Generate release notes from commits
+              if: github.event_name == 'push'
               id: release_notes
               shell: bash
               run: |
@@ -74,7 +92,19 @@ jobs:
                     echo 'RELEASE_NOTES_EOF'
                   } >> "$GITHUB_OUTPUT"
 
+            - name: Benchmark packaging without publication
+              if: github.event_name == 'workflow_dispatch'
+              working-directory: apps/desktop
+              env:
+                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+                  APPIMAGE_EXTRACT_AND_RUN: 1
+                  PEA_PREBUILT: ${{ steps.prebuilt.outputs.restored || 'false' }}
+                  PEA_BUNDLES: ${{ matrix.bundles }}
+              run: python3 ../../scripts/tauri-release.py build --verbose --bundles "$PEA_BUNDLES" -- --locked
+
             - name: Build and publish with Tauri
+              if: github.event_name == 'push'
               uses: tauri-apps/tauri-action@v0
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -82,8 +112,10 @@ jobs:
                   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
                   # lets linuxdeploy run without FUSE (also required on FUSE-less hosts)
                   APPIMAGE_EXTRACT_AND_RUN: 1
+                  PEA_PREBUILT: ${{ steps.prebuilt.outputs.restored || 'false' }}
               with:
                   projectPath: apps/desktop
+                  tauriScript: python3 ../../scripts/tauri-release.py
                   tagName: ${{ github.ref_name }}
                   releaseName: 'PEA ${{ github.ref_name }}'
                   releaseBody: ${{ steps.release_notes.outputs.body }}

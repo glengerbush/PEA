@@ -30,11 +30,13 @@ jobs:
                     - platform: macos-latest # Apple Silicon
                       bundles: dmg,app
         runs-on: ${{ matrix.platform }}
+        timeout-minutes: 30
         steps:
             - uses: actions/checkout@v5
               with:
                   # Release notes compare this tag with the previous one.
                   fetch-depth: 0
+                  persist-credentials: false
 
             # Fail fast if the tag and the committed version disagree. tauri.conf.json
             # reads its version from the root package.json, so package.json is the
@@ -51,35 +53,7 @@ jobs:
                   fi
                   echo "✓ Tag and package.json agree on $pkg"
 
-            - name: Install Linux dependencies
-              if: startsWith(matrix.platform, 'ubuntu')
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-            - uses: dtolnay/rust-toolchain@stable
-
-            - uses: actions/setup-node@v5
-              with:
-                  node-version: 22
-                  # setup-node@v5 defaults package-manager-cache to true; since root
-                  # package.json declares a pnpm packageManager, it runs `pnpm` to find
-                  # the store cache BEFORE corepack installs pnpm (next step), failing with
-                  # "Unable to locate executable file: pnpm". Corepack provisions pnpm, so
-                  # we don't need setup-node's cache.
-                  package-manager-cache: false
-
-            - name: Enable pnpm
-              run: corepack enable
-
-            - name: Install workspace
-              run: pnpm install --frozen-lockfile
-
-            - name: Build web app
-              run: pnpm --filter @pea/types build && pnpm --filter @pea/frontend build
-
-            - name: Assemble desktop bundle (static frontend — the engine is compiled in)
-              run: node scripts/build-desktop-bundle.mjs
+            - uses: ./.github/actions/desktop-build
 
             - name: Generate release notes from commits
               id: release_notes
@@ -116,4 +90,4 @@ jobs:
                   releaseDraft: true
                   prerelease: false
                   includeUpdaterJson: true
-                  args: --bundles ${{ matrix.bundles }}
+                  args: --bundles ${{ matrix.bundles }} -- --locked

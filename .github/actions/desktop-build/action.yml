@@ -1,0 +1,40 @@
+name: Prepare desktop build
+description: Share the pinned toolchain, dependency caches and frontend inputs between main and release tags.
+runs:
+    using: composite
+    steps:
+        - name: Install Linux dependencies
+          if: runner.os == 'Linux'
+          shell: bash
+          run: |
+              sudo apt-get update
+              sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+          with:
+              toolchain: 1.99.1
+        - name: Restore compiled Rust dependencies
+          uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+          with:
+              # Cargo.toml at the repository root owns the workspace target dir.
+              workspaces: '. -> target'
+              shared-key: desktop-${{ runner.os }}-${{ runner.arch }}
+              cache-workspace-crates: true
+              # Tags can restore main's cache, but cannot share tag-only caches.
+              save-if: ${{ github.ref == 'refs/heads/main' }}
+        - uses: actions/setup-node@v5
+          with:
+              node-version: 22
+              # Corepack must provision pnpm before any pnpm cache lookup.
+              package-manager-cache: false
+        - name: Enable pnpm
+          shell: bash
+          run: corepack enable
+        - name: Install workspace
+          shell: bash
+          run: pnpm install --frozen-lockfile
+        - name: Build web app
+          shell: bash
+          run: pnpm --filter @pea/types build && pnpm --filter @pea/frontend build
+        - name: Assemble desktop bundle
+          shell: bash
+          run: node scripts/build-desktop-bundle.mjs

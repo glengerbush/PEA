@@ -1,0 +1,47 @@
+name: Prepare desktop release caches
+
+on:
+    push:
+        branches: [main]
+        paths:
+            - 'Cargo.toml'
+            - 'Cargo.lock'
+            - 'crates/**'
+            - 'apps/desktop/**'
+            - 'packages/**'
+            - 'package.json'
+            - 'pnpm-lock.yaml'
+            - 'pnpm-workspace.yaml'
+            - 'tsconfig*.json'
+            - 'scripts/build-desktop-bundle.mjs'
+            - '.github/actions/desktop-build/**'
+            - '.github/workflows/release.yml'
+            - '.github/workflows/warm-desktop-cache.yml'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: desktop-cache-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    build:
+        if: github.ref == 'refs/heads/main'
+        strategy:
+            fail-fast: false
+            matrix:
+                platform: [ubuntu-22.04, macos-latest]
+        runs-on: ${{ matrix.platform }}
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  persist-credentials: false
+            - uses: ./.github/actions/desktop-build
+            # Use Tauri's release flags, including custom-protocol, so Cargo
+            # artifacts match the tagged builds. No bundles, signing or uploads.
+            - name: Compile the release executable without publishing
+              working-directory: apps/desktop
+              run: pnpm tauri build --no-bundle -- --locked
